@@ -23,22 +23,26 @@ const bybitIntervals: Record<Timeframe, string> = {
   '15m': '15',
 };
 
-export async function getBybitMarketCandles(seedPairs: MarketPair[], symbol: string, timeframe: Timeframe): Promise<Candle[]> {
+export async function getBybitMarketCandles(seedPairs: MarketPair[], symbol: string, timeframe: Timeframe, requestedLimit?: number, options: { strict?: boolean } = {}): Promise<Candle[]> {
   const pair = seedPairs.find((item) => item.symbol === symbol);
 
   if (!pair) {
     return [];
   }
 
-  return fetchCandles(pair, toBybitSymbol(symbol), timeframe).catch(() => []);
+  if (options.strict) {
+    return fetchCandles(pair, toBybitSymbol(symbol), timeframe, requestedLimit, options);
+  }
+
+  return fetchCandles(pair, toBybitSymbol(symbol), timeframe, requestedLimit, options).catch(() => []);
 }
 
-async function fetchCandles(pair: MarketPair, symbol: string, timeframe: Timeframe): Promise<Candle[]> {
+async function fetchCandles(pair: MarketPair, symbol: string, timeframe: Timeframe, requestedLimit?: number, options: { strict?: boolean } = {}): Promise<Candle[]> {
   const { marketKlineLimit } = getThoonServerEnv();
   const response = await fetchBybitJson<BybitKlineResponse>('/v5/market/kline', {
     category: 'spot',
     interval: bybitIntervals[timeframe] ?? '15',
-    limit: String(marketKlineLimit),
+    limit: String(Math.max(1, Math.floor(requestedLimit ?? marketKlineLimit))),
     symbol,
   });
 
@@ -48,12 +52,12 @@ async function fetchCandles(pair: MarketPair, symbol: string, timeframe: Timefra
 
   const candles = response.result.list
     .map((kline) => ({
-      close: asMarketNumber(kline[4], pair.lastPrice),
-      high: asMarketNumber(kline[2], pair.lastPrice),
-      low: asMarketNumber(kline[3], pair.lastPrice),
-      open: asMarketNumber(kline[1], pair.lastPrice),
-      time: Math.floor(asMarketNumber(kline[0], 0) / 1000),
-      volume: asMarketNumber(kline[5], 0),
+      close: marketNumber(kline[4], pair.lastPrice, 'close', options.strict),
+      high: marketNumber(kline[2], pair.lastPrice, 'high', options.strict),
+      low: marketNumber(kline[3], pair.lastPrice, 'low', options.strict),
+      open: marketNumber(kline[1], pair.lastPrice, 'open', options.strict),
+      time: Math.floor(marketNumber(kline[0], 0, 'time', options.strict) / 1000),
+      volume: marketNumber(kline[5], 0, 'volume', options.strict),
     }))
     .reverse();
 
@@ -85,10 +89,18 @@ function toBybitSymbol(symbol: string) {
   return symbol.replace('/', '').toUpperCase();
 }
 
-function asMarketNumber(value: string, fallback: number) {
+function marketNumber(value: string, fallback: number, label: string, strict = false) {
   const parsed = Number(value);
 
-  return Number.isFinite(parsed) ? parsed : fallback;
+  if (Number.isFinite(parsed) && (!strict || label === 'volume' || parsed > 0)) {
+    return parsed;
+  }
+
+  if (strict) {
+    throw new Error(`Invalid Bybit candle ${label}: ${value}`);
+  }
+
+  return fallback;
 }
 
 function aggregateCandles(candles: Candle[], groupSize: number) {

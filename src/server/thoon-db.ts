@@ -213,7 +213,7 @@ function migrateDb(db: Partial<ThoonDb>): ThoonDb {
     agentSettingsRecord: migrateAgentSettings(db.agentSettingsRecord, seed.agentSettingsRecord),
     agentSuggestionRecords: mergeSeedRecords(seed.agentSuggestionRecords, db.agentSuggestionRecords).filter((record) => record.strategyId === JIMMY_STRATEGY_ID && !isRemovedSeedAgentRecord(record.id)),
     apiKeySecrets: db.apiKeySecrets ?? {},
-    backtestReportRecords: mergeSeedRecords(seed.backtestReportRecords, db.backtestReportRecords).filter((record) => record.source === 'calculated' && record.strategyId === JIMMY_STRATEGY_ID),
+    backtestReportRecords: mergeSeedRecords(seed.backtestReportRecords, db.backtestReportRecords).filter(isTrustedBacktestReportRecord),
     botLogRecords: stripLegacyBotLogs(db.botLogRecords),
     botRecords: normalizeBotRecords(db.botRecords ?? seed.botRecords),
     fillRecords: stripSeedRecords(fills, db.fillRecords),
@@ -231,6 +231,27 @@ function migrateDb(db: Partial<ThoonDb>): ThoonDb {
 
 function canonicalStrategyId(_strategyId: string | undefined) {
   return JIMMY_STRATEGY_ID;
+}
+
+function isTrustedBacktestReportRecord(record: BacktestReport) {
+  return (
+    record.source === 'calculated' &&
+    record.strategyId === JIMMY_STRATEGY_ID &&
+    (record.marketDataSource === 'binance-live' || Boolean(record.marketDataSource?.endsWith('-public-rest'))) &&
+    record.engine === 'jimmy-pine-v5-candle-engine' &&
+    Boolean(record.dataWindow?.candleChecksum) &&
+    Boolean(record.dataWindow?.firstCandleAt) &&
+    Boolean(record.dataWindow?.lastCandleAt) &&
+    Number.isFinite(record.candleCount) &&
+    Array.isArray(record.equityCurve) &&
+    record.equityCurve.length > 0 &&
+    Array.isArray(record.buyHoldCurve) &&
+    record.buyHoldCurve.length > 0 &&
+    Array.isArray(record.drawdownCurve) &&
+    record.drawdownCurve.length > 0 &&
+    Array.isArray(record.monthlyReturns) &&
+    Array.isArray(record.trades)
+  );
 }
 
 function normalizeBotRecords(records: Bot[] | undefined): Bot[] {

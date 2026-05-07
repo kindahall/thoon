@@ -414,19 +414,37 @@ export type BacktestReport = {
   buyHoldCurve?: number[];
   buyHoldReturn?: number;
   candleCount?: number;
+  dataWindow?: {
+    candleChecksum: string;
+    firstCandleAt: string;
+    lastCandleAt: string;
+  };
   drawdown: number;
   drawdownCurve?: number[];
+  engine?: 'jimmy-pine-v5-candle-engine';
   equityCurve?: number[];
+  executionModel?: string;
   exchangeId?: string;
   exchangeName?: string;
   feesPct?: number;
   generatedAt?: string;
   id: string;
   initialCapital?: number;
+  losingTrades?: number;
   market?: string;
   marketDataSource?: string;
   monthlyReturns?: Array<{ label: string; value: number }>;
   netProfit: number;
+  openPosition?: {
+    entry: number;
+    entryTime: string;
+    markPrice: number;
+    side: 'long' | 'short';
+    size: number;
+    stop: number;
+    trail: number;
+    unrealizedPnl: number;
+  };
   period: string;
   profitFactor: number;
   slippagePct?: number;
@@ -437,6 +455,7 @@ export type BacktestReport = {
   trades?: BacktestTrade[];
   warnings?: string[];
   winRate: number;
+  winningTrades?: number;
 };
 
 export type Bot = {

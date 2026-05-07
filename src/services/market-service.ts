@@ -29,7 +29,7 @@ export async function getMarketCandles(symbol: string, timeframe: Timeframe, exc
   const db = readThoonDb();
 
   if (exchangeId !== 'binance') {
-    return getPublicRestMarketCandles(db.marketPairRecords, symbol, timeframe, exchangeId);
+    return getPublicRestMarketCandles(db.marketPairRecords, symbol, timeframe, exchangeId, requestedLimit, options);
   }
 
   return getBinanceMarketCandles(db.marketPairRecords, symbol, timeframe, requestedLimit, options);

@@ -1,13 +1,13 @@
 'use client';
 
-import { BarChart3, Bot, Database, FileCheck2, FolderOpen, MoreHorizontal, Play, RotateCcw, SlidersHorizontal } from 'lucide-react';
+import { AlertTriangle, BarChart3, Bot, CheckCircle2, Database, FileCheck2, FolderOpen, Loader2, MoreHorizontal, Play, RotateCcw, SlidersHorizontal } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import { StrategyAgentDrawer } from '../../components/agent/StrategyAgentDrawer';
 import { Badge, Button, Card, EmptyState, HelpPopover } from '../../components/ui';
 import { useBinanceLiveMarkets } from '../../hooks/useBinanceLiveMarkets';
-import { postJson } from '../../services/api-client';
+import { ApiClientError, postJson } from '../../services/api-client';
 import type { MarketPair, Timeframe } from '../../types/market';
 import type { AgentReport, AgentRun, AgentSettings, AgentSuggestion, BacktestReport, BacktestTrade, ExchangeConnection, Strategy, StrategyVersion } from '../../types/trading';
 import { formatPercent, formatUsd } from '../../utils/format';
@@ -27,6 +27,17 @@ type BacktestPageProps = {
 };
 
 type BacktestTab = 'trades' | 'monthly' | 'distribution' | 'drawdown' | 'analysis';
+type BacktestRunStatus = 'blocked' | 'error' | 'idle' | 'running' | 'success';
+type BacktestRunKind = 'run' | 'save';
+
+type BacktestRunState = {
+  details?: string;
+  finishedAt?: string;
+  kind?: BacktestRunKind;
+  message: string;
+  startedAt?: string;
+  status: BacktestRunStatus;
+};
 
 const tabs: Array<{ id: BacktestTab; label: string }> = [
   { id: 'trades', label: 'Trades' },
@@ -38,6 +49,12 @@ const tabs: Array<{ id: BacktestTab; label: string }> = [
 
 const timeframes: Timeframe[] = ['1m', '5m', '15m', '30m', '1h', '2h', '4h', '1d', '1w', '1M', '1y'];
 const tradesPageSize = 10;
+const backtestRangeShortcuts: Array<{ label: string; value: string }> = [
+  { label: '1M', value: '30D' },
+  { label: '3M', value: '90D' },
+  { label: '6M', value: '180D' },
+  { label: '1Y', value: '1Y' },
+];
 
 export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSuggestions, agentVersions, exchangeConnections, initialPair, initialStrategyId, marketPairs, reports: initialReports, strategies }: BacktestPageProps) {
   const { connected: isBinanceLive, pairs: liveMarketPairs } = useBinanceLiveMarkets(marketPairs);
@@ -52,28 +69,32 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
   const [fees, setFees] = useState(0.06);
   const [slippage, setSlippage] = useState(0.02);
   const [activeTab, setActiveTab] = useState<BacktestTab>('trades');
-  const [runIndex, setRunIndex] = useState(0);
   const [runStatus, setRunStatus] = useState('Ready');
+  const [runState, setRunState] = useState<BacktestRunState>({ message: '', status: 'idle' });
 
   const strategy = strategies.find((item) => item.id === strategyId) ?? strategies[0];
   const selectedExchange = exchangeConnections.find((exchange) => exchange.id === exchangeId) ?? exchangeConnections[0];
-  const report = reports.find((item) => item.strategyId === strategyId && item.source === 'calculated' && item.market === symbol && item.timeframe === timeframe && item.period === dateRange && (item.exchangeId ?? 'binance') === exchangeId);
+  const matchingReports = reports.filter((item) => item.strategyId === strategyId && item.source === 'calculated' && item.market === symbol && item.timeframe === timeframe && item.period === dateRange && (item.exchangeId ?? 'binance') === exchangeId);
+  const report = matchingReports.find(isTrustedBacktestReport);
   const selectedPair = liveMarketPairs.find((pair) => pair.symbol === symbol) ?? liveMarketPairs[0];
   const hiddenSeedReports = reports.filter((item) => item.strategyId === strategyId && item.source !== 'calculated').length;
+  const hiddenInvalidReports = matchingReports.filter((item) => !isTrustedBacktestReport(item)).length;
+  const isBacktestRunning = runState.status === 'running';
 
-  const totalReturn = report ? (report.netProfit / initialCapital) * 100 : 0;
-  const winningTrades = report ? Math.round((report.totalTrades * report.winRate) / 100) : 0;
-  const losingTrades = report ? report.totalTrades - winningTrades : 0;
+  const reportInitialCapital = report?.initialCapital ?? initialCapital;
+  const totalReturn = report ? (report.netProfit / reportInitialCapital) * 100 : 0;
+  const winningTrades = report ? report.winningTrades ?? Math.round((report.totalTrades * report.winRate) / 100) : 0;
+  const losingTrades = report ? report.losingTrades ?? report.totalTrades - winningTrades : 0;
 
-  const equitySeries = useMemo(() => report?.equityCurve ?? buildEquitySeries(initialCapital, report?.netProfit ?? 0, runIndex), [initialCapital, report?.equityCurve, report?.netProfit, runIndex]);
-  const buyHoldSeries = useMemo(() => report?.buyHoldCurve ?? buildBuyHoldSeries(equitySeries, initialCapital), [equitySeries, initialCapital, report?.buyHoldCurve]);
-  const drawdownSeries = useMemo(() => report?.drawdownCurve ?? buildDrawdownSeries(report?.drawdown ?? 0), [report?.drawdown, report?.drawdownCurve]);
+  const equitySeries = report?.equityCurve ?? [];
+  const buyHoldSeries = report?.buyHoldCurve ?? [];
+  const drawdownSeries = report?.drawdownCurve ?? [];
   const trades = useMemo(() => report?.trades ?? [], [report?.trades]);
-  const monthlyReturns = useMemo(() => report?.monthlyReturns ?? buildMonthlyReturns(totalReturn), [report?.monthlyReturns, totalReturn]);
+  const monthlyReturns = report?.monthlyReturns ?? [];
   const distribution = useMemo(() => buildDistribution(equitySeries), [equitySeries]);
-  const equityLast = equitySeries[equitySeries.length - 1] ?? initialCapital;
-  const buyHoldLast = buyHoldSeries[buyHoldSeries.length - 1] ?? initialCapital;
-  const buyHoldReturn = report?.buyHoldReturn ?? ((buyHoldLast - initialCapital) / initialCapital) * 100;
+  const equityLast = equitySeries[equitySeries.length - 1] ?? reportInitialCapital;
+  const buyHoldLast = buyHoldSeries[buyHoldSeries.length - 1] ?? reportInitialCapital;
+  const buyHoldReturn = report?.buyHoldReturn ?? 0;
   const reportExchangeName = report?.exchangeName ?? selectedExchange?.name ?? 'Binance';
   const reportSourceLabel = report
     ? `${reportExchangeName} public candles · ${report.generatedAt ? formatRunDate(report.generatedAt) : 'latest run'}`
@@ -89,9 +110,15 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
     }
   }
 
-  async function runBacktest() {
-    setRunIndex((current) => current + 1);
-    setRunStatus('Running');
+  async function executeBacktest(kind: BacktestRunKind) {
+    if (isBacktestRunning) {
+      return;
+    }
+
+    const startedAt = new Date().toISOString();
+    const runningMessage = `${selectedExchange?.name ?? exchangeId} public candles request for ${symbol} ${timeframe} ${dateRange}`;
+    setRunStatus(kind === 'save' ? 'Saving report' : 'Backtest running');
+    setRunState({ kind, message: runningMessage, startedAt, status: 'running' });
 
     try {
       const report = await postJson<BacktestReport>('/api/backtests', {
@@ -104,35 +131,57 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
         timeframe,
         exchangeId,
       });
+
+      if (!isTrustedBacktestReport(report)) {
+        setRunStatus('Report blocked');
+        setRunState({
+          details: 'The backend returned a calculated report without full candle provenance or chart series.',
+          finishedAt: new Date().toISOString(),
+          kind,
+          message: 'Backtest result rejected before display.',
+          startedAt,
+          status: 'blocked',
+        });
+        return;
+      }
+
       setReports((currentReports) => [report, ...currentReports.filter((item) => item.id !== report.id)]);
-      setRunStatus(`${report.totalTrades} trades calculated from ${report.candleCount ?? 0} candles`);
+      const successMessage = `${report.totalTrades} closed trades from ${report.candleCount ?? 0} public candles`;
+      setRunStatus(kind === 'save' ? `Report saved · ${successMessage}` : successMessage);
+      setRunState({
+        finishedAt: new Date().toISOString(),
+        kind,
+        message: `${successMessage} · ${report.dataWindow?.candleChecksum ?? 'no checksum'}`,
+        startedAt,
+        status: 'success',
+      });
     } catch (error) {
-      setRunStatus(error instanceof Error ? error.message : 'Run failed');
+      const isApiError = error instanceof ApiClientError;
+      const message = error instanceof Error ? error.message : 'Run failed';
+      const status = isApiError && error.status === 502 ? 'blocked' : 'error';
+
+      setRunStatus(status === 'blocked' ? 'Blocked' : 'Run failed');
+      setRunState({
+        details: isApiError ? error.details : undefined,
+        finishedAt: new Date().toISOString(),
+        kind,
+        message,
+        startedAt,
+        status,
+      });
     }
+  }
+
+  async function runBacktest() {
+    await executeBacktest('run');
   }
 
   async function saveReport() {
-    try {
-      const report = await postJson<BacktestReport>('/api/backtests', {
-        initialCapital,
-        period: dateRange,
-        fees,
-        exchangeId,
-        slippage,
-        strategyId,
-        symbol,
-        timeframe,
-      });
-      setReports((currentReports) => [report, ...currentReports.filter((item) => item.id !== report.id)]);
-      setRunStatus('Report saved');
-    } catch (error) {
-      setRunStatus(error instanceof Error ? error.message : 'Save failed');
-    }
+    await executeBacktest('save');
   }
 
-  function startPaperTest() {
-    setRunStatus('Paper session ready');
-  }
+  const runButtonIcon = isBacktestRunning && runState.kind === 'run' ? <Loader2 className="backtest-spin" size={15} /> : <Play size={15} />;
+  const saveButtonIcon = isBacktestRunning && runState.kind === 'save' ? <Loader2 className="backtest-spin" size={15} /> : <FileCheck2 size={15} />;
 
   return (
     <section className="backtest-page" aria-label="Backtest">
@@ -144,13 +193,13 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
         <div className="workspace-header__right">
           <Badge tone={isBinanceLive ? 'positive' : 'warning'}>{isBinanceLive ? 'Binance live' : 'Local fallback'}</Badge>
           <StrategyAgentDrawer context="backtest" reports={agentReports.filter((item) => item.strategyId === strategyId)} runs={agentRuns.filter((item) => item.strategyId === strategyId)} settings={agentSettings} strategyId={strategyId} strategyName={strategy?.name} suggestions={agentSuggestions.filter((item) => item.strategyId === strategyId)} versions={agentVersions.filter((item) => item.strategyId === strategyId)} />
-          <Button icon={<Play size={15} />} onClick={runBacktest} size="sm" variant="primary">
-            Run Backtest
+          <Button disabled={isBacktestRunning} icon={runButtonIcon} onClick={runBacktest} size="sm" variant="primary">
+            {isBacktestRunning && runState.kind === 'run' ? 'Backtest running' : 'Run Backtest'}
           </Button>
-          <Button icon={<FileCheck2 size={15} />} onClick={saveReport} size="sm" variant="ghost">
-            Save Report
+          <Button disabled={isBacktestRunning} icon={saveButtonIcon} onClick={saveReport} size="sm" variant="ghost">
+            {isBacktestRunning && runState.kind === 'save' ? 'Saving report' : 'Save Report'}
           </Button>
-          <Link className="ui-button ui-button--secondary ui-button--sm" href={`/backtest/replay?pair=${encodeURIComponent(symbol)}&strategyId=${encodeURIComponent(strategyId)}`} onClick={startPaperTest}>
+          <Link className="ui-button ui-button--secondary ui-button--sm" href={`/backtest/replay?pair=${encodeURIComponent(symbol)}&strategyId=${encodeURIComponent(strategyId)}`}>
             <span className="ui-button__icon">
               <RotateCcw size={15} />
             </span>
@@ -173,9 +222,9 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
             <span>{runStatus}</span>
           </div>
           <div className="backtest-preset-actions">
-            <Button icon={<FolderOpen size={15} />} onClick={() => setRunStatus('Preset loaded')} size="sm" variant="ghost">Load Preset</Button>
-            <Button icon={<FileCheck2 size={15} />} onClick={saveReport} size="sm" variant="ghost">Save Preset</Button>
-            <Button icon={<MoreHorizontal size={15} />} onClick={() => setRunStatus('Advanced filters ready')} size="sm" variant="ghost">More</Button>
+            <Button disabled icon={<FolderOpen size={15} />} size="sm" variant="ghost">Load Preset</Button>
+            <Button disabled icon={<FileCheck2 size={15} />} size="sm" variant="ghost">Save Preset</Button>
+            <Button disabled icon={<MoreHorizontal size={15} />} size="sm" variant="ghost">More</Button>
           </div>
         </div>
 
@@ -217,7 +266,7 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
               </option>
             ))}
           </BacktestSelect>
-          <button className="backtest-filter-button" onClick={() => setRunStatus('Advanced filters ready')} type="button" aria-label="Backtest filters">
+          <button className="backtest-filter-button" disabled type="button" aria-label="Backtest filters">
             <SlidersHorizontal size={18} />
           </button>
         </div>
@@ -228,9 +277,12 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
             {reportSourceLabel}
           </span>
           <span>{report ? `${report.candleCount ?? 0} candles` : 'Run required'}</span>
+          {report?.dataWindow ? <span>{formatRunDate(report.dataWindow.firstCandleAt)} to {formatRunDate(report.dataWindow.lastCandleAt)}</span> : null}
+          {report?.dataWindow ? <span>{report.dataWindow.candleChecksum}</span> : null}
           <span>{symbol} · {timeframe} · {dateRange}</span>
           <span>Paper only. Live orders still require Risk Engine confirmation.</span>
         </div>
+        {runState.status !== 'idle' ? <BacktestRunStateBanner state={runState} /> : null}
       </Card>
 
       {!report ? (
@@ -249,6 +301,12 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
               <span>{hiddenSeedReports} old sample report{hiddenSeedReports > 1 ? 's are' : ' is'} no longer shown as real data. Run a backtest to calculate from exchange candles.</span>
             </Card>
           ) : null}
+          {hiddenInvalidReports > 0 ? (
+            <Card className="backtest-source-note">
+              <strong>Older reports hidden</strong>
+              <span>{hiddenInvalidReports} calculated report{hiddenInvalidReports > 1 ? 's are' : ' is'} missing full candle provenance or chart series. Run again to create a trusted report.</span>
+            </Card>
+          ) : null}
         </div>
       ) : (
         <div className="backtest-dashboard-grid">
@@ -259,8 +317,8 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
                 <span>{strategy?.name ?? 'Strategy Report'} · {reportExchangeName}</span>
               </div>
               <div className="backtest-range-buttons" aria-label="Backtest range shortcuts">
-                {['1D', '1W', '1M', '3M', '6M', 'YTD', '1Y', 'All'].map((item) => (
-                  <button className={item === rangeShortcut(dateRange) ? 'is-active' : undefined} key={item} type="button">{item}</button>
+                {backtestRangeShortcuts.map((item) => (
+                  <button className={item.value === dateRange ? 'is-active' : undefined} key={item.value} onClick={() => setDateRange(item.value)} type="button">{item.label}</button>
                 ))}
               </div>
             </div>
@@ -283,7 +341,7 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
             </div>
             {report.warnings?.length ? (
               <div className="backtest-warning-strip">
-                {report.warnings.slice(0, 2).map((warning) => (
+                {report.warnings.map((warning) => (
                   <span key={warning}>{warning}</span>
                 ))}
               </div>
@@ -332,9 +390,13 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
           </Card>
 
           <Card className="backtest-actions-card">
-            <Button icon={<Play size={15} />} onClick={runBacktest} variant="primary">Run Backtest</Button>
-            <Button icon={<FileCheck2 size={15} />} onClick={saveReport} variant="ghost">Save Report</Button>
-            <Link className="ui-button ui-button--ghost" href={`/backtest/replay?pair=${encodeURIComponent(symbol)}&strategyId=${encodeURIComponent(strategyId)}`} onClick={startPaperTest}>
+            <Button disabled={isBacktestRunning} icon={runButtonIcon} onClick={runBacktest} variant="primary">
+              {isBacktestRunning && runState.kind === 'run' ? 'Backtest running' : 'Run Backtest'}
+            </Button>
+            <Button disabled={isBacktestRunning} icon={saveButtonIcon} onClick={saveReport} variant="ghost">
+              {isBacktestRunning && runState.kind === 'save' ? 'Saving report' : 'Save Report'}
+            </Button>
+            <Link className="ui-button ui-button--ghost" href={`/backtest/replay?pair=${encodeURIComponent(symbol)}&strategyId=${encodeURIComponent(strategyId)}`}>
               <span className="ui-button__icon"><RotateCcw size={15} /></span>
               <span>Paper Test</span>
             </Link>
@@ -342,6 +404,44 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
         </div>
       )}
     </section>
+  );
+}
+
+function BacktestRunStateBanner({ state }: { state: BacktestRunState }) {
+  const title =
+    state.status === 'running'
+      ? state.kind === 'save'
+        ? 'Saving report'
+        : 'Backtest running'
+      : state.status === 'success'
+        ? 'Backtest completed'
+        : state.status === 'blocked'
+          ? 'Backtest blocked'
+          : 'Backtest failed';
+  const icon =
+    state.status === 'running' ? (
+      <Loader2 className="backtest-spin" size={17} />
+    ) : state.status === 'success' ? (
+      <CheckCircle2 size={17} />
+    ) : (
+      <AlertTriangle size={17} />
+    );
+
+  return (
+    <div className={`backtest-run-state backtest-run-state--${state.status}`} role={state.status === 'running' || state.status === 'success' ? 'status' : 'alert'} aria-live="polite">
+      <span>{icon}</span>
+      <div>
+        <strong>{title}</strong>
+        <small>{state.message}</small>
+        {state.details ? <small>{state.details}</small> : null}
+        {state.startedAt ? (
+          <small>
+            Started {formatRunDate(state.startedAt)}
+            {state.finishedAt ? ` · Finished ${formatRunDate(state.finishedAt)}` : ''}
+          </small>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -412,14 +512,21 @@ function LineChartSvg({ className, fill = false, secondaryClassName, secondaryVa
 
 function TradesTable({ symbol, trades }: { symbol: string; trades: BacktestTrade[] }) {
   const [page, setPage] = useState(1);
-  const totalPages = Math.max(1, Math.ceil(trades.length / tradesPageSize));
+  const [selectedTradeId, setSelectedTradeId] = useState<string | undefined>();
+  const orderedTrades = useMemo(
+    () => [...trades].sort((left, right) => new Date(right.exitTime).getTime() - new Date(left.exitTime).getTime()),
+    [trades],
+  );
+  const totalPages = Math.max(1, Math.ceil(orderedTrades.length / tradesPageSize));
   const currentPage = Math.min(page, totalPages);
   const start = (currentPage - 1) * tradesPageSize;
-  const visibleTrades = trades.slice(start, start + tradesPageSize);
+  const visibleTrades = orderedTrades.slice(start, start + tradesPageSize);
+  const selectedTrade = orderedTrades.find((trade) => trade.id === selectedTradeId) ?? orderedTrades[0];
 
   useEffect(() => {
     setPage(1);
-  }, [trades]);
+    setSelectedTradeId(orderedTrades[0]?.id);
+  }, [orderedTrades]);
 
   return (
     <div className="backtest-trades-panel">
@@ -437,7 +544,7 @@ function TradesTable({ symbol, trades }: { symbol: string; trades: BacktestTrade
           <span>Exit Reason</span>
         </div>
         {visibleTrades.length > 0 ? visibleTrades.map((trade, index) => (
-          <div className="backtest-table__row" key={trade.id} role="row">
+          <button className={`backtest-table__row backtest-table__row--button${selectedTrade?.id === trade.id ? ' is-selected' : ''}`} key={trade.id} onClick={() => setSelectedTradeId(trade.id)} role="row" type="button">
             <span>{start + index + 1}</span>
             <span>{formatTradeDate(trade.exitTime)}</span>
             <span>{symbol}</span>
@@ -448,14 +555,16 @@ function TradesTable({ symbol, trades }: { symbol: string; trades: BacktestTrade
             <span className={trade.rMultiple >= 0 ? 'positive' : 'negative'}>{trade.rMultiple.toFixed(2)}R</span>
             <span className={trade.pnl >= 0 ? 'positive' : 'negative'}>{formatUsd(trade.pnl)}</span>
             <span>{formatExitReason(trade.exitReason)}</span>
-          </div>
+          </button>
         )) : <div className="backtest-table__empty">No trade triggered on this candle window.</div>}
       </div>
 
-      {trades.length > tradesPageSize ? (
+      {selectedTrade ? <TradeDetailPanel symbol={symbol} trade={selectedTrade} /> : null}
+
+      {orderedTrades.length > tradesPageSize ? (
         <div className="backtest-trades-pagination" aria-label="Trades pages">
           <span>
-            {start + 1}-{Math.min(start + tradesPageSize, trades.length)} / {trades.length}
+            {start + 1}-{Math.min(start + tradesPageSize, orderedTrades.length)} / {orderedTrades.length}
           </span>
           <div>
             {Array.from({ length: totalPages }, (_, index) => index + 1).map((item) => (
@@ -466,6 +575,32 @@ function TradesTable({ symbol, trades }: { symbol: string; trades: BacktestTrade
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function TradeDetailPanel({ symbol, trade }: { symbol: string; trade: BacktestTrade }) {
+  return (
+    <div className="backtest-trade-detail" aria-label="Trade detail">
+      <div className="backtest-trade-detail__head">
+        <div>
+          <strong>Trade Detail</strong>
+          <span>{symbol} · {titleCase(trade.side)} · {formatExitReason(trade.exitReason)}</span>
+        </div>
+        <Badge tone={trade.status === 'win' ? 'positive' : 'negative'}>{titleCase(trade.status)}</Badge>
+      </div>
+      <div className="backtest-trade-detail__grid">
+        <SummaryMetric label="Entry" value={formatUsd(trade.entry)} />
+        <SummaryMetric label="Exit" value={formatUsd(trade.exit)} />
+        <SummaryMetric label="PnL" tone={trade.pnl >= 0 ? 'positive' : 'negative'} value={formatUsd(trade.pnl)} />
+        <SummaryMetric label="R Multiple" tone={trade.rMultiple >= 0 ? 'positive' : 'negative'} value={`${trade.rMultiple.toFixed(2)}R`} />
+        <SummaryMetric label="Size" value={trade.size.toFixed(4)} />
+        <SummaryMetric label="Fees" value={formatUsd(trade.fee)} />
+        <SummaryMetric label="Entry Time" value={formatTradeDateTime(trade.entryTime)} />
+        <SummaryMetric label="Exit Time" value={formatTradeDateTime(trade.exitTime)} />
+        <SummaryMetric label="Duration" value={formatDuration(trade.entryTime, trade.exitTime)} />
+      </div>
+      <small>{trade.id}</small>
     </div>
   );
 }
@@ -499,11 +634,13 @@ function Distribution({ values }: { values: number[] }) {
 
 function DrawdownPanel({ values }: { values: number[] }) {
   const worst = Math.min(...values);
+  const current = values[values.length - 1] ?? 0;
 
   return (
     <div className="drawdown-panel">
       <SummaryMetric label="Worst Drawdown" tone="negative" value={`${worst.toFixed(1)}%`} />
-      <SummaryMetric label="Recovery" value="6 sessions" />
+      <SummaryMetric label="Current Drawdown" tone={current < 0 ? 'negative' : 'neutral'} value={`${current.toFixed(1)}%`} />
+      <SummaryMetric label="Curve Points" value={String(values.length)} />
       <SummaryMetric label="Risk State" tone={worst < -10 ? 'warning' : 'positive'} value={worst < -10 ? 'Review' : 'Allowed'} />
     </div>
   );
@@ -520,66 +657,53 @@ function ChartAnalysis({ pair, report }: { pair?: MarketPair; report?: BacktestR
   );
 }
 
-function buildEquitySeries(initialCapital: number, netProfit: number, runIndex: number) {
-  return Array.from({ length: 28 }, (_, index) => {
-    const progress = index / 27;
-    const drift = netProfit * progress;
-    const wave = Math.sin(index * 0.9 + runIndex * 0.4) * Math.max(Math.abs(netProfit) * 0.08, initialCapital * 0.006);
-
-    return initialCapital + drift + wave;
-  });
-}
-
-function buildBuyHoldSeries(equitySeries: number[], initialCapital: number) {
-  return equitySeries.map((_, index) => {
-    const progress = index / Math.max(equitySeries.length - 1, 1);
-    const drift = initialCapital * 0.08 * progress;
-    const wave = Math.sin(index * 0.55) * initialCapital * 0.004;
-
-    return initialCapital + drift + wave;
-  });
-}
-
-function buildDrawdownSeries(drawdown: number) {
-  return Array.from({ length: 28 }, (_, index) => {
-    const wave = Math.sin(index * 0.82) * Math.abs(drawdown) * 0.22;
-    const trend = -Math.abs(drawdown) * (0.16 + (index % 9) / 12);
-
-    return Math.min(0, trend + wave);
-  });
-}
-
-function rangeShortcut(dateRange: string) {
-  if (dateRange === '30D') {
-    return '1M';
-  }
-
-  if (dateRange === '90D') {
-    return '3M';
-  }
-
-  if (dateRange === '180D') {
-    return '6M';
-  }
-
-  return '1Y';
-}
-
-function buildMonthlyReturns(totalReturn: number) {
-  const labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'];
-
-  return labels.map((label, index) => ({
-    label,
-    value: totalReturn / labels.length + Math.sin(index * 1.4) * 1.1,
-  }));
+function isTrustedBacktestReport(report: BacktestReport) {
+  return (
+    report.source === 'calculated' &&
+    (report.marketDataSource === 'binance-live' || Boolean(report.marketDataSource?.endsWith('-public-rest'))) &&
+    report.engine === 'jimmy-pine-v5-candle-engine' &&
+    Boolean(report.dataWindow?.candleChecksum) &&
+    Boolean(report.dataWindow?.firstCandleAt) &&
+    Boolean(report.dataWindow?.lastCandleAt) &&
+    Number.isFinite(report.candleCount) &&
+    Array.isArray(report.equityCurve) &&
+    report.equityCurve.length > 0 &&
+    Array.isArray(report.buyHoldCurve) &&
+    report.buyHoldCurve.length > 0 &&
+    Array.isArray(report.drawdownCurve) &&
+    report.drawdownCurve.length > 0 &&
+    Array.isArray(report.monthlyReturns) &&
+    Array.isArray(report.trades)
+  );
 }
 
 function formatTradeDate(value: string) {
   return new Intl.DateTimeFormat('en-US', { day: '2-digit', hour: '2-digit', minute: '2-digit', month: 'short' }).format(new Date(value));
 }
 
+function formatTradeDateTime(value: string) {
+  return new Intl.DateTimeFormat('en-US', { day: '2-digit', hour: '2-digit', minute: '2-digit', month: 'short', year: '2-digit' }).format(new Date(value));
+}
+
 function formatRunDate(value: string) {
   return new Intl.DateTimeFormat('fr-FR', { day: '2-digit', hour: '2-digit', minute: '2-digit', month: '2-digit', second: '2-digit' }).format(new Date(value));
+}
+
+function formatDuration(start: string, end: string) {
+  const minutes = Math.max(0, Math.round((new Date(end).getTime() - new Date(start).getTime()) / 60000));
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const remainingMinutes = minutes % 60;
+
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
+
+  if (hours > 0) {
+    return `${hours}h ${remainingMinutes}m`;
+  }
+
+  return `${remainingMinutes}m`;
 }
 
 function titleCase(value: string) {
@@ -594,6 +718,10 @@ function formatExitReason(value: BacktestTrade['exitReason']) {
 }
 
 function buildDistribution(values: number[]) {
+  if (!values.length) {
+    return [];
+  }
+
   const min = Math.min(...values);
   const max = Math.max(...values);
   const range = max - min || 1;

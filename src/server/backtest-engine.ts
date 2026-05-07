@@ -57,9 +57,8 @@ export function runBacktestFromCandles(input: RunBacktestInput): BacktestReport 
     warnings.push(`Only ${candles.length} candles available. Results need more history before promotion.`);
   }
 
-  const effectiveLongMa = Math.min(profile.longMaLength, Math.max(30, Math.floor(candles.length * 0.62)));
-  if (effectiveLongMa < profile.longMaLength && isJimmyStrategy(input.strategy)) {
-    warnings.push(`MA ${profile.longMaLength} approximated with MA ${effectiveLongMa} because the current candle window is shorter than ${profile.longMaLength} bars.`);
+  if (candles.length < profile.longMaLength && isJimmyStrategy(input.strategy)) {
+    warnings.push(`MA ${profile.longMaLength} needs ${profile.longMaLength} candles; MA-based jimmy checks stay inactive until enough live candles exist.`);
   }
 
   const closes = candles.map((candle) => candle.close);
@@ -68,7 +67,7 @@ export function runBacktestFromCandles(input: RunBacktestInput): BacktestReport 
   const volumes = candles.map((candle) => candle.volume);
   const fastMa = ema(closes, profile.fastMaLength);
   const slowMa = ema(closes, profile.slowMaLength);
-  const longMa = sma(closes, effectiveLongMa);
+  const longMa = sma(closes, profile.longMaLength);
   const trix = trixSeries(closes, profile.trixLength);
   const trixSignal = sma(trix, profile.trixSignalLength);
   const rsiValues = rsi(closes, profile.rsiLength);
@@ -76,9 +75,9 @@ export function runBacktestFromCandles(input: RunBacktestInput): BacktestReport 
   const volumeMa = sma(volumes, profile.donchianLength);
   const upper = rollingMax(highs, profile.donchianLength);
   const lower = rollingMin(lows, profile.donchianLength);
+  const warmupBars = Math.max(profile.slowMaLength, profile.donchianLength, profile.rsiLength + 1, profile.atrLength, profile.trixLength * 3 + profile.trixSignalLength);
 
   let equity = input.initialCapital;
-  let peakEquity = equity;
   let openTrade: OpenTrade | undefined;
   let drawdownEvent = false;
   let drawupEvent = false;
@@ -102,7 +101,7 @@ export function runBacktestFromCandles(input: RunBacktestInput): BacktestReport 
       }
     }
 
-    if (!openTrade && index > Math.max(22, Math.min(effectiveLongMa, candles.length - 2))) {
+    if (!openTrade && index > warmupBars) {
       const signal = entrySignal({
         candleIndex: index,
         candles,
@@ -145,43 +144,66 @@ export function runBacktestFromCandles(input: RunBacktestInput): BacktestReport 
     }
 
     const markEquity = openTrade ? equity + unrealizedPnl(openTrade, candle.close) : equity;
-    peakEquity = Math.max(peakEquity, markEquity);
     equityCurve.push(roundMoney(markEquity));
-  }
-
-  if (openTrade && candles.length > 1) {
-    const lastIndex = candles.length - 1;
-    const trade = closeTrade(input.strategy.id, candles, openTrade, lastIndex, candles[lastIndex].close, 'session-end', feeRate);
-    equity += trade.pnl;
-    trades.push(trade);
-    equityCurve[equityCurve.length - 1] = roundMoney(equity);
   }
 
   const drawdownCurve = buildDrawdownCurve(equityCurve.length ? equityCurve : [input.initialCapital]);
   const buyHoldCurve = buildBuyHoldCurve(candles, input.initialCapital);
-  const winningTrades = trades.filter((trade) => trade.pnl > 0);
-  const losingTrades = trades.filter((trade) => trade.pnl < 0);
+  const winningTrades = trades.filter((trade) => trade.status === 'win');
+  const losingTrades = trades.filter((trade) => trade.status === 'loss');
   const grossWin = winningTrades.reduce((sum, trade) => sum + trade.pnl, 0);
   const grossLoss = Math.abs(losingTrades.reduce((sum, trade) => sum + trade.pnl, 0));
-  const netProfit = roundMoney(equity - input.initialCapital);
+  const finalEquity = equityCurve[equityCurve.length - 1] ?? equity;
+  const netProfit = roundMoney(finalEquity - input.initialCapital);
+  const firstCandle = candles[0];
+  const lastCandle = candles[candles.length - 1];
+  const openPosition =
+    openTrade && lastCandle
+      ? {
+          entry: roundMarketValue(openTrade.entry),
+          entryTime: openTrade.entryTime,
+          markPrice: roundMarketValue(lastCandle.close),
+          side: openTrade.side,
+          size: roundMarketValue(openTrade.size),
+          stop: roundMarketValue(openTrade.stop),
+          trail: roundMarketValue(openTrade.trail),
+          unrealizedPnl: roundMoney(unrealizedPnl(openTrade, lastCandle.close)),
+        }
+      : undefined;
+
+  if (openPosition) {
+    warnings.push('One position remained open on the last candle; it is marked to market and excluded from closed-trade rows.');
+  }
 
   return {
     buyHoldCurve: downsample(buyHoldCurve, 80),
     buyHoldReturn: buyHoldCurve.length ? roundMoney(((buyHoldCurve[buyHoldCurve.length - 1] - input.initialCapital) / input.initialCapital) * 100) : 0,
     candleCount: candles.length,
+    dataWindow:
+      firstCandle && lastCandle
+        ? {
+            candleChecksum: candleChecksum(candles),
+            firstCandleAt: isoTime(firstCandle.time),
+            lastCandleAt: isoTime(lastCandle.time),
+          }
+        : undefined,
     drawdown: roundMoney(Math.min(0, ...drawdownCurve)),
     drawdownCurve: downsample(drawdownCurve, 80),
+    engine: 'jimmy-pine-v5-candle-engine',
     equityCurve: downsample(equityCurve.length ? equityCurve : [input.initialCapital], 80),
+    executionModel: 'Signals are evaluated from exchange OHLCV candles; entries use candle close with configured slippage, exits use candle high/low against ATR stop, ATR trail, take-profit and MA cross.',
     exchangeId: input.exchangeId,
     exchangeName: input.exchangeName,
     feesPct: input.feesPct,
     generatedAt: new Date().toISOString(),
     id: `bt-calc-${slug(input.strategy.id)}-${slug(input.symbol)}-${slug(input.timeframe)}-${slug(input.period)}-${Date.now()}`,
     initialCapital: input.initialCapital,
+    losingTrades: losingTrades.length,
     market: input.symbol,
     marketDataSource: input.marketDataSource,
     monthlyReturns: buildPeriodReturns(equityCurve.length ? equityCurve : [input.initialCapital], input.initialCapital),
     netProfit,
+    openPosition,
     period: input.period,
     profitFactor: grossLoss > 0 ? roundMoney(grossWin / grossLoss) : winningTrades.length ? roundMoney(grossWin) : 0,
     slippagePct: input.slippagePct,
@@ -189,9 +211,10 @@ export function runBacktestFromCandles(input: RunBacktestInput): BacktestReport 
     strategyId: input.strategy.id,
     timeframe: input.timeframe,
     totalTrades: trades.length,
-    trades: trades.slice(-80),
+    trades,
     warnings,
     winRate: trades.length ? roundMoney((winningTrades.length / trades.length) * 100) : 0,
+    winningTrades: winningTrades.length,
   };
 }
 
@@ -230,7 +253,8 @@ function entrySignal(input: {
   const previousUpper = input.upper[index - 1] ?? Infinity;
   const previousLower = input.lower[index - 1] ?? 0;
   const rsiValue = input.rsiValues[index] ?? 50;
-  const longMaValue = input.longMa[index] ?? candle.close;
+  const longMaValue = input.longMa[index];
+  const hasLongMa = Number.isFinite(longMaValue);
   const trixCross = (input.trix[index - 1] ?? 0) <= (input.trixSignal[index - 1] ?? 0) && (input.trix[index] ?? 0) > (input.trixSignal[index] ?? 0);
   const trixCrossUnder = (input.trix[index - 1] ?? 0) >= (input.trixSignal[index - 1] ?? 0) && (input.trix[index] ?? 0) < (input.trixSignal[index] ?? 0);
   const drawdownPct = currentDrawdownPct(input.candles, index, input.profile.drawdownLookback);
@@ -250,9 +274,9 @@ function entrySignal(input: {
 
   if (isJimmyStrategy(input.strategy)) {
     const longCondition =
-      bullish && ((trixCross && candle.close > longMaValue) || candle.close > previousUpper || rsiValue < input.profile.rsiOversold || drawdownRecovery);
+      bullish && ((hasLongMa && trixCross && candle.close > longMaValue) || candle.close > previousUpper || rsiValue < input.profile.rsiOversold || drawdownRecovery);
     const shortCondition =
-      bearish && ((trixCrossUnder && candle.close < longMaValue) || candle.close < previousLower || rsiValue > input.profile.rsiOverbought || drawupRecovery);
+      bearish && ((hasLongMa && trixCrossUnder && candle.close < longMaValue) || candle.close < previousLower || rsiValue > input.profile.rsiOverbought || drawupRecovery);
 
     if (longCondition) {
       return { drawdownEvent, drawupEvent, side: 'long' };
@@ -565,6 +589,21 @@ function downsample(values: number[], target: number) {
 
 function isoTime(time: number) {
   return new Date(time * 1000).toISOString();
+}
+
+function candleChecksum(candles: Candle[]) {
+  let hash = 2166136261;
+
+  for (const candle of candles) {
+    const row = `${candle.time}:${candle.open}:${candle.high}:${candle.low}:${candle.close}:${candle.volume}`;
+
+    for (let index = 0; index < row.length; index += 1) {
+      hash ^= row.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+  }
+
+  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
 function roundMoney(value: number) {

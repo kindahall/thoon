@@ -2,6 +2,23 @@ type RequestOptions = {
   method?: 'DELETE' | 'GET' | 'PATCH' | 'POST';
 };
 
+type ApiErrorPayload = {
+  details?: string;
+  error?: string;
+};
+
+export class ApiClientError extends Error {
+  details?: string;
+  status: number;
+
+  constructor(message: string, status: number, details?: string) {
+    super(message);
+    this.name = 'ApiClientError';
+    this.status = status;
+    this.details = details;
+  }
+}
+
 export async function apiJson<T>(path: string, body?: unknown, options: RequestOptions = {}): Promise<T> {
   const response = await fetch(path, {
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -10,12 +27,13 @@ export async function apiJson<T>(path: string, body?: unknown, options: RequestO
     method: options.method ?? (body === undefined ? 'GET' : 'POST'),
   });
 
-  const payload = (await response.json().catch(() => null)) as { error?: string } | T | null;
+  const payload = (await response.json().catch(() => null)) as ApiErrorPayload | T | null;
 
   if (!response.ok) {
     const errorMessage = typeof payload === 'object' && payload !== null && 'error' in payload ? payload.error : undefined;
+    const errorDetails = typeof payload === 'object' && payload !== null && 'details' in payload ? payload.details : undefined;
 
-    throw new Error(errorMessage || `Request failed: ${response.status}`);
+    throw new ApiClientError(errorMessage || `Request failed: ${response.status}`, response.status, errorDetails);
   }
 
   return payload as T;

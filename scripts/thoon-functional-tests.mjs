@@ -154,9 +154,22 @@ test('bot, strategy, backtest and paper flows expose functional states', async (
     method: 'POST',
   });
   const runBody = await run.text();
+  const runJson = JSON.parse(runBody);
   assertStatus(run, 201, 'Backtest run returns calculated report');
   assertIncludes(runBody, '"source":"calculated"', 'Backtest report is calculated, not seeded');
   assertIncludes(runBody, '"trades"', 'Backtest report includes trade list');
+  assertEqual(runJson.engine, 'jimmy-pine-v5-candle-engine', 'Backtest report stores the real engine identity');
+  assert(runJson.dataWindow?.candleChecksum, 'Backtest report stores candle checksum provenance');
+  assert(Array.isArray(runJson.equityCurve) && runJson.equityCurve.length > 0, 'Backtest report stores calculated equity curve');
+  assert(Array.isArray(runJson.drawdownCurve) && runJson.drawdownCurve.length > 0, 'Backtest report stores calculated drawdown curve');
+  assert(!runJson.trades.some((trade) => trade.exitReason === 'session-end'), 'Backtest does not close open positions artificially at session end');
+
+  const backtestSource = await readSource('src/screens/backtest/BacktestPage.tsx');
+  assertIncludes(backtestSource, 'Backtest running', 'Backtest button exposes a running state');
+  assertIncludes(backtestSource, 'Backtest blocked', 'Backtest UI exposes blocked state');
+  assertIncludes(backtestSource, 'isTrustedBacktestReport', 'Backtest UI rejects incomplete report data');
+  assertIncludes(backtestSource, 'sort((left, right) => new Date(right.exitTime)', 'Trades are displayed newest first');
+  assertIncludes(backtestSource, 'TradeDetailPanel', 'Trade rows expose a detail panel');
 
   const backtest = await fetchPage('/backtest?strategyId=strat-jimmy');
   assertIncludes(backtest, 'Equity Curve', 'Backtest displays results');

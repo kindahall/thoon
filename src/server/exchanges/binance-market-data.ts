@@ -112,7 +112,7 @@ export async function getBinanceMarketCandles(seedPairs: MarketPair[], symbol: s
   }
 
   if (options.strict) {
-    return fetchCandles(pair, toBinanceSymbol(pair.symbol), timeframe, requestedLimit);
+    return fetchCandles(pair, toBinanceSymbol(pair.symbol), timeframe, requestedLimit, { strict: true });
   }
 
   return fetchCandles(pair, toBinanceSymbol(pair.symbol), timeframe, requestedLimit).catch(() => deriveFallbackCandles(pair.candles, timeframe));
@@ -155,7 +155,7 @@ async function enrichPairsWithBinance(seedPairs: MarketPair[], tickerMap: Map<st
   return pairResults.map((result, index) => (result.status === 'fulfilled' ? result.value : seedPairs[index]));
 }
 
-async function fetchCandles(pair: MarketPair, binanceSymbol: string, timeframe: Timeframe, requestedLimit?: number): Promise<Candle[]> {
+async function fetchCandles(pair: MarketPair, binanceSymbol: string, timeframe: Timeframe, requestedLimit?: number, options: { strict?: boolean } = {}): Promise<Candle[]> {
   const { marketKlineLimit } = getThoonServerEnv();
   const interval = timeframeIntervals[timeframe] ?? '15m';
   const limit = Math.max(1, Math.floor(requestedLimit ?? marketKlineLimit));
@@ -191,12 +191,12 @@ async function fetchCandles(pair: MarketPair, binanceSymbol: string, timeframe: 
   }
 
   const candles = pages.flat().map((kline) => ({
-    close: asMarketNumber(kline[4], pair.lastPrice),
-    high: asMarketNumber(kline[2], pair.lastPrice),
-    low: asMarketNumber(kline[3], pair.lastPrice),
-    open: asMarketNumber(kline[1], pair.lastPrice),
+    close: marketNumber(kline[4], pair.lastPrice, 'close', options.strict),
+    high: marketNumber(kline[2], pair.lastPrice, 'high', options.strict),
+    low: marketNumber(kline[3], pair.lastPrice, 'low', options.strict),
+    open: marketNumber(kline[1], pair.lastPrice, 'open', options.strict),
     time: Math.floor(kline[0] / 1000),
-    volume: asMarketNumber(kline[5], 0),
+    volume: marketNumber(kline[5], 0, 'volume', options.strict),
   }));
 
   return timeframe === '1y' ? aggregateCandles(candles, 12) : candles;
@@ -262,6 +262,20 @@ function asMarketNumber(value: string, fallback: number) {
   const parsed = Number(value);
 
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function marketNumber(value: string, fallback: number, label: string, strict = false) {
+  const parsed = Number(value);
+
+  if (Number.isFinite(parsed) && (!strict || label === 'volume' || parsed > 0)) {
+    return parsed;
+  }
+
+  if (strict) {
+    throw new Error(`Invalid Binance candle ${label}: ${value}`);
+  }
+
+  return fallback;
 }
 
 function deriveFallbackCandles(candles: Candle[], timeframe: Timeframe) {

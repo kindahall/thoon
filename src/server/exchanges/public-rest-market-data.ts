@@ -103,55 +103,64 @@ export function hasPublicRestMarketData(exchangeId: string | undefined) {
   return exchangeId ? publicExchangeIds.has(exchangeId) : false;
 }
 
-export async function getPublicRestMarketCandles(seedPairs: MarketPair[], symbol: string, timeframe: Timeframe, exchangeId: string): Promise<Candle[]> {
+export async function getPublicRestMarketCandles(seedPairs: MarketPair[], symbol: string, timeframe: Timeframe, exchangeId: string, requestedLimit?: number, options: { strict?: boolean } = {}): Promise<Candle[]> {
   const pair = seedPairs.find((item) => item.symbol === symbol);
 
   if (!pair || !hasPublicRestMarketData(exchangeId)) {
+    if (options.strict) {
+      throw new Error(`${exchangeId} public REST candles are not available for ${symbol}.`);
+    }
+
     return [];
   }
 
   try {
     switch (exchangeId as ExchangeId) {
       case 'bybit':
-        return await getBybitMarketCandles(seedPairs, symbol, timeframe);
+        return await getBybitMarketCandles(seedPairs, symbol, timeframe, requestedLimit, options);
       case 'okx':
-        return await getOkxMarketCandles(pair, timeframe);
+        return await getOkxMarketCandles(pair, timeframe, requestedLimit, options);
       case 'bitget':
-        return await getBitgetMarketCandles(pair, timeframe);
+        return await getBitgetMarketCandles(pair, timeframe, requestedLimit, options);
       case 'kraken':
-        return await getKrakenMarketCandles(pair, timeframe);
+        return await getKrakenMarketCandles(pair, timeframe, options);
       case 'kucoin':
-        return await getKucoinMarketCandles(pair, timeframe);
+        return await getKucoinMarketCandles(pair, timeframe, options);
       case 'coinbase-advanced':
-        return await getCoinbaseMarketCandles(pair, timeframe);
+        return await getCoinbaseMarketCandles(pair, timeframe, options);
     }
-  } catch {
+  } catch (error) {
+    if (options.strict) {
+      throw error;
+    }
+
     return [];
   }
 }
 
-async function getOkxMarketCandles(pair: MarketPair, timeframe: Timeframe) {
+async function getOkxMarketCandles(pair: MarketPair, timeframe: Timeframe, requestedLimit?: number, options: { strict?: boolean } = {}) {
   const { marketKlineLimit, okxMarketBaseUrl } = getThoonServerEnv();
   const response = await fetchExchangeJson<OkxCandlesResponse>(okxMarketBaseUrl, '/api/v5/market/candles', {
     bar: okxIntervals[timeframe],
     instId: toDashedSymbol(pair.symbol, { 'RNDR/USDT': 'RENDER-USDT' }),
-    limit: String(marketKlineLimit),
+    limit: String(Math.max(1, Math.floor(requestedLimit ?? marketKlineLimit))),
   });
 
   if (response.code !== '0' || !response.data) {
     throw new Error(`OKX candles failed: ${response.msg || response.code}`);
   }
 
-  const candles = response.data.map((item) => candleFromOhlcv({ close: item[4], high: item[2], low: item[3], open: item[1], time: Number(item[0]) / 1000, volume: item[5] })).reverse();
+  const candles = response.data.map((item) => candleFromOhlcv({ close: item[4], high: item[2], low: item[3], open: item[1], time: Number(item[0]) / 1000, volume: item[5] }, options)).reverse();
 
   return timeframe === '1y' ? aggregateCandles(candles, 12) : candles;
 }
 
-async function getBitgetMarketCandles(pair: MarketPair, timeframe: Timeframe) {
+async function getBitgetMarketCandles(pair: MarketPair, timeframe: Timeframe, requestedLimit?: number, options: { strict?: boolean } = {}) {
   const { bitgetMarketBaseUrl, marketKlineLimit } = getThoonServerEnv();
+  const limit = Math.max(1, Math.floor(requestedLimit ?? marketKlineLimit));
   const response = await fetchExchangeJson<BitgetCandlesResponse>(bitgetMarketBaseUrl, '/api/v2/spot/market/candles', {
     granularity: bitgetIntervals[timeframe],
-    limit: String(timeframe === '2h' ? marketKlineLimit * 2 : marketKlineLimit),
+    limit: String(timeframe === '2h' ? limit * 2 : limit),
     symbol: toCompactSymbol(pair.symbol, { 'RNDR/USDT': 'RENDERUSDT' }),
   });
 
@@ -159,7 +168,7 @@ async function getBitgetMarketCandles(pair: MarketPair, timeframe: Timeframe) {
     throw new Error(`Bitget candles failed: ${response.msg || response.code}`);
   }
 
-  const candles = response.data.map((item) => candleFromOhlcv({ close: item[4], high: item[2], low: item[3], open: item[1], time: Number(item[0]) / 1000, volume: item[5] })).reverse();
+  const candles = response.data.map((item) => candleFromOhlcv({ close: item[4], high: item[2], low: item[3], open: item[1], time: Number(item[0]) / 1000, volume: item[5] }, options)).reverse();
 
   if (timeframe === '2h') {
     return aggregateCandles(candles, 2);
@@ -168,7 +177,7 @@ async function getBitgetMarketCandles(pair: MarketPair, timeframe: Timeframe) {
   return timeframe === '1y' ? aggregateCandles(candles, 12) : candles;
 }
 
-async function getKrakenMarketCandles(pair: MarketPair, timeframe: Timeframe) {
+async function getKrakenMarketCandles(pair: MarketPair, timeframe: Timeframe, options: { strict?: boolean } = {}) {
   const { krakenMarketBaseUrl } = getThoonServerEnv();
   const response = await fetchExchangeJson<KrakenOhlcResponse>(krakenMarketBaseUrl, '/0/public/OHLC', {
     interval: String(krakenIntervals[timeframe]),
@@ -183,12 +192,16 @@ async function getKrakenMarketCandles(pair: MarketPair, timeframe: Timeframe) {
   const rawCandles = resultKey ? response.result[resultKey] : undefined;
 
   if (!Array.isArray(rawCandles)) {
+    if (options.strict) {
+      throw new Error('Kraken OHLC response did not include candle rows.');
+    }
+
     return [];
   }
 
   const candles = rawCandles
     .filter(Array.isArray)
-    .map((item) => candleFromOhlcv({ close: String(item[4]), high: String(item[2]), low: String(item[3]), open: String(item[1]), time: Number(item[0]), volume: String(item[6]) }));
+    .map((item) => candleFromOhlcv({ close: String(item[4]), high: String(item[2]), low: String(item[3]), open: String(item[1]), time: Number(item[0]), volume: String(item[6]) }, options));
 
   if (timeframe === '2h') {
     return aggregateCandles(candles, 2);
@@ -205,7 +218,7 @@ async function getKrakenMarketCandles(pair: MarketPair, timeframe: Timeframe) {
   return candles;
 }
 
-async function getKucoinMarketCandles(pair: MarketPair, timeframe: Timeframe) {
+async function getKucoinMarketCandles(pair: MarketPair, timeframe: Timeframe, options: { strict?: boolean } = {}) {
   const { kucoinMarketBaseUrl } = getThoonServerEnv();
   const response = await fetchExchangeJson<KucoinCandlesResponse>(kucoinMarketBaseUrl, '/api/v1/market/candles', {
     symbol: toDashedSymbol(pair.symbol),
@@ -216,12 +229,12 @@ async function getKucoinMarketCandles(pair: MarketPair, timeframe: Timeframe) {
     throw new Error(`KuCoin candles failed: ${response.msg || response.code}`);
   }
 
-  const candles = response.data.map((item) => candleFromOhlcv({ close: item[2], high: item[3], low: item[4], open: item[1], time: Number(item[0]), volume: item[5] })).reverse();
+  const candles = response.data.map((item) => candleFromOhlcv({ close: item[2], high: item[3], low: item[4], open: item[1], time: Number(item[0]), volume: item[5] }, options)).reverse();
 
   return timeframe === '1y' ? aggregateCandles(candles, 12) : candles;
 }
 
-async function getCoinbaseMarketCandles(pair: MarketPair, timeframe: Timeframe) {
+async function getCoinbaseMarketCandles(pair: MarketPair, timeframe: Timeframe, options: { strict?: boolean } = {}) {
   const { coinbaseAdvancedMarketBaseUrl } = getThoonServerEnv();
   const productIds = coinbaseProductCandidates(pair.symbol);
   let lastError: unknown;
@@ -231,7 +244,7 @@ async function getCoinbaseMarketCandles(pair: MarketPair, timeframe: Timeframe) 
       const response = await fetchExchangeJson<Array<[number, number, number, number, number, number]>>(coinbaseAdvancedMarketBaseUrl, `/products/${productId}/candles`, {
         granularity: String(coinbaseGranularities[timeframe]),
       });
-      const candles = response.map((item) => candleFromOhlcv({ close: String(item[4]), high: String(item[2]), low: String(item[1]), open: String(item[3]), time: item[0], volume: String(item[5]) })).reverse();
+      const candles = response.map((item) => candleFromOhlcv({ close: String(item[4]), high: String(item[2]), low: String(item[1]), open: String(item[3]), time: item[0], volume: String(item[5]) }, options)).reverse();
 
       return aggregateCoinbaseCandles(candles, timeframe);
     } catch (error) {
@@ -262,14 +275,14 @@ async function fetchExchangeJson<T>(baseUrl: string, path: string, params: Recor
   return (await response.json()) as T;
 }
 
-function candleFromOhlcv(input: { close: string; high: string; low: string; open: string; time: number; volume: string }): Candle {
+function candleFromOhlcv(input: { close: string; high: string; low: string; open: string; time: number; volume: string }, options: { strict?: boolean } = {}): Candle {
   return {
-    close: asMarketNumber(input.close, 0),
-    high: asMarketNumber(input.high, 0),
-    low: asMarketNumber(input.low, 0),
-    open: asMarketNumber(input.open, 0),
-    time: Math.floor(input.time),
-    volume: asMarketNumber(input.volume, 0),
+    close: marketNumber(input.close, 'close', options.strict),
+    high: marketNumber(input.high, 'high', options.strict),
+    low: marketNumber(input.low, 'low', options.strict),
+    open: marketNumber(input.open, 'open', options.strict),
+    time: Math.floor(marketTime(input.time, options.strict)),
+    volume: marketNumber(input.volume, 'volume', options.strict),
   };
 }
 
@@ -318,10 +331,30 @@ function coinbaseProductCandidates(symbol: string) {
   return Array.from(new Set(candidates));
 }
 
-function asMarketNumber(value: string, fallback: number) {
+function marketNumber(value: string, label: string, strict = false) {
   const parsed = Number(value);
 
-  return Number.isFinite(parsed) ? parsed : fallback;
+  if (Number.isFinite(parsed) && (!strict || label === 'volume' || parsed > 0)) {
+    return parsed;
+  }
+
+  if (strict) {
+    throw new Error(`Invalid public REST candle ${label}: ${value}`);
+  }
+
+  return 0;
+}
+
+function marketTime(value: number, strict = false) {
+  if (Number.isFinite(value)) {
+    return value;
+  }
+
+  if (strict) {
+    throw new Error(`Invalid public REST candle time: ${value}`);
+  }
+
+  return 0;
 }
 
 function aggregateCandles(candles: Candle[], groupSize: number) {
