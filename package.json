@@ -1,0 +1,40 @@
+{
+  "name": "thoon",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev -H 127.0.0.1",
+    "build": "next build",
+    "db:migrate": "node scripts/thoon-db-migrate.mjs",
+    "db:pull": "node scripts/thoon-db-pull.mjs",
+    "db:push": "node scripts/thoon-db-push.mjs",
+    "start": "next start -H 127.0.0.1",
+    "test": "node scripts/thoon-functional-tests.mjs",
+    "auth:hash": "node scripts/thoon-auth-hash.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "lightweight-charts": "^5.2.0",
+    "lucide-react": "^1.14.0",
+    "next": "^16.2.4",
+    "pg": "^8.20.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5"
+  },
+  "overrides": {
+    "postcss": "8.5.14"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "25.6.0",
+    "@types/pg": "^8.20.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "eslint": "^10.3.0",
+    "globals": "^17.6.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.2"
+  }
+}
