@@ -785,8 +785,19 @@ async function postHandler(request: NextRequest, context: RouteContext) {
     const timeframe = isTimeframe(body.timeframe) ? body.timeframe : strategy.timeframe;
     const exchangeId = asString(body.exchangeId) || 'binance';
     const exchange = db.exchangeRecords.find((record) => record.id === exchangeId);
-    const [candles, marketSnapshot] = await Promise.all([getMarketCandles(symbol, timeframe, exchangeId, desiredBacktestCandleLimit(period, timeframe)), getMarketDataSnapshot()]);
+    let candles;
 
+    try {
+      candles = await getMarketCandles(symbol, timeframe, exchangeId, desiredBacktestCandleLimit(period, timeframe), { strict: true });
+    } catch (error) {
+      return json(
+        {
+          error: `${exchange?.name ?? exchangeId} live candles unavailable for ${symbol} ${timeframe}. Backtest was not saved because fallback/local candles are forbidden.`,
+          details: error instanceof Error ? error.message : 'Unknown candle fetch error.',
+        },
+        502,
+      );
+    }
     if (candles.length < 40) {
       return json({ error: `${exchange?.name ?? exchangeId} did not return enough candles for ${symbol} ${timeframe}.` }, 502);
     }
@@ -797,7 +808,7 @@ async function postHandler(request: NextRequest, context: RouteContext) {
       exchangeName: exchange?.name ?? exchangeId,
       feesPct: positiveValue(body.fees, 0.06),
       initialCapital: positiveValue(body.initialCapital, 10000),
-      marketDataSource: exchangeId === 'binance' ? (marketSnapshot.status.provider === 'binance' && marketSnapshot.status.live ? 'binance-live' : 'local-fallback') : `${exchangeId}-live`,
+      marketDataSource: exchangeId === 'binance' ? 'binance-live' : `${exchangeId}-public-rest`,
       period,
       slippagePct: positiveValue(body.slippage, 0.02),
       strategy,
@@ -1534,15 +1545,20 @@ async function agentAction(body: Record<string, unknown>) {
     const strategy = strategyId ? db.strategyRecords.find((item) => item.id === strategyId) : undefined;
 
     if (strategy) {
-      const [candles, marketSnapshot] = await Promise.all([getMarketCandles(strategy.market, strategy.timeframe, 'binance', desiredBacktestCandleLimit('90D', strategy.timeframe)), getMarketDataSnapshot()]);
+      let candles;
 
+      try {
+        candles = await getMarketCandles(strategy.market, strategy.timeframe, 'binance', desiredBacktestCandleLimit('90D', strategy.timeframe), { strict: true });
+      } catch (error) {
+        throw new ApiError(error instanceof Error ? error.message : 'Live Binance candles unavailable for agent backtest.', 502);
+      }
       agentBacktestReport = runBacktestFromCandles({
         candles,
         exchangeId: 'binance',
         exchangeName: 'Binance',
         feesPct: 0.06,
         initialCapital: strategy.riskSettings?.accountBalance ?? 10000,
-        marketDataSource: marketSnapshot.status.provider === 'binance' && marketSnapshot.status.live ? 'binance-live' : 'local-fallback',
+        marketDataSource: 'binance-live',
         period: '90D',
         slippagePct: 0.02,
         strategy,

@@ -25,12 +25,12 @@ export async function getMarketOverview() {
   return (await getMarketDataSnapshot()).overview;
 }
 
-export async function getMarketCandles(symbol: string, timeframe: Timeframe, exchangeId = 'binance', requestedLimit?: number): Promise<Candle[]> {
+export async function getMarketCandles(symbol: string, timeframe: Timeframe, exchangeId = 'binance', requestedLimit?: number, options: { strict?: boolean } = {}): Promise<Candle[]> {
   const db = readThoonDb();
 
   if (exchangeId !== 'binance') {
     return getPublicRestMarketCandles(db.marketPairRecords, symbol, timeframe, exchangeId);
   }
 
-  return getBinanceMarketCandles(db.marketPairRecords, symbol, timeframe, requestedLimit);
+  return getBinanceMarketCandles(db.marketPairRecords, symbol, timeframe, requestedLimit, options);
 }

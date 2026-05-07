@@ -95,7 +95,7 @@ export async function getBinanceMarketDataSnapshot(seedPairs: MarketPair[], seed
   }
 }
 
-export async function getBinanceMarketCandles(seedPairs: MarketPair[], symbol: string, timeframe: Timeframe, requestedLimit?: number): Promise<Candle[]> {
+export async function getBinanceMarketCandles(seedPairs: MarketPair[], symbol: string, timeframe: Timeframe, requestedLimit?: number, options: { strict?: boolean } = {}): Promise<Candle[]> {
   const env = getThoonServerEnv();
   const pair = seedPairs.find((item) => item.symbol === symbol);
 
@@ -104,7 +104,15 @@ export async function getBinanceMarketCandles(seedPairs: MarketPair[], symbol: s
   }
 
   if (env.marketDataProvider === 'local') {
+    if (options.strict) {
+      throw new Error('Live Binance candles are required for backtesting; THOON_MARKET_DATA_PROVIDER is local.');
+    }
+
     return deriveFallbackCandles(pair.candles, timeframe);
+  }
+
+  if (options.strict) {
+    return fetchCandles(pair, toBinanceSymbol(pair.symbol), timeframe, requestedLimit);
   }
 
   return fetchCandles(pair, toBinanceSymbol(pair.symbol), timeframe, requestedLimit).catch(() => deriveFallbackCandles(pair.candles, timeframe));

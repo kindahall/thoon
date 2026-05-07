@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const root = process.cwd();
@@ -209,8 +210,13 @@ test('api mutations return controlled errors and block cross-origin writes', asy
   assertIncludes(blockedOriginBody, 'Cross-origin mutation blocked', 'Cross-origin mutation returns JSON error');
 });
 
-test('api resources and product actions are wired end-to-end', async ({ apiRequest }) => {
+test('api resources and product actions are wired end-to-end', async ({ apiRequest, baseUrl }) => {
   const unique = `qa-${Date.now()}`;
+  const localEquivalentOrigin = (() => {
+    const url = new URL(baseUrl);
+
+    return `${url.protocol}//localhost:${url.port}`;
+  })();
 
   const health = await apiRequest('/api/health');
   assertStatus(health, 200, 'Health endpoint is available');
@@ -228,7 +234,7 @@ test('api resources and product actions are wired end-to-end', async ({ apiReque
 
   const localhostWatchAdd = await apiRequest('/api/watchlists', {
     body: JSON.stringify({ action: 'add-pair', listId: 'favorites', symbol: 'XRP/USDT' }),
-    headers: { 'content-type': 'application/json', origin: 'http://localhost:3010' },
+    headers: { 'content-type': 'application/json', origin: localEquivalentOrigin },
     method: 'POST',
   });
   assertStatus(localhostWatchAdd, 200, 'Equivalent localhost origin can mutate local API');
@@ -524,20 +530,19 @@ async function main() {
 
   let serverOutput = '';
   let server = null;
+  let tempDataDir = null;
   let baseUrl = normalizeBaseUrl(process.env.THOON_TEST_BASE_URL);
 
   if (baseUrl) {
     await waitForServer(baseUrl);
-  } else if (await canReachServer('http://127.0.0.1:3010')) {
-    baseUrl = 'http://127.0.0.1:3010';
-  } else if (await canReachServer('http://127.0.0.1:5173')) {
-    baseUrl = 'http://127.0.0.1:5173';
   } else {
     const port = await getFreePort();
+    tempDataDir = await mkdtemp(join(tmpdir(), 'thoon-test-'));
     baseUrl = `http://127.0.0.1:${port}`;
-    server = spawn(nextBin, ['dev', '-H', '127.0.0.1', '-p', String(port)], {
+    const nextMode = existsSync(join(root, '.next', 'BUILD_ID')) ? 'start' : 'dev';
+    server = spawn(nextBin, [nextMode, '-H', '127.0.0.1', '-p', String(port)], {
       cwd: root,
-      env: { ...process.env, NEXT_TELEMETRY_DISABLED: '1' },
+      env: { ...process.env, NEXT_TELEMETRY_DISABLED: '1', THOON_DATA_FILE: join(tempDataDir, 'thoon-db.json') },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -562,6 +567,7 @@ async function main() {
   try {
     const context = {
       apiRequest: (path, init) => fetch(`${baseUrl}${path}`, init),
+      baseUrl,
       fetchPage: (path) => fetchPage(baseUrl, path),
       readSource,
     };
@@ -589,6 +595,10 @@ async function main() {
           server.kill('SIGKILL');
         }
       }, 1000).unref();
+    }
+
+    if (tempDataDir) {
+      await rm(tempDataDir, { force: true, recursive: true });
     }
   }
 
@@ -669,15 +679,6 @@ async function waitForServer(baseUrl, timeoutMs = 45_000) {
   }
 
   throw new Error(`Timed out waiting for ${baseUrl}. ${lastError instanceof Error ? lastError.message : ''}`);
-}
-
-async function canReachServer(baseUrl) {
-  try {
-    await waitForServer(baseUrl, 3_000);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function normalizeBaseUrl(value) {

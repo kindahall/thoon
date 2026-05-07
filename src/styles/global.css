@@ -6041,6 +6041,12 @@ h2 {
   min-width: 760px;
 }
 
+.backtest-trades-panel {
+  display: grid;
+  gap: 10px;
+  min-width: 760px;
+}
+
 .backtest-table__head,
 .backtest-table__row {
   display: grid;
@@ -6068,6 +6074,41 @@ h2 {
 
 .backtest-table__row > span:first-child {
   color: var(--text-muted);
+}
+
+.backtest-trades-pagination {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 38px;
+  padding-top: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.backtest-trades-pagination div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.backtest-trades-pagination button {
+  min-width: 32px;
+  min-height: 30px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  font-weight: 850;
+}
+
+.backtest-trades-pagination button.is-active {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--primary) 50%, var(--border));
+  background: var(--primary-soft);
 }
 
 .monthly-returns-grid,

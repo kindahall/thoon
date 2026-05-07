@@ -2,7 +2,7 @@
 
 import { BarChart3, Bot, Database, FileCheck2, FolderOpen, MoreHorizontal, Play, RotateCcw, SlidersHorizontal } from 'lucide-react';
 import Link from 'next/link';
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import { StrategyAgentDrawer } from '../../components/agent/StrategyAgentDrawer';
 import { Badge, Button, Card, EmptyState, HelpPopover } from '../../components/ui';
@@ -37,6 +37,7 @@ const tabs: Array<{ id: BacktestTab; label: string }> = [
 ];
 
 const timeframes: Timeframe[] = ['1m', '5m', '15m', '30m', '1h', '2h', '4h', '1d', '1w', '1M', '1y'];
+const tradesPageSize = 10;
 
 export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSuggestions, agentVersions, exchangeConnections, initialPair, initialStrategyId, marketPairs, reports: initialReports, strategies }: BacktestPageProps) {
   const { connected: isBinanceLive, pairs: liveMarketPairs } = useBinanceLiveMarkets(marketPairs);
@@ -74,7 +75,9 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
   const buyHoldLast = buyHoldSeries[buyHoldSeries.length - 1] ?? initialCapital;
   const buyHoldReturn = report?.buyHoldReturn ?? ((buyHoldLast - initialCapital) / initialCapital) * 100;
   const reportExchangeName = report?.exchangeName ?? selectedExchange?.name ?? 'Binance';
-  const reportSourceLabel = report ? `${reportExchangeName} public candles` : `${selectedExchange?.name ?? 'Binance'} selected`;
+  const reportSourceLabel = report
+    ? `${reportExchangeName} public candles · ${report.generatedAt ? formatRunDate(report.generatedAt) : 'latest run'}`
+    : `${selectedExchange?.name ?? 'Binance'} selected`;
 
   function changeStrategy(nextStrategyId: string) {
     const nextStrategy = strategies.find((item) => item.id === nextStrategyId);
@@ -274,8 +277,8 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
                 <h2>Performance Summary</h2>
                 <span>{reportSourceLabel}</span>
               </div>
-              <Badge tone={report.marketDataSource === 'binance-live' || report.marketDataSource?.endsWith('-live') ? 'positive' : 'warning'}>
-                {report.marketDataSource === 'local-fallback' ? 'Local fallback' : 'Live candles'}
+              <Badge tone={report.marketDataSource === 'binance-live' || report.marketDataSource?.endsWith('-public-rest') ? 'positive' : 'warning'}>
+                {report.marketDataSource === 'binance-live' || report.marketDataSource?.endsWith('-public-rest') ? 'Live candles' : 'Blocked source'}
               </Badge>
             </div>
             {report.warnings?.length ? (
@@ -408,34 +411,61 @@ function LineChartSvg({ className, fill = false, secondaryClassName, secondaryVa
 }
 
 function TradesTable({ symbol, trades }: { symbol: string; trades: BacktestTrade[] }) {
+  const [page, setPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(trades.length / tradesPageSize));
+  const currentPage = Math.min(page, totalPages);
+  const start = (currentPage - 1) * tradesPageSize;
+  const visibleTrades = trades.slice(start, start + tradesPageSize);
+
+  useEffect(() => {
+    setPage(1);
+  }, [trades]);
+
   return (
-    <div className="backtest-table" role="table" aria-label="Backtest trades">
-      <div className="backtest-table__head" role="row">
-        <span>#</span>
-        <span>Time</span>
-        <span>Symbol</span>
-        <span>Side</span>
-        <span>Entry</span>
-        <span>Exit</span>
-        <span>Qty</span>
-        <span>R</span>
-        <span>PnL</span>
-        <span>Exit Reason</span>
-      </div>
-      {trades.length > 0 ? trades.map((trade, index) => (
-        <div className="backtest-table__row" key={trade.id} role="row">
-          <span>{index + 1}</span>
-          <span>{formatTradeDate(trade.exitTime)}</span>
-          <span>{symbol}</span>
-          <strong>{titleCase(trade.side)}</strong>
-          <span>{formatUsd(trade.entry)}</span>
-          <span>{formatUsd(trade.exit)}</span>
-          <span>{trade.size.toFixed(4)}</span>
-          <span className={trade.rMultiple >= 0 ? 'positive' : 'negative'}>{trade.rMultiple.toFixed(2)}R</span>
-          <span className={trade.pnl >= 0 ? 'positive' : 'negative'}>{formatUsd(trade.pnl)}</span>
-          <span>{formatExitReason(trade.exitReason)}</span>
+    <div className="backtest-trades-panel">
+      <div className="backtest-table" role="table" aria-label="Backtest trades">
+        <div className="backtest-table__head" role="row">
+          <span>#</span>
+          <span>Time</span>
+          <span>Symbol</span>
+          <span>Side</span>
+          <span>Entry</span>
+          <span>Exit</span>
+          <span>Qty</span>
+          <span>R</span>
+          <span>PnL</span>
+          <span>Exit Reason</span>
         </div>
-      )) : <div className="backtest-table__empty">No trade triggered on this candle window.</div>}
+        {visibleTrades.length > 0 ? visibleTrades.map((trade, index) => (
+          <div className="backtest-table__row" key={trade.id} role="row">
+            <span>{start + index + 1}</span>
+            <span>{formatTradeDate(trade.exitTime)}</span>
+            <span>{symbol}</span>
+            <strong>{titleCase(trade.side)}</strong>
+            <span>{formatUsd(trade.entry)}</span>
+            <span>{formatUsd(trade.exit)}</span>
+            <span>{trade.size.toFixed(4)}</span>
+            <span className={trade.rMultiple >= 0 ? 'positive' : 'negative'}>{trade.rMultiple.toFixed(2)}R</span>
+            <span className={trade.pnl >= 0 ? 'positive' : 'negative'}>{formatUsd(trade.pnl)}</span>
+            <span>{formatExitReason(trade.exitReason)}</span>
+          </div>
+        )) : <div className="backtest-table__empty">No trade triggered on this candle window.</div>}
+      </div>
+
+      {trades.length > tradesPageSize ? (
+        <div className="backtest-trades-pagination" aria-label="Trades pages">
+          <span>
+            {start + 1}-{Math.min(start + tradesPageSize, trades.length)} / {trades.length}
+          </span>
+          <div>
+            {Array.from({ length: totalPages }, (_, index) => index + 1).map((item) => (
+              <button className={item === currentPage ? 'is-active' : undefined} key={item} onClick={() => setPage(item)} type="button">
+                {item}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -546,6 +576,10 @@ function buildMonthlyReturns(totalReturn: number) {
 
 function formatTradeDate(value: string) {
   return new Intl.DateTimeFormat('en-US', { day: '2-digit', hour: '2-digit', minute: '2-digit', month: 'short' }).format(new Date(value));
+}
+
+function formatRunDate(value: string) {
+  return new Intl.DateTimeFormat('fr-FR', { day: '2-digit', hour: '2-digit', minute: '2-digit', month: '2-digit', second: '2-digit' }).format(new Date(value));
 }
 
 function titleCase(value: string) {
