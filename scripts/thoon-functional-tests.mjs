@@ -194,6 +194,10 @@ test('bot, strategy, backtest and paper flows expose functional states', async (
   assertIncludes(backtest, 'Candles Used', 'Backtest displays candle count');
 
   const replay = await fetchPage('/backtest/replay');
+  assertIncludes(replay, 'Timeframe', 'Paper testing displays chart timeframe');
+  assertIncludes(replay, 'Data Window', 'Paper testing displays replay data dates');
+  assertIncludes(replay, 'Current Candle', 'Paper testing displays the current candle timestamp');
+  assertIncludes(replay, 'Hidden From', 'Paper testing displays hidden future start');
   assertIncludes(replay, 'Paper Trade Log', 'Paper testing displays log');
   assertIncludes(replay, 'Buy', 'Paper testing can open a buy trade');
 });

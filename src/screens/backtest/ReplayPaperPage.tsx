@@ -38,12 +38,14 @@ const timeRanges = ['30D', '90D', '180D'];
 
 export function ReplayPaperPage({ initialPair, marketPairs }: ReplayPaperPageProps) {
   const firstPair = marketPairs.find((pair) => pair.symbol === initialPair) ?? marketPairs[0];
+  const firstCursor = initialReplayCursor(firstPair?.candles.length ?? 0);
+  const firstLogCandle = firstPair?.candles[firstCursor] ?? firstPair?.candles[0];
   const [symbol, setSymbol] = useState(firstPair?.symbol ?? 'BTC/USDT');
   const [timeRange, setTimeRange] = useState('30D');
   const [startingCapital, setStartingCapital] = useState(10000);
   const [fees, setFees] = useState(0.06);
   const [slippage, setSlippage] = useState(0.02);
-  const [cursor, setCursor] = useState(28);
+  const [cursor, setCursor] = useState(firstCursor);
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState('1x');
   const [orderType, setOrderType] = useState<OrderType>('Market');
@@ -59,7 +61,7 @@ export function ReplayPaperPage({ initialPair, marketPairs }: ReplayPaperPagePro
       price: firstPair?.lastPrice ?? 0,
       side: '-',
       status: 'system',
-      time: '09:15',
+      time: formatReplayLogTime(firstLogCandle?.time),
       type: '-',
     },
   ]);
@@ -72,6 +74,11 @@ export function ReplayPaperPage({ initialPair, marketPairs }: ReplayPaperPagePro
   const unrealizedPnl = position ? calculatePnl(position, currentPrice) : 0;
   const equity = balance + unrealizedPnl;
   const visibleCandles = useMemo(() => candles.slice(0, safeCursor + 1), [candles, safeCursor]);
+  const firstCandle = candles[0];
+  const lastCandle = candles[candles.length - 1];
+  const nextHiddenCandle = safeCursor < candles.length - 1 ? candles[safeCursor + 1] : undefined;
+  const chartTimeframe = pair?.timeframe ?? '15m';
+  const progressPct = candles.length > 1 ? Math.round((safeCursor / (candles.length - 1)) * 100) : 0;
 
   useEffect(() => {
     if (!isPlaying) {
@@ -95,12 +102,27 @@ export function ReplayPaperPage({ initialPair, marketPairs }: ReplayPaperPagePro
 
   function changeSymbol(nextSymbol: string) {
     const nextPair = marketPairs.find((item) => item.symbol === nextSymbol);
+    const nextCursor = initialReplayCursor(nextPair?.candles.length ?? 0);
+    const nextCandle = nextPair?.candles[nextCursor] ?? nextPair?.candles[0];
     setSymbol(nextSymbol);
-    setCursor(Math.min(28, Math.max((nextPair?.candles.length ?? 30) - 10, 8)));
+    setCursor(nextCursor);
     setIsPlaying(false);
     setPosition(null);
     setBalance(startingCapital);
     setStatus('Paper only');
+    setLogs([
+      {
+        action: 'replay restarted',
+        details: 'Future candles hidden',
+        id: `paper-log-restart-${Date.now()}`,
+        pnl: 0,
+        price: nextCandle?.close ?? nextPair?.lastPrice ?? 0,
+        side: '-',
+        status: 'system',
+        time: formatReplayLogTime(nextCandle?.time),
+        type: '-',
+      },
+    ]);
   }
 
   function updateStartingCapital(nextCapital: number) {
@@ -169,7 +191,7 @@ export function ReplayPaperPage({ initialPair, marketPairs }: ReplayPaperPagePro
     const nextLog: PaperTradeLog = {
       ...entry,
       id: `paper-log-${Date.now()}`,
-      time: `09:${String(15 + logs.length * 3).padStart(2, '0')}`,
+      time: formatReplayLogTime(currentCandle?.time),
     };
     setLogs((current) => [nextLog, ...current].slice(0, 8));
   }
@@ -214,15 +236,26 @@ export function ReplayPaperPage({ initialPair, marketPairs }: ReplayPaperPagePro
 
           <div className="replay-chart-head">
             <div>
-              <h2>{symbol}</h2>
+              <h2>
+                {symbol}
+                <small>{chartTimeframe}</small>
+              </h2>
               <span>
-                Cursor {safeCursor} · {formatUsd(currentPrice)}
+                {formatReplayDateTime(currentCandle?.time)} · Cursor {safeCursor + 1}/{candles.length} · {formatUsd(currentPrice)}
               </span>
             </div>
             <Badge tone="warning">Future hidden</Badge>
           </div>
 
-          <ReplayChart candles={candles} cursor={safeCursor} visibleCandles={visibleCandles} />
+          <div className="replay-chart-meta" aria-label="Replay chart context">
+            <ReplayMeta label="Timeframe" value={chartTimeframe} />
+            <ReplayMeta label="Data Window" value={`${formatReplayDate(firstCandle?.time)} - ${formatReplayDate(lastCandle?.time)}`} />
+            <ReplayMeta label="Current Candle" value={formatReplayDateTime(currentCandle?.time)} />
+            <ReplayMeta label="Hidden From" value={nextHiddenCandle ? formatReplayDateTime(nextHiddenCandle.time) : 'End reached'} />
+            <ReplayMeta label="Progress" value={`${progressPct}% · ${timeRange}`} />
+          </div>
+
+          <ReplayChart candles={candles} cursor={safeCursor} timeframe={chartTimeframe} visibleCandles={visibleCandles} />
 
           <div className="replay-controls">
             <Button icon={<StepBack size={15} />} onClick={() => step(-1)} size="sm" variant="ghost">
@@ -245,7 +278,7 @@ export function ReplayPaperPage({ initialPair, marketPairs }: ReplayPaperPagePro
               </select>
             </label>
             <label className="replay-cursor">
-              <span>Date Cursor</span>
+              <span>Date Cursor · {formatReplayDateTime(currentCandle?.time)}</span>
               <input max={Math.max(candles.length - 2, 8)} min={8} onChange={(event) => setCursor(Number(event.target.value))} type="range" value={safeCursor} />
             </label>
           </div>
@@ -328,32 +361,50 @@ export function ReplayPaperPage({ initialPair, marketPairs }: ReplayPaperPagePro
   );
 }
 
-function ReplayChart({ candles, cursor, visibleCandles }: { candles: Candle[]; cursor: number; visibleCandles: Candle[] }) {
+function ReplayChart({ candles, cursor, timeframe, visibleCandles }: { candles: Candle[]; cursor: number; timeframe: string; visibleCandles: Candle[] }) {
   const width = 900;
   const height = 360;
-  const padding = 28;
+  const paddingX = 34;
+  const topPadding = 28;
+  const bottomPadding = 44;
   const highs = candles.map((candle) => candle.high);
   const lows = candles.map((candle) => candle.low);
   const min = Math.min(...lows);
   const max = Math.max(...highs);
   const range = max - min || 1;
-  const candleWidth = Math.max(5, (width - padding * 2) / Math.max(candles.length, 1) - 4);
-  const hiddenX = padding + (cursor / Math.max(candles.length - 1, 1)) * (width - padding * 2);
+  const plotHeight = height - topPadding - bottomPadding;
+  const candleWidth = Math.max(5, (width - paddingX * 2) / Math.max(candles.length, 1) - 4);
+  const hiddenX = paddingX + (cursor / Math.max(candles.length - 1, 1)) * (width - paddingX * 2);
+  const gridLines = [0.25, 0.5, 0.75].map((ratio) => ({
+    price: max - range * ratio,
+    y: topPadding + plotHeight * ratio,
+  }));
+  const firstCandle = candles[0];
+  const currentCandle = candles[cursor];
+  const lastCandle = candles[candles.length - 1];
 
   function y(price: number) {
-    return height - padding - ((price - min) / range) * (height - padding * 2);
+    return height - bottomPadding - ((price - min) / range) * plotHeight;
   }
 
   return (
     <div className="replay-chart-frame">
       <svg aria-label="Replay chart with hidden future" role="img" viewBox={`0 0 ${width} ${height}`}>
         <g className="replay-grid-lines">
-          <line x1={padding} x2={width - padding} y1="90" y2="90" />
-          <line x1={padding} x2={width - padding} y1="180" y2="180" />
-          <line x1={padding} x2={width - padding} y1="270" y2="270" />
+          {gridLines.map((line) => (
+            <line key={line.y} x1={paddingX} x2={width - paddingX} y1={line.y} y2={line.y} />
+          ))}
         </g>
+        <text className="replay-chart-badge" x={paddingX} y={topPadding - 7}>
+          {timeframe}
+        </text>
+        {gridLines.map((line) => (
+          <text className="replay-price-label" key={line.price} x={width - paddingX + 8} y={line.y + 4}>
+            {formatCompactPrice(line.price)}
+          </text>
+        ))}
         {visibleCandles.map((candle, index) => {
-          const x = padding + (index / Math.max(candles.length - 1, 1)) * (width - padding * 2);
+          const x = paddingX + (index / Math.max(candles.length - 1, 1)) * (width - paddingX * 2);
           const openY = y(candle.open);
           const closeY = y(candle.close);
           const highY = y(candle.high);
@@ -367,12 +418,26 @@ function ReplayChart({ candles, cursor, visibleCandles }: { candles: Candle[]; c
             </g>
           );
         })}
-        <line className="replay-cursor-line" x1={hiddenX} x2={hiddenX} y1={padding} y2={height - padding} />
-        <rect className="replay-hidden-zone" height={height - padding * 2} width={width - hiddenX - padding} x={hiddenX} y={padding} />
-        <text className="replay-hidden-text" x={hiddenX + 24} y={padding + 34}>
+        <line className="replay-cursor-line" x1={hiddenX} x2={hiddenX} y1={topPadding} y2={height - bottomPadding} />
+        <rect className="replay-hidden-zone" height={plotHeight} width={Math.max(0, width - hiddenX - paddingX)} x={hiddenX} y={topPadding} />
+        <text className="replay-hidden-text" x={hiddenX + 24} y={topPadding + 34}>
           Future hidden
         </text>
+        <g className="replay-axis-labels">
+          <text x={paddingX} y={height - 12}>{formatReplayAxisDate(firstCandle?.time)}</text>
+          <text textAnchor="middle" x={hiddenX} y={height - 12}>{formatReplayAxisDate(currentCandle?.time)}</text>
+          <text textAnchor="end" x={width - paddingX} y={height - 12}>{formatReplayAxisDate(lastCandle?.time)}</text>
+        </g>
       </svg>
+    </div>
+  );
+}
+
+function ReplayMeta({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
@@ -422,4 +487,63 @@ function calculatePnl(position: PaperPosition, currentPrice: number) {
   const direction = position.side === 'Long' ? 1 : -1;
 
   return (currentPrice - position.entry) * position.size * direction;
+}
+
+function initialReplayCursor(candleCount: number) {
+  return Math.min(28, Math.max(candleCount - 10, 8));
+}
+
+function formatReplayDateTime(time?: number) {
+  if (!time) {
+    return '-';
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    day: '2-digit',
+    hour: '2-digit',
+    hour12: false,
+    minute: '2-digit',
+    month: 'short',
+  }).format(toDate(time));
+}
+
+function formatReplayDate(time?: number) {
+  if (!time) {
+    return '-';
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    day: '2-digit',
+    month: 'short',
+  }).format(toDate(time));
+}
+
+function formatReplayAxisDate(time?: number) {
+  if (!time) {
+    return '-';
+  }
+
+  return new Intl.DateTimeFormat('en-US', {
+    day: '2-digit',
+    hour: '2-digit',
+    hour12: false,
+    minute: '2-digit',
+    month: 'short',
+  }).format(toDate(time));
+}
+
+function formatReplayLogTime(time?: number) {
+  return formatReplayDateTime(time);
+}
+
+function formatCompactPrice(value: number) {
+  if (value >= 1000) {
+    return `$${Math.round(value).toLocaleString('en-US')}`;
+  }
+
+  return `$${value.toFixed(value >= 10 ? 2 : 4)}`;
+}
+
+function toDate(time: number) {
+  return new Date(time > 1_000_000_000_000 ? time : time * 1000);
 }

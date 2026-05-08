@@ -6261,12 +6261,58 @@ h2 {
   gap: 4px;
 }
 
+.replay-chart-head h2 {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.replay-chart-head h2 small {
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: 0;
+}
+
 .replay-chart-head span,
 .paper-panel-head span,
 .paper-log-head span {
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 760;
+}
+
+.replay-chart-meta {
+  display: grid;
+  grid-template-columns: 92px minmax(150px, 1fr) minmax(150px, 1fr) minmax(150px, 1fr) 100px;
+  gap: 8px;
+}
+
+.replay-chart-meta div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-raised) 72%, transparent);
+}
+
+.replay-chart-meta span {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 820;
+  text-transform: uppercase;
+}
+
+.replay-chart-meta strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .replay-chart-frame {
@@ -6333,6 +6379,19 @@ h2 {
   fill: var(--warning);
   font-size: 18px;
   font-weight: 850;
+}
+
+.replay-chart-badge {
+  fill: var(--primary);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.replay-axis-labels text,
+.replay-price-label {
+  fill: var(--text-muted);
+  font-size: 11px;
+  font-weight: 760;
 }
 
 .replay-controls {
@@ -10839,6 +10898,7 @@ h2 {
   .monthly-returns-grid,
   .chart-analysis-grid,
   .drawdown-panel,
+  .replay-chart-meta,
   .replay-toolbar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -11043,6 +11103,7 @@ h2 {
   .monthly-returns-grid,
   .chart-analysis-grid,
   .drawdown-panel,
+  .replay-chart-meta,
   .replay-toolbar,
   .replay-controls,
   .paper-actions {
