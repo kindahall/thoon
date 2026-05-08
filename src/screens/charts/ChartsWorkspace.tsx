@@ -326,6 +326,14 @@ export function ChartsWorkspace({
   }, [candleRequestNonce, market.symbol, selectedExchangeId, timeframe]);
 
   useEffect(() => {
+    if (selectedExchange?.id !== 'binance' || !isBinanceLive || chartCandleStatus !== 'live' || !Number.isFinite(market.lastPrice)) {
+      return;
+    }
+
+    setChartCandles((currentCandles) => syncLastCandleToTicker(currentCandles, market.lastPrice));
+  }, [chartCandleStatus, isBinanceLive, market.lastPrice, selectedExchange?.id]);
+
+  useEffect(() => {
     if (hasChartSetup || !Number.isFinite(visibleMarketPrice)) {
       return;
     }
@@ -1604,6 +1612,33 @@ function syncDraftWithMarker(draft: PositionDraft, type: TradeMarkerType, price:
     case 'tp2':
       return draft;
   }
+}
+
+function syncLastCandleToTicker(candles: Candle[], lastPrice: number) {
+  if (!candles.length || !Number.isFinite(lastPrice)) {
+    return candles;
+  }
+
+  const lastIndex = candles.length - 1;
+  const lastCandle = candles[lastIndex];
+  const close = roundPrice(lastPrice);
+
+  if (Math.abs(lastCandle.close - close) < 0.000001) {
+    return candles;
+  }
+
+  return candles.map((candle, index) => {
+    if (index !== lastIndex) {
+      return candle;
+    }
+
+    return {
+      ...candle,
+      close,
+      high: Math.max(candle.high, close),
+      low: Math.min(candle.low, close),
+    };
+  });
 }
 
 function buildMarkerSyncRows(markers: TradeMarker[], draft: PositionDraft) {

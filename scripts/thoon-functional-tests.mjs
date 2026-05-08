@@ -150,6 +150,7 @@ test('chart trading controls and risk engine hooks are present', async ({ fetchP
   assertIncludes(chartSource, "upsertMarker('tp2'", 'TP2 field writes a real chart marker');
   assertIncludes(chartSource, 'ChartCandleState', 'Chart renders a loading/unavailable state while public candles load');
   assertIncludes(chartSource, 'setChartCandles([])', 'Chart does not show local candles while changing pairs');
+  assertIncludes(chartSource, 'syncLastCandleToTicker', 'Chart last candle follows the live ticker without replacing the candle window');
   assertIncludes(chartSource, 'Confirm Live Order', 'Live confirmation modal exists');
   assert(!chartSource.includes('updateChartCandleWithLivePrice'), 'Live ticks do not rewrite the visible candle window');
   assert(!chartSource.includes('setChartCandles(market.candles)'), 'Chart never swaps in seeded local candles during public-candle loading');
