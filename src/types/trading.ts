@@ -185,6 +185,7 @@ export type AgentAction =
   | 'prepare_bot'
   | 'promote_version'
   | 'read_backtest'
+  | 'research_tradingview'
   | 'run_backtest'
   | 'run_paper_test'
   | 'send_to_paper'
@@ -322,6 +323,25 @@ export type AgentReport = {
   versionId?: string;
   weaknesses: string[];
   strengths: string[];
+};
+
+export type StrategyResearchRecord = {
+  author?: string;
+  concepts: string[];
+  fetchedAt: string;
+  id: string;
+  jimmyAdaptationNotes: string[];
+  provider: 'tradingview';
+  publicDescription: string;
+  publishedAt?: string;
+  query: string;
+  scriptType: 'indicator' | 'strategy' | 'unknown';
+  sourcePolicy: 'concept_only' | 'open_source_reference' | 'public_metadata';
+  sourceVisibility: 'open_source' | 'protected_source' | 'public_description' | 'unknown';
+  strategyId: string;
+  tags: string[];
+  title: string;
+  url: string;
 };
 
 export type AgentQueueTask = {

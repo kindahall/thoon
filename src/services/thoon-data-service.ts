@@ -305,6 +305,12 @@ export function listAgentQueueTasks(strategyId?: string) {
   return strategyId ? tasks.filter((task) => task.strategyId === strategyId) : tasks;
 }
 
+export function listStrategyResearchRecords(strategyId?: string) {
+  const records = readThoonDb().strategyResearchRecords;
+
+  return strategyId ? records.filter((record) => record.strategyId === strategyId) : records;
+}
+
 export function getAlertsWorkspaceSummary(pair?: string): WorkspaceSummary {
   const filteredAlerts = pair ? readThoonDb().alertRecords.filter((alert) => alert.symbol === pair) : readThoonDb().alertRecords;
 

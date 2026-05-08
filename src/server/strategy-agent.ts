@@ -19,7 +19,7 @@ import type {
 import type { ThoonDb } from './thoon-db';
 
 const dangerousActions: AgentAction[] = ['archive_variant', 'execute_live_trade', 'launch_live_bot', 'promote_version'];
-const passiveActions: AgentAction[] = ['analyze_strategy', 'compare_versions', 'create_report', 'read_backtest'];
+const passiveActions: AgentAction[] = ['analyze_strategy', 'compare_versions', 'create_report', 'read_backtest', 'research_tradingview'];
 
 const actionPermissions: Partial<Record<AgentAction, AgentPermission>> = {
   analyze_strategy: 'analyze_strategy',
@@ -34,6 +34,7 @@ const actionPermissions: Partial<Record<AgentAction, AgentPermission>> = {
   prepare_bot: 'prepare_bot',
   promote_version: 'promote_version',
   read_backtest: 'analyze_strategy',
+  research_tradingview: 'analyze_strategy',
   run_backtest: 'run_backtest',
   run_paper_test: 'run_paper_test',
   send_to_paper: 'run_paper_test',
@@ -156,6 +157,10 @@ export function evaluateAgentAction(
 
   if (action === 'run_paper_test' || action === 'send_to_paper') {
     warnings.push('Paper testing is simulated and never sends live orders.');
+  }
+
+  if (action === 'research_tradingview') {
+    warnings.push('Only public TradingView metadata and visible concepts are saved; protected/private source code is never copied.');
   }
 
   if (action === 'prepare_bot' || action === 'create_draft_bot') {

@@ -31,6 +31,7 @@ import type {
   Position,
   RiskRules,
   Strategy,
+  StrategyResearchRecord,
   StrategyVersion,
   TradeLimits,
   UserPreferences,
@@ -94,6 +95,7 @@ export type ThoonDb = {
   schemaVersion: 1;
   sessionRecords: StoredSession[];
   strategyRecords: Strategy[];
+  strategyResearchRecords: StrategyResearchRecord[];
   strategyVersionRecords: StrategyVersion[];
   tradeLimitsRecord: TradeLimits;
   updatedAt: string;
@@ -130,6 +132,7 @@ export function createSeedDb(): ThoonDb {
     schemaVersion: 1,
     sessionRecords: [],
     strategyRecords: strategies,
+    strategyResearchRecords: [],
     strategyVersionRecords: strategyVersions,
     tradeLimitsRecord: tradeLimits,
     updatedAt: new Date().toISOString(),
@@ -224,6 +227,7 @@ function migrateDb(db: Partial<ThoonDb>): ThoonDb {
     savedSetupRecords: db.savedSetupRecords ?? [],
     sessionRecords: db.sessionRecords ?? [],
     strategyRecords,
+    strategyResearchRecords: db.strategyResearchRecords ?? [],
     strategyVersionRecords: mergeSeedRecords(seed.strategyVersionRecords, db.strategyVersionRecords).filter((record) => record.strategyId === JIMMY_STRATEGY_ID),
     schemaVersion: 1,
   };

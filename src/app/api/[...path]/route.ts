@@ -33,6 +33,7 @@ import {
   updateVersionWithBacktest,
 } from '../../../server/strategy-agent';
 import { flushPendingPostgresMirror, readThoonDb, updateThoonDb, type SavedSetupRecord, type ThoonDb } from '../../../server/thoon-db';
+import { researchTradingViewStrategies } from '../../../server/tradingview-research';
 import { getMarketCandles, getMarketDataSnapshot } from '../../../services/market-service';
 import type { PositionDraft, Timeframe } from '../../../types/market';
 import { buildRiskOrderInputFromDraft, evaluateRiskEngine } from '../../../services/risk-engine';
@@ -116,6 +117,10 @@ async function getHandler(request: NextRequest, context: RouteContext) {
 
     if (path[1] === 'queue') {
       return json(strategyId ? db.agentQueueRecords.filter((task) => task.strategyId === strategyId) : db.agentQueueRecords);
+    }
+
+    if (path[1] === 'research') {
+      return json(strategyId ? db.strategyResearchRecords.filter((record) => record.strategyId === strategyId) : db.strategyResearchRecords);
     }
 
     return json(agentDashboard(db, strategyId));
@@ -1522,6 +1527,7 @@ async function agentAction(body: Record<string, unknown>) {
   const versionId = asString(body.versionId);
   let aiSuggestionResult: Awaited<ReturnType<typeof generateAiStrategySuggestions>> | undefined;
   let agentBacktestReport: BacktestReport | undefined;
+  let tradingViewResearchResult: Awaited<ReturnType<typeof researchTradingViewStrategies>> | undefined;
 
   if (action === 'analyze_strategy' || action === 'create_report') {
     const db = readThoonDb();
@@ -1568,6 +1574,20 @@ async function agentAction(body: Record<string, unknown>) {
     }
   }
 
+  if (action === 'research_tradingview') {
+    const db = readThoonDb();
+    const strategy = strategyId ? db.strategyRecords.find((item) => item.id === strategyId) : undefined;
+    const decision = evaluateAgentAction(db, action, { confirmed, strategyId, versionId });
+
+    if (decision.allowed && !decision.requiredConfirmation) {
+      tradingViewResearchResult = await researchTradingViewStrategies({
+        limit: 8,
+        query: asString(body.query),
+        strategy,
+      });
+    }
+  }
+
   return json(
     updateThoonDb((db) => {
       const decision = evaluateAgentAction(db, action, { confirmed, strategyId, versionId });
@@ -1609,7 +1629,7 @@ async function agentAction(body: Record<string, unknown>) {
         return { confirmationRequired: true, decision, ok: true, run, task };
       }
 
-      const result = executeAgentAction(db, action, strategy, version, aiSuggestionResult, agentBacktestReport);
+      const result = executeAgentAction(db, action, strategy, version, aiSuggestionResult, agentBacktestReport, tradingViewResearchResult);
       const run: AgentRun = { ...runBase, notes: result.notes, result: 'completed' };
       db.agentQueueRecords = db.agentQueueRecords.map((task) =>
         task.action === action && task.strategyId === strategy?.id && task.versionId === version?.id && task.status === 'waiting_for_confirmation'
@@ -1638,6 +1658,7 @@ function executeAgentAction(
   version?: ThoonDb['strategyVersionRecords'][number],
   aiSuggestionResult?: Awaited<ReturnType<typeof generateAiStrategySuggestions>>,
   agentBacktestReport?: BacktestReport,
+  tradingViewResearchResult?: Awaited<ReturnType<typeof researchTradingViewStrategies>>,
 ) {
   if (!strategy && action !== 'compare_versions') {
     throw new ApiError('Strategy not found', 404);
@@ -1685,6 +1706,26 @@ function executeAgentAction(
       const report = db.backtestReportRecords.find((item) => item.strategyId === strategy?.id);
 
       return { notes: report ? 'Backtest summary read.' : 'No backtest found.', payload: { report } };
+    }
+    case 'research_tradingview': {
+      const research = tradingViewResearchResult;
+
+      if (!research) {
+        throw new ApiError('TradingView public research could not be completed.', 502);
+      }
+
+      const existingByUrl = new Map(db.strategyResearchRecords.map((record) => [record.url, record]));
+      for (const record of research.records) {
+        existingByUrl.set(record.url, record);
+      }
+      db.strategyResearchRecords = Array.from(existingByUrl.values())
+        .sort((left, right) => new Date(right.fetchedAt).getTime() - new Date(left.fetchedAt).getTime())
+        .slice(0, 80);
+
+      return {
+        notes: `${research.records.length} public TradingView strategy records saved.`,
+        payload: { errors: research.errors, fetchedAt: research.fetchedAt, records: research.records, searchedQueries: research.searchedQueries },
+      };
     }
     case 'run_paper_test':
     case 'send_to_paper': {
@@ -1762,10 +1803,12 @@ function agentDashboard(db: ThoonDb, strategyId?: string) {
   const suggestions = strategyId ? db.agentSuggestionRecords.filter((suggestion) => suggestion.strategyId === strategyId) : db.agentSuggestionRecords;
   const reports = strategyId ? db.agentReportRecords.filter((report) => report.strategyId === strategyId) : db.agentReportRecords;
   const queue = strategyId ? db.agentQueueRecords.filter((task) => task.strategyId === strategyId) : db.agentQueueRecords;
+  const research = strategyId ? db.strategyResearchRecords.filter((record) => record.strategyId === strategyId) : db.strategyResearchRecords;
 
   return {
     ai: getStrategyAgentAiStatus(),
     reports,
+    research,
     runs,
     queue,
     settings: db.agentSettingsRecord,
@@ -1774,6 +1817,7 @@ function agentDashboard(db: ThoonDb, strategyId?: string) {
       candidateVersions: versions.filter((version) => version.status === 'candidate' || version.status === 'live-ready').length,
       protectedVersions: versions.filter((version) => version.protectedOriginal).length,
       reports: reports.length,
+      research: research.length,
       suggestions: suggestions.length,
       tasks: queue.length,
       versions: versions.length,
@@ -1927,6 +1971,7 @@ function normalizeAgentAction(value: unknown): AgentAction | undefined {
     'prepare_bot',
     'promote_version',
     'read_backtest',
+    'research_tradingview',
     'run_backtest',
     'run_paper_test',
     'send_to_paper',
@@ -2189,7 +2234,7 @@ const resourceIndex = [
   'GET /api/production/readiness',
   'GET /api/observability/metrics',
   'GET|POST /api/auth/session|login|logout',
-  'GET /api/agent|settings|versions|suggestions|activity|reports|queue|ai/status',
+  'GET /api/agent|settings|versions|suggestions|activity|reports|queue|research|ai/status',
   'POST /api/agent/actions',
   'PATCH /api/agent/settings',
   'GET /api/markets',

@@ -67,10 +67,23 @@ test('strategy agent renders, protects core strategy and exposes Codex research 
   assertIncludes(actionBody, 'codex', 'Agent action uses Codex provider');
   assertIncludes(actionBody, 'sweep', 'Agent action proposes aggressive strategy research');
 
+  const research = await apiRequest('/api/agent/actions', {
+    body: JSON.stringify({ action: 'research_tradingview', query: 'crypto trix strategy', strategyId: 'strat-jimmy' }),
+    headers: { 'content-type': 'application/json' },
+    method: 'POST',
+  });
+  const researchBody = await research.text();
+  assertStatus(research, 200, 'Agent TradingView research action runs');
+  assertIncludes(researchBody, 'tradingview.com/script', 'TradingView research stores sourced public script URLs');
+  assertIncludes(researchBody, 'concepts', 'TradingView research stores concepts, not fake strategy numbers');
+
   const aiSource = await readSource('src/server/strategy-agent-ai.ts');
   assertIncludes(aiSource, 'callCodexProvider', 'Codex provider exists server-side');
   assertIncludes(aiSource, '/responses', 'OpenAI Responses provider remains available');
   assertIncludes(aiSource, '/chat/completions', 'OpenAI-compatible chat provider remains available');
+  const researchSource = await readSource('src/server/tradingview-research.ts');
+  assertIncludes(researchSource, 'fetchHtml', 'TradingView research fetches public pages server-side');
+  assertIncludes(researchSource, 'PROTECTED SOURCE SCRIPT', 'Protected scripts are handled as concept-only records');
 
   const jimmyConfigSource = await readSource('src/config/jimmy-strategy.ts');
   const strategiesSource = await readSource('src/mock-data/strategies.ts');
@@ -84,6 +97,7 @@ test('strategy agent renders, protects core strategy and exposes Codex research 
 
   const drawerSource = await readSource('src/components/agent/StrategyAgentDrawer.tsx');
   assertIncludes(drawerSource, 'confirmationRequired', 'Agent drawer handles confirmation-required responses');
+  assertIncludes(drawerSource, 'research_tradingview', 'Agent drawer exposes TradingView public research action');
   assertIncludes(drawerSource, 'write_journal_note', 'Agent drawer exposes journal note action');
 });
 

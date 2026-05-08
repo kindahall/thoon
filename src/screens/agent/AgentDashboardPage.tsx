@@ -1,10 +1,11 @@
-import { Bot, BrainCircuit, ClipboardList, GitCompare, LineChart, Settings, ShieldCheck } from 'lucide-react';
+import { Bot, BrainCircuit, ClipboardList, Database, GitCompare, LineChart, Search, Settings } from 'lucide-react';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 
 import { StrategyAgentDrawer } from '../../components/agent/StrategyAgentDrawer';
 import { Badge, Card } from '../../components/ui';
-import type { AgentQueueTask, AgentReport, AgentRun, AgentSettings, AgentSuggestion, Strategy, StrategyVersion } from '../../types/trading';
+import type { AgentQueueTask, AgentReport, AgentRun, AgentSettings, AgentSuggestion, BacktestReport, JournalTrade, Strategy, StrategyResearchRecord, StrategyVersion } from '../../types/trading';
+import { formatUsd } from '../../utils/format';
 
 type AgentDashboardPageProps = {
   aiStatus: {
@@ -13,19 +14,23 @@ type AgentDashboardPageProps = {
     model: string;
     provider: string;
   };
+  backtests: BacktestReport[];
+  journalTrades: JournalTrade[];
   reports: AgentReport[];
   runs: AgentRun[];
   queue: AgentQueueTask[];
+  researchRecords: StrategyResearchRecord[];
   settings: AgentSettings;
   strategies: Strategy[];
   suggestions: AgentSuggestion[];
   versions: StrategyVersion[];
 };
 
-export function AgentDashboardPage({ aiStatus, reports, runs, queue, settings, strategies, suggestions, versions }: AgentDashboardPageProps) {
+export function AgentDashboardPage({ aiStatus, backtests, journalTrades, reports, runs, queue, researchRecords, settings, strategies, suggestions, versions }: AgentDashboardPageProps) {
   const monitoredStrategies = strategies.filter((strategy) => versions.some((version) => version.strategyId === strategy.id));
-  const blockedRuns = runs.filter((run) => run.result === 'blocked');
   const latestSuggestion = suggestions[0];
+  const paperTrades = journalTrades.filter((trade) => trade.source === 'paper');
+  const memoryRows = buildLearningMemory(backtests, paperTrades);
 
   return (
     <section className="agent-dashboard-page" aria-label="Strategy Agent dashboard">
@@ -51,7 +56,7 @@ export function AgentDashboardPage({ aiStatus, reports, runs, queue, settings, s
         <MetricCard icon={<ClipboardList size={18} />} label="Active Tasks" value={String(queue.filter((task) => task.status !== 'completed').length)} />
         <MetricCard icon={<GitCompare size={18} />} label="Versions" value={String(versions.length)} />
         <MetricCard icon={<LineChart size={18} />} label="Reports" value={String(reports.length)} />
-        <MetricCard icon={<ShieldCheck size={18} />} label="Blocked" value={String(blockedRuns.length)} />
+        <MetricCard icon={<Search size={18} />} label="TV Sources" value={String(researchRecords.length)} />
         <MetricCard icon={<BrainCircuit size={18} />} label="AI Provider" value={aiStatus.provider} />
       </div>
 
@@ -75,6 +80,52 @@ export function AgentDashboardPage({ aiStatus, reports, runs, queue, settings, s
               ))
             ) : (
               <div className="agent-empty-line">No real suggestion yet.</div>
+            )}
+          </div>
+        </Card>
+
+        <Card className="agent-dashboard-card">
+          <div className="agent-card-head">
+            <Search size={18} />
+            <div>
+              <h2>TradingView Research</h2>
+              <span>{researchRecords.length} public records</span>
+            </div>
+          </div>
+          <div className="agent-compact-list agent-research-list">
+            {researchRecords.length ? (
+              researchRecords.slice(0, 5).map((record) => (
+                <a href={record.url} key={record.id} rel="noreferrer" target="_blank">
+                  <strong>{record.title}</strong>
+                  <span>{[record.author, ...record.concepts.slice(0, 3)].filter(Boolean).join(' · ') || record.publicDescription}</span>
+                  <Badge tone={record.sourceVisibility === 'protected_source' ? 'warning' : record.sourceVisibility === 'open_source' ? 'positive' : 'neutral'}>{formatSourceVisibility(record.sourceVisibility)}</Badge>
+                </a>
+              ))
+            ) : (
+              <div className="agent-empty-line">No public TradingView research saved yet.</div>
+            )}
+          </div>
+        </Card>
+
+        <Card className="agent-dashboard-card">
+          <div className="agent-card-head">
+            <Database size={18} />
+            <div>
+              <h2>Learning Memory</h2>
+              <span>{backtests.length} backtests · {paperTrades.length} paper trades</span>
+            </div>
+          </div>
+          <div className="agent-compact-list">
+            {memoryRows.length ? (
+              memoryRows.slice(0, 5).map((row) => (
+                <Link href={row.href} key={row.id}>
+                  <strong>{row.title}</strong>
+                  <span>{row.detail}</span>
+                  <Badge tone={row.tone}>{row.badge}</Badge>
+                </Link>
+              ))
+            ) : (
+              <div className="agent-empty-line">No real backtest or paper-trade history yet.</div>
             )}
           </div>
         </Card>
@@ -166,4 +217,40 @@ function MetricCard({ icon, label, value }: { icon: ReactNode; label: string; va
       </div>
     </Card>
   );
+}
+
+function buildLearningMemory(backtests: BacktestReport[], paperTrades: JournalTrade[]) {
+  const backtestRows = backtests.map((report) => ({
+    badge: `${report.profitFactor.toFixed(2)} PF`,
+    detail: `${report.market ?? 'Market'} · ${report.timeframe ?? '-'} · ${report.period} · ${report.totalTrades} trades · ${formatUsd(report.netProfit)}`,
+    href: `/backtest?strategyId=${encodeURIComponent(report.strategyId)}`,
+    id: report.id,
+    time: report.generatedAt ?? report.dataWindow?.lastCandleAt ?? '',
+    title: 'Backtest',
+    tone: report.netProfit >= 0 ? ('positive' as const) : ('negative' as const),
+  }));
+  const paperRows = paperTrades.map((trade) => ({
+    badge: trade.pnl >= 0 ? 'paper win' : 'paper loss',
+    detail: `${trade.symbol} · ${trade.side} · ${formatUsd(trade.pnl)} · ${trade.rMultiple.toFixed(2)}R`,
+    href: `/history?pair=${encodeURIComponent(trade.symbol)}`,
+    id: trade.id,
+    time: trade.closedAt,
+    title: 'Paper trade',
+    tone: trade.pnl >= 0 ? ('positive' as const) : ('negative' as const),
+  }));
+
+  return [...backtestRows, ...paperRows].sort((left, right) => new Date(right.time).getTime() - new Date(left.time).getTime());
+}
+
+function formatSourceVisibility(value: StrategyResearchRecord['sourceVisibility']) {
+  switch (value) {
+    case 'open_source':
+      return 'open';
+    case 'protected_source':
+      return 'concept';
+    case 'public_description':
+      return 'public';
+    case 'unknown':
+      return 'unknown';
+  }
 }

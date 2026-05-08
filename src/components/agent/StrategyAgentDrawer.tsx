@@ -1,6 +1,6 @@
 'use client';
 
-import { Bot, BrainCircuit, CheckCircle2, ClipboardList, FileText, GitCompare, LineChart, Lock, NotebookPen, Play, RotateCcw, X } from 'lucide-react';
+import { Bot, BrainCircuit, CheckCircle2, ClipboardList, FileText, GitCompare, LineChart, Lock, NotebookPen, Play, RotateCcw, Search, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
 import { postJson } from '../../services/api-client';
@@ -30,6 +30,7 @@ type AgentActionResponse = {
 
 const actionButtons: Array<{ action: AgentAction; icon: typeof BrainCircuit; label: string }> = [
   { action: 'analyze_strategy', icon: BrainCircuit, label: 'Analyze' },
+  { action: 'research_tradingview', icon: Search, label: 'TV Research' },
   { action: 'create_variant', icon: GitCompare, label: 'Variant' },
   { action: 'compare_versions', icon: GitCompare, label: 'Compare' },
   { action: 'run_backtest', icon: LineChart, label: 'Backtest' },
@@ -44,6 +45,7 @@ const actionPermission: Partial<Record<AgentAction, keyof AgentSettings['permiss
   create_report: 'create_report',
   create_variant: 'create_variant',
   prepare_bot: 'prepare_bot',
+  research_tradingview: 'analyze_strategy',
   run_backtest: 'run_backtest',
   run_paper_test: 'run_paper_test',
   write_journal_note: 'write_journal_note',
@@ -87,7 +89,7 @@ export function StrategyAgentDrawer({ context, reports = [], runs = [], settings
       }
 
       setPendingAction(null);
-      setStatus(response.decision?.warnings[0] ?? 'Done');
+      setStatus(formatActionResult(action, response));
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Action failed');
     }
@@ -212,4 +214,16 @@ export function StrategyAgentDrawer({ context, reports = [], runs = [], settings
 
 function formatAction(action: AgentAction) {
   return action.replace(/_/g, ' ');
+}
+
+function formatActionResult(action: AgentAction, response: AgentActionResponse) {
+  if (action === 'research_tradingview' && isResearchResult(response.result)) {
+    return `${response.result.records.length} TradingView sources saved`;
+  }
+
+  return response.decision?.warnings[0] ?? 'Done';
+}
+
+function isResearchResult(value: unknown): value is { records: unknown[] } {
+  return typeof value === 'object' && value !== null && Array.isArray((value as { records?: unknown[] }).records);
 }
