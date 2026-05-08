@@ -129,14 +129,12 @@ async function enrichPairsWithBinance(seedPairs: MarketPair[], tickerMap: Map<st
       }
 
       const lastPrice = asMarketNumber(ticker.lastPrice, pair.lastPrice);
-      const candles = await fetchCandles(pair, binanceSymbol, pair.timeframe).catch(() => pair.candles);
       const marketCap = pair.marketCap && pair.lastPrice ? pair.marketCap * (lastPrice / pair.lastPrice) : pair.marketCap;
       const stopRatio = pair.draft.stopLoss / pair.lastPrice;
       const takeProfitRatio = pair.draft.takeProfit / pair.lastPrice;
 
       return {
         ...pair,
-        candles,
         change24h: asMarketNumber(ticker.priceChangePercent, pair.change24h),
         exchange: 'Binance',
         lastPrice,

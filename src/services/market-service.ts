@@ -13,6 +13,10 @@ export async function listMarketPairs(): Promise<MarketPair[]> {
   return (await getMarketDataSnapshot()).pairs;
 }
 
+export function listBootstrapMarketPairs(): MarketPair[] {
+  return readThoonDb().marketPairRecords;
+}
+
 export async function getPrimaryMarket(): Promise<MarketPair> {
   return (await listMarketPairs())[0];
 }

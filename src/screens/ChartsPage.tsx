@@ -1,5 +1,5 @@
 import { ChartsWorkspace } from './charts/ChartsWorkspace';
-import { listMarketPairs } from '../services/market-service';
+import { listBootstrapMarketPairs } from '../services/market-service';
 import {
   getRiskRules,
   getAgentSettings,
@@ -22,7 +22,7 @@ type ChartsPageProps = {
 };
 
 export async function ChartsPage({ initialPair }: ChartsPageProps) {
-  const marketPairs = await listMarketPairs();
+  const marketPairs = listBootstrapMarketPairs();
 
   return (
     <ChartsWorkspace
