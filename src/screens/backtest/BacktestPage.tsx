@@ -158,7 +158,7 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
     } catch (error) {
       const isApiError = error instanceof ApiClientError;
       const message = error instanceof Error ? error.message : 'Run failed';
-      const status = isApiError && error.status === 502 ? 'blocked' : 'error';
+      const status = isApiError && (error.status === 422 || error.status === 502) ? 'blocked' : 'error';
 
       setRunStatus(status === 'blocked' ? 'Blocked' : 'Run failed');
       setRunState({

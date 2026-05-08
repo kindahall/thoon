@@ -22,7 +22,7 @@ export const strategies: Strategy[] = [
       sourceCode: jimmyPineSource,
       sourceId: JIMMY_SOURCE_ID,
       summary:
-        'Canonical Pine v5 strategy for the whole app: TRIX, Donchian, RSI, ATR exits, drawdown long recovery and drawup short recovery. Codex may adapt parameters by crypto and timeframe, but Thoon keeps this logic as the single strategy.',
+        'Protected Pine v5 core strategy: TRIX, Donchian, RSI, ATR exits, drawdown long recovery and drawup short recovery. Codex may adapt parameters by crypto and timeframe, while other named strategies remain separate records.',
     },
     entryConditions: [
       { connector: 'IF', field: 'TRIX Long', id: 'jimmy-entry-long-trix', operator: 'crosses-above', value: 'TRIX crosses signal while close > MA 200' },
@@ -64,7 +64,7 @@ export const strategies: Strategy[] = [
     },
     setupSnapshot: {
       notes:
-        'jimmy is the only canonical strategy in Thoon. Codex can adapt allowed inputs to BTC, ETH, SOL and other pairs/timeframes, but the Pine source stays protected.',
+        'jimmy is the protected core strategy in Thoon. Codex can create named strategy records and variants, but the original Pine source stays protected.',
     },
     status: 'active',
     timeframe: '1h',

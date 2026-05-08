@@ -206,19 +206,20 @@ export async function flushPendingPostgresMirror() {
 function migrateDb(db: Partial<ThoonDb>): ThoonDb {
   const seed = createSeedDb();
   const strategyRecords = mergeSeedRecords(seed.strategyRecords, db.strategyRecords).filter((strategy) => !JIMMY_LEGACY_STRATEGY_IDS.includes(strategy.id));
+  const visibleStrategyIds = new Set(strategyRecords.map((strategy) => strategy.id));
 
   return {
     ...seed,
     ...db,
-    agentQueueRecords: mergeSeedRecords(seed.agentQueueRecords, db.agentQueueRecords).filter((record) => record.strategyId === JIMMY_STRATEGY_ID && !isRemovedSeedAgentRecord(record.id)),
-    agentReportRecords: mergeSeedRecords(seed.agentReportRecords, db.agentReportRecords).filter((record) => record.strategyId === JIMMY_STRATEGY_ID && !isRemovedSeedAgentRecord(record.id)),
-    agentRunRecords: mergeSeedRecords(seed.agentRunRecords, db.agentRunRecords).filter((record) => record.strategyId === JIMMY_STRATEGY_ID && !isRemovedSeedAgentRecord(record.id)),
+    agentQueueRecords: mergeSeedRecords(seed.agentQueueRecords, db.agentQueueRecords).filter((record) => hasVisibleStrategyId(record.strategyId, visibleStrategyIds) && !isRemovedSeedAgentRecord(record.id)),
+    agentReportRecords: mergeSeedRecords(seed.agentReportRecords, db.agentReportRecords).filter((record) => visibleStrategyIds.has(record.strategyId) && !isRemovedSeedAgentRecord(record.id)),
+    agentRunRecords: mergeSeedRecords(seed.agentRunRecords, db.agentRunRecords).filter((record) => !record.strategyId || visibleStrategyIds.has(record.strategyId)),
     agentSettingsRecord: migrateAgentSettings(db.agentSettingsRecord, seed.agentSettingsRecord),
-    agentSuggestionRecords: mergeSeedRecords(seed.agentSuggestionRecords, db.agentSuggestionRecords).filter((record) => record.strategyId === JIMMY_STRATEGY_ID && !isRemovedSeedAgentRecord(record.id)),
+    agentSuggestionRecords: mergeSeedRecords(seed.agentSuggestionRecords, db.agentSuggestionRecords).filter((record) => visibleStrategyIds.has(record.strategyId) && !isRemovedSeedAgentRecord(record.id)),
     apiKeySecrets: db.apiKeySecrets ?? {},
-    backtestReportRecords: mergeSeedRecords(seed.backtestReportRecords, db.backtestReportRecords).filter(isTrustedBacktestReportRecord),
+    backtestReportRecords: mergeSeedRecords(seed.backtestReportRecords, db.backtestReportRecords).filter((record) => isTrustedBacktestReportRecord(record, visibleStrategyIds)),
     botLogRecords: stripLegacyBotLogs(db.botLogRecords),
-    botRecords: normalizeBotRecords(db.botRecords ?? seed.botRecords),
+    botRecords: normalizeBotRecords(db.botRecords ?? seed.botRecords, visibleStrategyIds),
     fillRecords: stripSeedRecords(fills, db.fillRecords),
     openOrderRecords: stripSeedRecords(openOrders, db.openOrderRecords),
     orderHistoryRecords: stripSeedRecords(orderHistory, db.orderHistoryRecords),
@@ -228,19 +229,27 @@ function migrateDb(db: Partial<ThoonDb>): ThoonDb {
     sessionRecords: db.sessionRecords ?? [],
     strategyRecords,
     strategyResearchRecords: db.strategyResearchRecords ?? [],
-    strategyVersionRecords: mergeSeedRecords(seed.strategyVersionRecords, db.strategyVersionRecords).filter((record) => record.strategyId === JIMMY_STRATEGY_ID),
+    strategyVersionRecords: mergeSeedRecords(seed.strategyVersionRecords, db.strategyVersionRecords).filter((record) => visibleStrategyIds.has(record.strategyId)),
     schemaVersion: 1,
   };
 }
 
-function canonicalStrategyId(_strategyId: string | undefined) {
-  return JIMMY_STRATEGY_ID;
+function canonicalStrategyId(strategyId: string | undefined, visibleStrategyIds?: Set<string>) {
+  if (!strategyId || JIMMY_LEGACY_STRATEGY_IDS.includes(strategyId)) {
+    return JIMMY_STRATEGY_ID;
+  }
+
+  if (visibleStrategyIds && !visibleStrategyIds.has(strategyId)) {
+    return JIMMY_STRATEGY_ID;
+  }
+
+  return strategyId;
 }
 
-function isTrustedBacktestReportRecord(record: BacktestReport) {
+function isTrustedBacktestReportRecord(record: BacktestReport, visibleStrategyIds: Set<string>) {
   return (
     record.source === 'calculated' &&
-    record.strategyId === JIMMY_STRATEGY_ID &&
+    visibleStrategyIds.has(record.strategyId) &&
     (record.marketDataSource === 'binance-live' || Boolean(record.marketDataSource?.endsWith('-public-rest'))) &&
     record.engine === 'jimmy-pine-v5-candle-engine' &&
     Boolean(record.dataWindow?.candleChecksum) &&
@@ -258,14 +267,14 @@ function isTrustedBacktestReportRecord(record: BacktestReport) {
   );
 }
 
-function normalizeBotRecords(records: Bot[] | undefined): Bot[] {
+function normalizeBotRecords(records: Bot[] | undefined, visibleStrategyIds: Set<string>): Bot[] {
   const legacyMockBotIds = new Set(['bot-btc-trend-paper', 'bot-eth-breakout-paper', 'bot-sol-reversion-draft']);
 
   return (records ?? [])
     .filter((bot) => !legacyMockBotIds.has(bot.id))
     .map((bot) => ({
       ...bot,
-      strategyId: canonicalStrategyId(bot.strategyId),
+      strategyId: canonicalStrategyId(bot.strategyId, visibleStrategyIds),
     }));
 }
 
@@ -286,6 +295,10 @@ function isRemovedSeedAgentRecord(id: string) {
   ]);
 
   return removedSeedAgentIds.has(id);
+}
+
+function hasVisibleStrategyId(strategyId: string | undefined, visibleStrategyIds: Set<string>) {
+  return Boolean(strategyId && visibleStrategyIds.has(strategyId));
 }
 
 function stripSeedRecords<T extends { id: string }>(seedRecords: T[], dbRecords: T[] | undefined): T[] {
@@ -323,6 +336,7 @@ function migrateAgentSettings(dbSettings: AgentSettings | undefined, seedSetting
   const isLegacyStrategyAgent =
     dbSettings.instructions.mainStrategy.includes('Core TRIX') ||
     dbSettings.instructions.mainStrategy.includes('BTC Trend') ||
+    dbSettings.instructions.mainStrategy.includes('used by the whole application') ||
     dbSettings.instructions.general.includes('Protect the Pine core strategy');
 
   if (isLegacyDefault || isLegacyStrategyAgent) {

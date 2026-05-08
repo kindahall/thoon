@@ -78,7 +78,7 @@ function callCodexProvider(context: AgentAiContext) {
         'Rank each crypto/timeframe by profit factor, drawdown, sample size, buy-and-hold comparison and paper stability.',
       ],
       id: `agent-codex-sug-${strategyId}-variant-${Date.now()}`,
-      impact: 'Adapt jimmy without introducing another strategy.',
+      impact: 'Create named variants while keeping the protected source intact.',
       reason: 'Backtesting is the right place to be aggressive across cryptos and timeframes.',
       risk: 'medium',
       strategyId,

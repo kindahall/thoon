@@ -21,7 +21,7 @@ export function getWorkspaceSummary(key: WorkspaceSummaryKey): WorkspaceSummary 
     watchlistRecords,
   } = readThoonDb();
   const canonicalStrategies = canonicalStrategyRecords(strategyRecords);
-  const canonicalReports = backtestReportRecords.filter((report) => report.source === 'calculated' && report.strategyId === JIMMY_STRATEGY_ID);
+  const canonicalReports = backtestReportRecords.filter((report) => report.source === 'calculated');
 
   switch (key) {
     case 'markets':
@@ -264,7 +264,7 @@ export function getStrategy(id: string) {
 }
 
 export function listBacktestReports() {
-  return readThoonDb().backtestReportRecords.filter((report) => report.source === 'calculated' && report.strategyId === JIMMY_STRATEGY_ID);
+  return readThoonDb().backtestReportRecords.filter((report) => report.source === 'calculated');
 }
 
 export function getAgentSettings() {
@@ -707,12 +707,14 @@ function toneFromNumber(value: number): MetricTone {
   return 'neutral';
 }
 
-function canonicalStrategyId(_id: string | undefined) {
-  return JIMMY_STRATEGY_ID;
+function canonicalStrategyId(id: string | undefined) {
+  if (!id || JIMMY_LEGACY_STRATEGY_IDS.includes(id)) {
+    return JIMMY_STRATEGY_ID;
+  }
+
+  return id;
 }
 
 function canonicalStrategyRecords<T extends { id: string }>(records: T[]) {
-  const jimmy = records.find((strategy) => strategy.id === JIMMY_STRATEGY_ID);
-
-  return jimmy ? [jimmy] : records.filter((strategy) => !JIMMY_LEGACY_STRATEGY_IDS.includes(strategy.id)).slice(0, 1);
+  return records.filter((strategy) => !JIMMY_LEGACY_STRATEGY_IDS.includes(strategy.id));
 }

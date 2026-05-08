@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { JIMMY_LEGACY_STRATEGY_IDS, JIMMY_STRATEGY_ID } from '../../../config/jimmy-strategy';
+import { JIMMY_LEGACY_STRATEGY_IDS, JIMMY_SOURCE_ID, JIMMY_STRATEGY_ID } from '../../../config/jimmy-strategy';
 import { appendAuditEvent } from '../../../server/audit';
 import { runBacktestFromCandles } from '../../../server/backtest-engine';
 import {
@@ -161,7 +161,7 @@ async function getHandler(request: NextRequest, context: RouteContext) {
 
   if (path[0] === 'strategies') {
     const visibleStrategies = visibleStrategyRecords(db);
-    const requestedId = canonicalStrategyId(path[1]);
+    const requestedId = normalizeStrategyId(path[1], db);
 
     return json(path[1] ? visibleStrategies.find((strategy) => strategy.id === requestedId) : visibleStrategies);
   }
@@ -189,7 +189,7 @@ async function getHandler(request: NextRequest, context: RouteContext) {
   }
 
   if (path[0] === 'backtests') {
-    return json(db.backtestReportRecords.filter((report) => report.source === 'calculated' && report.strategyId === JIMMY_STRATEGY_ID));
+    return json(db.backtestReportRecords.filter((report) => report.source === 'calculated'));
   }
 
   if (path[0] === 'preferences') {
@@ -538,7 +538,7 @@ async function postHandler(request: NextRequest, context: RouteContext) {
           pnl: 0,
           riskPerTrade: asNumber(body.riskPerTrade, db.riskRulesRecord.maxRiskPerTrade),
           status: requestedStatus,
-          strategyId: canonicalStrategyId(asString(body.strategyId) || db.strategyRecords[0]?.id || 'manual'),
+          strategyId: normalizeStrategyId(asString(body.strategyId) || db.strategyRecords[0]?.id || 'manual', db),
           symbol: asString(body.symbol) || db.marketPairRecords[0].symbol,
           winRate: 0,
         };
@@ -778,11 +778,21 @@ async function postHandler(request: NextRequest, context: RouteContext) {
 
   if (path[0] === 'backtests') {
     const db = readThoonDb();
-    const strategyId = canonicalStrategyId(asString(body.strategyId) || db.strategyRecords[0]?.id || 'manual');
+    const strategyId = normalizeStrategyId(asString(body.strategyId) || db.strategyRecords[0]?.id || 'manual', db);
     const strategy = db.strategyRecords.find((record) => record.id === strategyId) ?? db.strategyRecords[0];
 
     if (!strategy) {
       return json({ error: 'Strategy not found.' }, 404);
+    }
+
+    if (!isExecutableBacktestStrategy(strategy)) {
+      return json(
+        {
+          error: `${strategy.name} does not have a real executable backtest engine yet. The run was blocked instead of showing fake results.`,
+          details: 'Only jimmy and agent strategies explicitly linked to the protected jimmy Pine source can currently run through the candle engine.',
+        },
+        422,
+      );
     }
 
     const period = asString(body.period) || '90D';
@@ -1308,7 +1318,7 @@ async function patchHandler(request: NextRequest, context: RouteContext) {
       bot.allocatedCapital = positiveValue(body.allocatedCapital, bot.allocatedCapital);
       bot.exchange = asString(body.exchange) || bot.exchange;
       bot.riskPerTrade = positiveValue(body.riskPerTrade, bot.riskPerTrade);
-      bot.strategyId = canonicalStrategyId(asString(body.strategyId) || bot.strategyId);
+      bot.strategyId = normalizeStrategyId(asString(body.strategyId) || bot.strategyId, db);
       bot.symbol = asString(body.symbol) || bot.symbol;
 
       appendAuditEvent(db, {
@@ -1523,7 +1533,8 @@ async function agentAction(body: Record<string, unknown>) {
   }
 
   const confirmed = Boolean(body.confirmed);
-  const strategyId = canonicalStrategyId(asString(body.strategyId));
+  const initialDb = readThoonDb();
+  const strategyId = normalizeStrategyId(asString(body.strategyId), initialDb);
   const versionId = asString(body.versionId);
   let aiSuggestionResult: Awaited<ReturnType<typeof generateAiStrategySuggestions>> | undefined;
   let agentBacktestReport: BacktestReport | undefined;
@@ -1551,6 +1562,10 @@ async function agentAction(body: Record<string, unknown>) {
     const strategy = strategyId ? db.strategyRecords.find((item) => item.id === strategyId) : undefined;
 
     if (strategy) {
+      if (!isExecutableBacktestStrategy(strategy)) {
+        throw new ApiError(`${strategy.name} does not have a real executable backtest engine yet.`, 422);
+      }
+
       let candles;
 
       try {
@@ -1909,14 +1924,20 @@ function asNumber(value: unknown, fallback: number) {
   return Number.isFinite(nextValue) ? nextValue : fallback;
 }
 
-function canonicalStrategyId(_value: string | undefined) {
-  return JIMMY_STRATEGY_ID;
+function normalizeStrategyId(value: string | undefined, db: ThoonDb) {
+  if (!value || JIMMY_LEGACY_STRATEGY_IDS.includes(value)) {
+    return JIMMY_STRATEGY_ID;
+  }
+
+  return db.strategyRecords.some((strategy) => strategy.id === value) ? value : JIMMY_STRATEGY_ID;
 }
 
 function visibleStrategyRecords(db: ThoonDb) {
-  const jimmy = db.strategyRecords.find((strategy) => strategy.id === JIMMY_STRATEGY_ID);
+  return db.strategyRecords.filter((strategy) => !JIMMY_LEGACY_STRATEGY_IDS.includes(strategy.id));
+}
 
-  return jimmy ? [jimmy] : db.strategyRecords.filter((strategy) => !JIMMY_LEGACY_STRATEGY_IDS.includes(strategy.id)).slice(0, 1);
+function isExecutableBacktestStrategy(strategy: Strategy) {
+  return strategy.id === JIMMY_STRATEGY_ID || strategy.agentSource?.sourceId === JIMMY_SOURCE_ID;
 }
 
 function positiveValue(value: unknown, fallback: number) {

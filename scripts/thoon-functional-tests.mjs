@@ -249,7 +249,7 @@ test('api mutations return controlled errors and block cross-origin writes', asy
   assertIncludes(blockedOriginBody, 'Cross-origin mutation blocked', 'Cross-origin mutation returns JSON error');
 });
 
-test('api resources and product actions are wired end-to-end', async ({ apiRequest, baseUrl }) => {
+test('api resources and product actions are wired end-to-end', async ({ apiRequest, baseUrl, fetchPage }) => {
   const unique = `qa-${Date.now()}`;
   const localEquivalentOrigin = (() => {
     const url = new URL(baseUrl);
@@ -344,6 +344,31 @@ test('api resources and product actions are wired end-to-end', async ({ apiReque
     'Strategy patch returns JSON',
   );
   assertEqual(activeStrategy.status, 'active', 'Strategy patch persists status');
+  assertEqual(activeStrategy.id, strategy.id, 'Strategy patch keeps the requested strategy id');
+
+  const strategyList = await readJsonResponse(await apiRequest('/api/strategies'), 'Strategy list returns JSON');
+  assert(strategyList.some((record) => record.id === strategy.id && record.name === strategy.name), 'Strategy list keeps custom strategy name and id');
+
+  const backtestWithCustomStrategy = await fetchPage('/backtest');
+  assertIncludes(backtestWithCustomStrategy, strategy.name, 'Backtest strategy selector includes custom strategy names');
+
+  const blockedCustomBacktest = await apiRequest('/api/backtests', {
+    body: JSON.stringify({
+      fees: 0.06,
+      initialCapital: 10000,
+      period: '30D',
+      slippage: 0.02,
+      strategyId: strategy.id,
+      symbol: 'BTC/USDT',
+      timeframe: '1h',
+    }),
+    headers: { 'content-type': 'application/json' },
+    method: 'POST',
+  });
+  const blockedCustomBacktestBody = await blockedCustomBacktest.text();
+  assertStatus(blockedCustomBacktest, 422, 'Custom strategy without executable engine is blocked instead of faked');
+  assertIncludes(blockedCustomBacktestBody, strategy.name, 'Blocked custom strategy backtest names the selected strategy');
+
   const duplicatedStrategy = await readJsonResponse(
     await apiRequest(`/api/strategies/${encodeURIComponent(strategy.id)}/duplicate`, {
       headers: { 'content-type': 'application/json' },
@@ -362,6 +387,7 @@ test('api resources and product actions are wired end-to-end', async ({ apiReque
     'Bot creation returns JSON',
   );
   assert(bot.id && bot.mode === 'paper', 'Bot creation persists paper bot');
+  assertEqual(bot.strategyId, strategy.id, 'Bot creation keeps the selected strategy id');
   const startedBot = await readJsonResponse(
     await apiRequest(`/api/bots/${encodeURIComponent(bot.id)}/action`, {
       body: JSON.stringify({ action: 'start' }),

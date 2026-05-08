@@ -69,7 +69,7 @@ export function StrategiesListPage({ strategies }: StrategiesListPageProps) {
       <div className="workspace-header workspace-header--compact">
         <div>
           <h1>Strategies</h1>
-          <p>Single strategy mode: jimmy only, adapted by crypto and timeframe.</p>
+          <p>Named strategies, agent variants and protected core research.</p>
         </div>
         <div className="workspace-header__right">
           <Link className="ui-button ui-button--secondary ui-button--sm" href="/strategies/core-lab">
@@ -80,7 +80,7 @@ export function StrategiesListPage({ strategies }: StrategiesListPageProps) {
           </Link>
           <Link className="strategy-new-link" href="/strategies/new">
             <Plus size={15} />
-            Adapt Jimmy
+            New Strategy
           </Link>
           <HelpPopover items={['Details open from the strategy name.', 'Testing stays paper until a bot is launched.']} title="Strategies" />
         </div>

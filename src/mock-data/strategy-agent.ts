@@ -17,10 +17,10 @@ export const defaultAgentSettings: AgentSettings = {
     allowedParameters:
       'Only jimmy inputs: TRIX length/signal, MA type/lengths, Donchian length, RSI levels, ATR stop/trail multipliers, drawdown/drawup lookbacks and recovery thresholds, risk percent.',
     archiveRules: 'Archive weak variants only. The protected jimmy source is never archived or replaced.',
-    forbiddenParameters: 'API keys, live trading, withdrawal permissions, trade limits, leverage increase, stop-loss removal, replacing jimmy with another strategy.',
+    forbiddenParameters: 'API keys, live trading, withdrawal permissions, trade limits, leverage increase, stop-loss removal, editing the protected jimmy source.',
     general:
-      'jimmy is the only canonical strategy. Codex should adapt jimmy aggressively across cryptos and timeframes through parameter sweeps, backtests, comparisons and paper tests, while keeping the Pine logic protected.',
-    mainStrategy: 'jimmy is the protected strategy used by the whole application.',
+      'jimmy is the protected core strategy. Codex may create separate named strategies and variants from public research or parameter sweeps, while keeping the Pine logic protected when a variant is jimmy-based.',
+    mainStrategy: 'jimmy is the protected core strategy; other named strategies stay separate.',
     paperTestingRules: 'Paper testing is required before any bot is considered live-ready.',
     promotionRules: 'Explore broadly in backtest. Promote only after enough trades, acceptable drawdown and no critical warnings.',
     reportStyle: 'Short summary first, details collapsed.',
