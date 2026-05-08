@@ -170,6 +170,9 @@ test('bot, strategy, backtest and paper flows expose functional states', async (
   assertIncludes(backtestSource, 'isTrustedBacktestReport', 'Backtest UI rejects incomplete report data');
   assertIncludes(backtestSource, 'sort((left, right) => new Date(right.exitTime)', 'Trades are displayed newest first');
   assertIncludes(backtestSource, 'TradeDetailPanel', 'Trade rows expose a detail panel');
+  assertIncludes(backtestSource, 'exportBacktestReport', 'Save Report exports the current calculated report');
+  assertIncludes(backtestSource, 'URL.createObjectURL', 'Save Report creates a real downloadable report');
+  assertIncludes(backtestSource, 'backtest-actions-card__status', 'Bottom backtest actions expose local action status');
 
   const backtest = await fetchPage('/backtest?strategyId=strat-jimmy');
   assertIncludes(backtest, 'Equity Curve', 'Backtest displays results');

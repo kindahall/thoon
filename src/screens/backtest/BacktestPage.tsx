@@ -28,7 +28,7 @@ type BacktestPageProps = {
 
 type BacktestTab = 'trades' | 'monthly' | 'distribution' | 'drawdown' | 'analysis';
 type BacktestRunStatus = 'blocked' | 'error' | 'idle' | 'running' | 'success';
-type BacktestRunKind = 'run' | 'save';
+type BacktestRunKind = 'export' | 'run';
 
 type BacktestRunState = {
   details?: string;
@@ -117,7 +117,7 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
 
     const startedAt = new Date().toISOString();
     const runningMessage = `${selectedExchange?.name ?? exchangeId} public candles request for ${symbol} ${timeframe} ${dateRange}`;
-    setRunStatus(kind === 'save' ? 'Saving report' : 'Backtest running');
+    setRunStatus('Backtest running');
     setRunState({ kind, message: runningMessage, startedAt, status: 'running' });
 
     try {
@@ -147,7 +147,7 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
 
       setReports((currentReports) => [report, ...currentReports.filter((item) => item.id !== report.id)]);
       const successMessage = `${report.totalTrades} closed trades from ${report.candleCount ?? 0} public candles`;
-      setRunStatus(kind === 'save' ? `Report saved · ${successMessage}` : successMessage);
+      setRunStatus(successMessage);
       setRunState({
         finishedAt: new Date().toISOString(),
         kind,
@@ -177,11 +177,52 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
   }
 
   async function saveReport() {
-    await executeBacktest('save');
+    exportBacktestReport();
+  }
+
+  function exportBacktestReport() {
+    if (!report) {
+      setRunStatus('No report to export');
+      setRunState({
+        finishedAt: new Date().toISOString(),
+        kind: 'export',
+        message: 'Run a trusted backtest before saving a report.',
+        status: 'blocked',
+      });
+      return;
+    }
+
+    const exportedAt = new Date().toISOString();
+    const payload = {
+      exportedAt,
+      report,
+      strategy: {
+        id: strategy?.id,
+        name: strategy?.name,
+      },
+    };
+    const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+
+    link.href = url;
+    link.download = `${slugFileName(`thoon-${report.market ?? symbol}-${report.timeframe ?? timeframe}-${report.period}-${report.generatedAt ?? exportedAt}`)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+
+    setRunStatus('Report exported');
+    setRunState({
+      finishedAt: exportedAt,
+      kind: 'export',
+      message: `${report.id} · ${report.dataWindow?.candleChecksum ?? 'no checksum'}`,
+      status: 'success',
+    });
   }
 
   const runButtonIcon = isBacktestRunning && runState.kind === 'run' ? <Loader2 className="backtest-spin" size={15} /> : <Play size={15} />;
-  const saveButtonIcon = isBacktestRunning && runState.kind === 'save' ? <Loader2 className="backtest-spin" size={15} /> : <FileCheck2 size={15} />;
+  const saveButtonIcon = <FileCheck2 size={15} />;
 
   return (
     <section className="backtest-page" aria-label="Backtest">
@@ -196,8 +237,8 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
           <Button disabled={isBacktestRunning} icon={runButtonIcon} onClick={runBacktest} size="sm" variant="primary">
             {isBacktestRunning && runState.kind === 'run' ? 'Backtest running' : 'Run Backtest'}
           </Button>
-          <Button disabled={isBacktestRunning} icon={saveButtonIcon} onClick={saveReport} size="sm" variant="ghost">
-            {isBacktestRunning && runState.kind === 'save' ? 'Saving report' : 'Save Report'}
+          <Button disabled={isBacktestRunning || !report} icon={saveButtonIcon} onClick={saveReport} size="sm" variant="ghost">
+            Save Report
           </Button>
           <Link className="ui-button ui-button--secondary ui-button--sm" href={`/backtest/replay?pair=${encodeURIComponent(symbol)}&strategyId=${encodeURIComponent(strategyId)}`}>
             <span className="ui-button__icon">
@@ -390,11 +431,15 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
           </Card>
 
           <Card className="backtest-actions-card">
+            <div className={`backtest-actions-card__status backtest-actions-card__status--${runState.status}`}>
+              <strong>{runState.status === 'idle' ? 'Report actions' : backtestRunTitle(runState)}</strong>
+              <span>{runState.status === 'idle' ? `${report.totalTrades} closed trades ready · ${report.dataWindow?.candleChecksum ?? 'no checksum'}` : runState.message}</span>
+            </div>
             <Button disabled={isBacktestRunning} icon={runButtonIcon} onClick={runBacktest} variant="primary">
               {isBacktestRunning && runState.kind === 'run' ? 'Backtest running' : 'Run Backtest'}
             </Button>
-            <Button disabled={isBacktestRunning} icon={saveButtonIcon} onClick={saveReport} variant="ghost">
-              {isBacktestRunning && runState.kind === 'save' ? 'Saving report' : 'Save Report'}
+            <Button disabled={isBacktestRunning || !report} icon={saveButtonIcon} onClick={saveReport} variant="ghost">
+              Save Report
             </Button>
             <Link className="ui-button ui-button--ghost" href={`/backtest/replay?pair=${encodeURIComponent(symbol)}&strategyId=${encodeURIComponent(strategyId)}`}>
               <span className="ui-button__icon"><RotateCcw size={15} /></span>
@@ -408,16 +453,6 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
 }
 
 function BacktestRunStateBanner({ state }: { state: BacktestRunState }) {
-  const title =
-    state.status === 'running'
-      ? state.kind === 'save'
-        ? 'Saving report'
-        : 'Backtest running'
-      : state.status === 'success'
-        ? 'Backtest completed'
-        : state.status === 'blocked'
-          ? 'Backtest blocked'
-          : 'Backtest failed';
   const icon =
     state.status === 'running' ? (
       <Loader2 className="backtest-spin" size={17} />
@@ -431,7 +466,7 @@ function BacktestRunStateBanner({ state }: { state: BacktestRunState }) {
     <div className={`backtest-run-state backtest-run-state--${state.status}`} role={state.status === 'running' || state.status === 'success' ? 'status' : 'alert'} aria-live="polite">
       <span>{icon}</span>
       <div>
-        <strong>{title}</strong>
+        <strong>{backtestRunTitle(state)}</strong>
         <small>{state.message}</small>
         {state.details ? <small>{state.details}</small> : null}
         {state.startedAt ? (
@@ -443,6 +478,26 @@ function BacktestRunStateBanner({ state }: { state: BacktestRunState }) {
       </div>
     </div>
   );
+}
+
+function backtestRunTitle(state: BacktestRunState) {
+  if (state.status === 'running') {
+    return 'Backtest running';
+  }
+
+  if (state.status === 'success') {
+    return state.kind === 'export' ? 'Report exported' : 'Backtest completed';
+  }
+
+  if (state.status === 'blocked') {
+    return state.kind === 'export' ? 'Report export blocked' : 'Backtest blocked';
+  }
+
+  if (state.status === 'error') {
+    return 'Backtest failed';
+  }
+
+  return 'Ready';
 }
 
 function BacktestSelect({ children, label, onChange, value }: { children: ReactNode; label: string; onChange: (value: string) => void; value: string }) {
@@ -715,6 +770,10 @@ function formatExitReason(value: BacktestTrade['exitReason']) {
     .split('-')
     .map((part) => titleCase(part))
     .join(' ');
+}
+
+function slugFileName(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'thoon-backtest-report';
 }
 
 function buildDistribution(values: number[]) {
