@@ -4,10 +4,12 @@ import type { ReactNode } from 'react';
 import { Activity, AlertTriangle, Bell, PanelLeftClose, PanelLeftOpen, PlugZap, Settings, UserCircle } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { Button, IconButton, Modal, ThemeToggle } from '../components/ui';
 import { appNavigation } from '../config/navigation';
+import { apiJson, patchJson } from '../services/api-client';
+import type { AgentSettings } from '../types/trading';
 import { cn } from '../utils/classNames';
 
 type AppLayoutProps = {
@@ -21,6 +23,34 @@ export function AppLayout({ children }: AppLayoutProps) {
   const [liveModeOpen, setLiveModeOpen] = useState(false);
   const [emergencyOpen, setEmergencyOpen] = useState(false);
   const [topbarStatus, setTopbarStatus] = useState('Paper trading ready');
+  const [agentSettings, setAgentSettings] = useState<AgentSettings | null>(null);
+  const [agentStatusLoading, setAgentStatusLoading] = useState(true);
+
+  useEffect(() => {
+    let ignore = false;
+
+    apiJson<AgentSettings>('/api/agent/settings')
+      .then((settings) => {
+        if (!ignore) {
+          setAgentSettings(settings);
+          setTopbarStatus(settings.enabled ? `Strategy Agent ${formatAgentMode(settings.mode)} actif` : 'Strategy Agent suspendu');
+        }
+      })
+      .catch((error) => {
+        if (!ignore) {
+          setTopbarStatus(error instanceof Error ? error.message : 'Strategy Agent indisponible');
+        }
+      })
+      .finally(() => {
+        if (!ignore) {
+          setAgentStatusLoading(false);
+        }
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
   function confirmLiveMode() {
     setExecutionMode('live');
@@ -33,6 +63,31 @@ export function AppLayout({ children }: AppLayoutProps) {
     setTopbarStatus('Emergency stop sent. Trading locked to paper.');
     setEmergencyOpen(false);
   }
+
+  async function toggleAgentAutonomy() {
+    if (!agentSettings || agentStatusLoading) {
+      return;
+    }
+
+    const nextSettings = { ...agentSettings, enabled: !agentSettings.enabled };
+    setAgentSettings(nextSettings);
+    setAgentStatusLoading(true);
+    setTopbarStatus(nextSettings.enabled ? 'Activation Strategy Agent' : 'Suspension Strategy Agent');
+
+    try {
+      const savedSettings = await patchJson<AgentSettings>('/api/agent/settings', nextSettings);
+      setAgentSettings(savedSettings);
+      setTopbarStatus(savedSettings.enabled ? `Strategy Agent ${formatAgentMode(savedSettings.mode)} actif` : 'Strategy Agent suspendu');
+    } catch (error) {
+      setAgentSettings(agentSettings);
+      setTopbarStatus(error instanceof Error ? error.message : 'Strategy Agent update failed');
+    } finally {
+      setAgentStatusLoading(false);
+    }
+  }
+
+  const agentEnabled = Boolean(agentSettings?.enabled);
+  const agentModeLabel = agentSettings ? formatAgentMode(agentSettings.mode) : 'verification';
 
   return (
     <div className={cn('app-shell app-shell--with-sidebar', sidebarCollapsed && 'app-shell--sidebar-collapsed')}>
@@ -77,10 +132,16 @@ export function AppLayout({ children }: AppLayoutProps) {
 
         <div className="topbar-autonomy" aria-label="Autonomous mode">
           <span>Mode autonome</span>
-          <strong>
+          <button
+            className={cn('topbar-autonomy-toggle', agentEnabled && 'is-active', agentStatusLoading && 'is-loading')}
+            disabled={!agentSettings || agentStatusLoading}
+            onClick={toggleAgentAutonomy}
+            title={agentEnabled ? 'Suspendre le Strategy Agent' : 'Activer le Strategy Agent'}
+            type="button"
+          >
             <Activity size={15} />
-            Suspendu
-          </strong>
+            {agentEnabled ? agentModeLabel : agentStatusLoading ? 'Verification' : 'Suspendu'}
+          </button>
         </div>
 
         <div className="topbar-actions">
@@ -179,4 +240,17 @@ export function AppLayout({ children }: AppLayoutProps) {
       </Modal>
     </div>
   );
+}
+
+function formatAgentMode(mode: AgentSettings['mode']) {
+  switch (mode) {
+    case 'manual':
+      return 'manuel';
+    case 'assisted':
+      return 'assiste';
+    case 'limited_autonomous':
+      return 'limite';
+    case 'guarded_autonomous':
+      return 'garde';
+  }
 }

@@ -158,8 +158,9 @@ export function ChartsWorkspace({
   const [chartHeight, setChartHeight] = useState(640);
   const [selectedRange, setSelectedRange] = useState<ChartRange>('1D');
   const [noteFormats, setNoteFormats] = useState<NoteFormat[]>([]);
-  const [chartCandles, setChartCandles] = useState<Candle[]>(market.candles);
-  const [chartCandleStatus, setChartCandleStatus] = useState<'loading' | 'live' | 'fallback'>('live');
+  const [chartCandles, setChartCandles] = useState<Candle[]>([]);
+  const [chartCandleStatus, setChartCandleStatus] = useState<'loading' | 'live' | 'fallback'>('loading');
+  const [candleRequestNonce, setCandleRequestNonce] = useState(0);
   const [isBreakEvenOn, setIsBreakEvenOn] = useState(defaultPreferences.breakEvenAutomation);
   const [isTrailingOn, setIsTrailingOn] = useState(defaultPreferences.trailingStopEnabled);
   const [indicatorPanelOpen, setIndicatorPanelOpen] = useState(false);
@@ -178,17 +179,22 @@ export function ChartsWorkspace({
   const selectedExchangeHasPublicRest = hasPublicRestMarketData(selectedExchange?.id);
   const chartVenueName = selectedExchange?.name ?? 'Thoon';
   const marketStripPairs = useMemo(() => getMarketStripPairs(liveMarketPairs, selectedSymbol), [liveMarketPairs, selectedSymbol]);
-  const candles = chartCandles.length ? chartCandles : market.candles;
+  const candles = chartCandles;
+  const hasChartCandles = candles.length > 0 && chartCandleStatus === 'live';
+  const priceAnchor = market.lastPrice || market.draft.entry || 1;
+  const fallbackCandle = market.candles.at(-1) ?? { close: priceAnchor, high: priceAnchor, low: priceAnchor, open: priceAnchor, time: Date.now(), volume: 0 };
   const hasPositionMarker = tradeMarkers.some((marker) => marker.type !== 'alert');
   const hasEntryMarker = hasMarkerType(tradeMarkers, 'entry') || hasMarkerType(tradeMarkers, 'buyLimit') || hasMarkerType(tradeMarkers, 'sellLimit');
   const hasStopLossMarker = hasMarkerType(tradeMarkers, 'stopLoss');
   const hasTakeProfitMarker = hasMarkerType(tradeMarkers, 'takeProfit') || hasMarkerType(tradeMarkers, 'exit');
   const hasCompletePosition = hasEntryMarker && hasStopLossMarker && hasTakeProfitMarker;
   const hasChartSetup = hasPositionMarker || plannedOrderDrafts.length > 0;
+  const tp2Marker = tradeMarkers.find((marker) => marker.type === 'tp2');
+  const markerSyncRows = buildMarkerSyncRows(tradeMarkers, draft);
   const orders = [...openOrders, ...plannedOrderDrafts].filter((order) => order.symbol === market.symbol);
-  const high = Math.max(...candles.map((candle) => candle.high));
-  const low = Math.min(...candles.map((candle) => candle.low));
-  const lastCandle = candles[candles.length - 1];
+  const high = hasChartCandles ? Math.max(...candles.map((candle) => candle.high)) : priceAnchor;
+  const low = hasChartCandles ? Math.min(...candles.map((candle) => candle.low)) : priceAnchor;
+  const lastCandle = candles[candles.length - 1] ?? fallbackCandle;
   const previousCandle = candles[candles.length - 2] ?? lastCandle;
   const visibleMarketPrice = lastCandle?.close ?? market.lastPrice;
   const chartDataIdentity = `${selectedExchangeId}:${market.symbol}:${timeframe}`;
@@ -198,7 +204,7 @@ export function ChartsWorkspace({
   const strategyBuilderHref = `/strategies/new?pair=${encodeURIComponent(market.symbol)}`;
   const lastMove = lastCandle.close - previousCandle.close;
   const lastMovePercent = previousCandle.close ? (lastMove / previousCandle.close) * 100 : 0;
-  const indicatorReadouts = buildIndicatorReadouts(candles, indicatorConfig);
+  const indicatorReadouts = hasChartCandles ? buildIndicatorReadouts(candles, indicatorConfig) : [];
   const riskReward = hasCompletePosition ? calculateRiskReward(draft) : 0;
   const positionValue = hasCompletePosition ? draft.entry * draft.size : 0;
   const potentialProfit = hasCompletePosition ? Math.abs((draft.takeProfit - draft.entry) * draft.size) : 0;
@@ -279,6 +285,15 @@ export function ChartsWorkspace({
     window.localStorage.setItem(chartEngineStorageKey, chartEngine);
   }, [chartEngine]);
 
+  function chooseSymbol(nextSymbol: string) {
+    if (nextSymbol !== selectedSymbol) {
+      setChartCandleStatus('loading');
+      setChartCandles([]);
+    }
+
+    setSelectedSymbol(nextSymbol);
+  }
+
   useEffect(() => {
     if (!exchangeConnections.some((exchangeConnection) => exchangeConnection.id === selectedExchangeId)) {
       setSelectedExchangeId(defaultExchangeId);
@@ -289,18 +304,18 @@ export function ChartsWorkspace({
     const controller = new AbortController();
 
     setChartCandleStatus('loading');
-    setChartCandles(market.candles);
+    setChartCandles([]);
 
     apiJson<Candle[]>(`/api/markets/candles?symbol=${encodeURIComponent(market.symbol)}&timeframe=${timeframe}&exchangeId=${encodeURIComponent(selectedExchangeId)}`)
       .then((nextCandles) => {
         if (!controller.signal.aborted) {
-          setChartCandles(nextCandles.length ? nextCandles : market.candles);
+          setChartCandles(nextCandles);
           setChartCandleStatus(nextCandles.length ? 'live' : 'fallback');
         }
       })
       .catch(() => {
         if (!controller.signal.aborted) {
-          setChartCandles(market.candles);
+          setChartCandles([]);
           setChartCandleStatus('fallback');
         }
       });
@@ -308,7 +323,7 @@ export function ChartsWorkspace({
     return () => {
       controller.abort();
     };
-  }, [market.symbol, selectedExchangeId, timeframe]);
+  }, [candleRequestNonce, market.symbol, selectedExchangeId, timeframe]);
 
   useEffect(() => {
     if (hasChartSetup || !Number.isFinite(visibleMarketPrice)) {
@@ -770,7 +785,7 @@ export function ChartsWorkspace({
 
   function reloadSetup(setup: SavedChartSetup) {
     setupReloadPairRef.current = setup.pair;
-    setSelectedSymbol(setup.pair);
+    chooseSymbol(setup.pair);
     setTimeframe(setup.timeframe);
     setDraft(setup.draft);
     setChartDrawings(setup.drawings ?? []);
@@ -905,7 +920,7 @@ export function ChartsWorkspace({
       <div className="cockpit-health-strip" aria-label="Runtime health">
         <span className="cockpit-chip cockpit-chip--warning">
           <AlertTriangle size={15} />
-          {selectedMarketDataIsLive ? `Prix live · ${selectedExchange?.name ?? 'Exchange'}` : chartCandleStatus === 'loading' ? 'Prix live · chargement' : 'Prix fallback · provider indisponible'}
+          {selectedMarketDataIsLive ? `Prix live · ${selectedExchange?.name ?? 'Exchange'}` : chartCandleStatus === 'loading' ? 'Prix public · chargement' : 'Prix public indisponible'}
         </span>
         <label className="cockpit-chip cockpit-chip--primary cockpit-chip--select">
           <span>{selectedExchange?.name ?? 'Exchange'} · {defaultPreferences.preferredMarketType}</span>
@@ -927,7 +942,7 @@ export function ChartsWorkspace({
 
       <div className="charts-market-strip" aria-label="Market ticker">
         {marketStripPairs.map((pair) => (
-          <button className={pair.symbol === market.symbol ? 'is-active' : undefined} key={pair.symbol} onClick={() => setSelectedSymbol(pair.symbol)} type="button">
+          <button className={pair.symbol === market.symbol ? 'is-active' : undefined} key={pair.symbol} onClick={() => chooseSymbol(pair.symbol)} type="button">
             <span className="charts-market-strip__coin">{pair.base.slice(0, 1)}</span>
             <strong>{pair.symbol}</strong>
             <span>{formatUsd(pair.lastPrice)}</span>
@@ -943,7 +958,7 @@ export function ChartsWorkspace({
               <select
                 aria-label="Market pair"
                 className="chart-pair-select"
-                onChange={(event) => setSelectedSymbol(event.target.value)}
+                onChange={(event) => chooseSymbol(event.target.value)}
                 value={market.symbol}
               >
                 {liveMarketPairs.map((pair) => (
@@ -953,11 +968,19 @@ export function ChartsWorkspace({
                 ))}
               </select>
               <span className="chart-instrument-name">{market.symbol} · {timeframeLabel(timeframe)} · {chartVenueName}</span>
-              <span className="positive">O {formatUsd(candles[0].open)}</span>
-              <span>H {formatUsd(high)}</span>
-              <span>L {formatUsd(low)}</span>
-              <span>C {formatUsd(lastCandle.close)}</span>
-              <span className={chartCandleStatus === 'fallback' ? 'warning' : 'positive'}>{timeframeLabel(timeframe)} {chartCandleStatus === 'loading' ? 'loading' : chartCandleStatus === 'fallback' ? 'fallback' : 'live'}</span>
+              {hasChartCandles ? (
+                <>
+                  <span className="positive">O {formatUsd(candles[0].open)}</span>
+                  <span>H {formatUsd(high)}</span>
+                  <span>L {formatUsd(low)}</span>
+                  <span>C {formatUsd(lastCandle.close)}</span>
+                </>
+              ) : (
+                <span className={chartCandleStatus === 'loading' ? 'warning' : 'negative'}>
+                  {chartCandleStatus === 'loading' ? `Loading ${chartVenueName} public candles` : `No public candles from ${chartVenueName}`}
+                </span>
+              )}
+              <span className={chartCandleStatus === 'live' ? 'positive' : 'warning'}>{timeframeLabel(timeframe)} {chartCandleStatus === 'loading' ? 'loading' : chartCandleStatus === 'fallback' ? 'unavailable' : 'live'}</span>
             </div>
             <div className="chart-panel__actions" aria-label="Chart actions">
               <div className="chart-engine-switch" aria-label="Chart engine">
@@ -1006,38 +1029,50 @@ export function ChartsWorkspace({
                 <TradingViewChart exchangeId={selectedExchange?.id ?? selectedExchangeId} marketType={defaultPreferences.preferredMarketType} symbol={market.symbol} timeframe={timeframe} />
               ) : (
                 <>
-                  <div className="chart-indicator-readout" aria-label="Chart indicators">
-                    <strong>{market.symbol} · {timeframeLabel(timeframe)} · {chartVenueName}</strong>
-                    <span>
-                      O {formatUsd(lastCandle.open)} H {formatUsd(lastCandle.high)} L {formatUsd(lastCandle.low)} C {formatUsd(lastCandle.close)}
-                      <b className={lastMove >= 0 ? 'positive' : 'negative'}>
-                        {lastMove >= 0 ? ' +' : ' '}
-                        {formatUsd(lastMove)} ({formatPercent(lastMovePercent)})
-                      </b>
-                    </span>
-                    {indicatorReadouts.map((indicator) => (
-                      <span key={indicator.label}>
-                        {indicator.label} <b className={indicator.tone}>{indicator.value}</b>
-                      </span>
-                    ))}
-                  </div>
-                  <TradingChart
-                    activeDrawingTool={activeChartTool === 'line' || activeChartTool === 'zone' ? activeChartTool : undefined}
-                    activeMarkerLabel={selectedMarkerDefinition?.label}
-                    activeMarkerType={selectedMarkerType ?? undefined}
-                    candles={candles}
-                    dataIdentity={chartDataIdentity}
-                    drawings={chartDrawings}
-                    fallbackPrice={draft.entry}
-                    indicators={indicatorConfig}
-                    markers={tradeMarkers}
-                    onAddDrawing={placeDrawing}
-                    onDropMarker={placeMarker}
-                    onRemoveDrawing={removeDrawing}
-                    onRemoveMarker={removeMarker}
-                    onUpdateMarkerPrice={moveMarker}
-                    positionPreview={positionPreview}
-                  />
+                  {hasChartCandles ? (
+                    <>
+                      <div className="chart-indicator-readout" aria-label="Chart indicators">
+                        <strong>{market.symbol} · {timeframeLabel(timeframe)} · {chartVenueName}</strong>
+                        <span>
+                          O {formatUsd(lastCandle.open)} H {formatUsd(lastCandle.high)} L {formatUsd(lastCandle.low)} C {formatUsd(lastCandle.close)}
+                          <b className={lastMove >= 0 ? 'positive' : 'negative'}>
+                            {lastMove >= 0 ? ' +' : ' '}
+                            {formatUsd(lastMove)} ({formatPercent(lastMovePercent)})
+                          </b>
+                        </span>
+                        {indicatorReadouts.map((indicator) => (
+                          <span key={indicator.label}>
+                            {indicator.label} <b className={indicator.tone}>{indicator.value}</b>
+                          </span>
+                        ))}
+                      </div>
+                      <TradingChart
+                        activeDrawingTool={activeChartTool === 'line' || activeChartTool === 'zone' ? activeChartTool : undefined}
+                        activeMarkerLabel={selectedMarkerDefinition?.label}
+                        activeMarkerType={selectedMarkerType ?? undefined}
+                        candles={candles}
+                        dataIdentity={chartDataIdentity}
+                        drawings={chartDrawings}
+                        fallbackPrice={draft.entry}
+                        indicators={indicatorConfig}
+                        markers={tradeMarkers}
+                        onAddDrawing={placeDrawing}
+                        onDropMarker={placeMarker}
+                        onRemoveDrawing={removeDrawing}
+                        onRemoveMarker={removeMarker}
+                        onUpdateMarkerPrice={moveMarker}
+                        positionPreview={positionPreview}
+                      />
+                    </>
+                  ) : (
+                    <ChartCandleState
+                      exchangeName={chartVenueName}
+                      onRetry={() => setCandleRequestNonce((current) => current + 1)}
+                      status={chartCandleStatus}
+                      symbol={market.symbol}
+                      timeframe={timeframe}
+                    />
+                  )}
 
                   <div className="trade-markers-panel trade-markers-panel--floating" aria-label="Trade Markers">
                     <div className="trade-markers-panel__head">
@@ -1143,7 +1178,7 @@ export function ChartsWorkspace({
 
           <label className="trade-pair-control">
             <span>{market.symbol}</span>
-            <select aria-label="Trade pair" onChange={(event) => setSelectedSymbol(event.target.value)} value={market.symbol}>
+            <select aria-label="Trade pair" onChange={(event) => chooseSymbol(event.target.value)} value={market.symbol}>
               {liveMarketPairs.map((pair) => (
                 <option key={pair.symbol} value={pair.symbol}>
                   {pair.symbol}
@@ -1167,7 +1202,16 @@ export function ChartsWorkspace({
             <BuilderField label="Entry" onChange={(value) => upsertMarker('entry', value)} value={draft.entry} />
             <BuilderField info="Live orders are invalid without stop-loss." label="Stop Loss" onChange={(value) => upsertMarker('stopLoss', value)} tone="negative" value={draft.stopLoss} />
             <BuilderField info="Main target used for R/R." label="Take Profit" onChange={(value) => upsertMarker('takeProfit', value)} tone="positive" value={draft.takeProfit} />
-            <BuilderField label="TP2" readOnly tone="positive" value={roundPrice(suggestedMarkerPrice('tp2', draft))} />
+            <BuilderField label="TP2" onChange={(value) => upsertMarker('tp2', value)} tone="positive" value={tp2Marker?.price ?? roundPrice(suggestedMarkerPrice('tp2', draft))} />
+          </div>
+
+          <div className="marker-sync-strip" aria-label="Linked trade markers">
+            {markerSyncRows.map((row) => (
+              <span className={row.placed ? 'is-linked' : undefined} key={row.label}>
+                {row.label}
+                <strong>{row.value}</strong>
+              </span>
+            ))}
           </div>
 
           <div className="builder-risk-row">
@@ -1360,6 +1404,35 @@ function TargetIcon() {
   return <CircleDot size={15} />;
 }
 
+function ChartCandleState({
+  exchangeName,
+  onRetry,
+  status,
+  symbol,
+  timeframe,
+}: {
+  exchangeName: string;
+  onRetry: () => void;
+  status: 'fallback' | 'live' | 'loading';
+  symbol: string;
+  timeframe: Timeframe;
+}) {
+  const isLoading = status === 'loading';
+
+  return (
+    <div className="chart-candle-state" role={isLoading ? 'status' : 'alert'}>
+      <Activity size={22} />
+      <div>
+        <h2>{isLoading ? 'Loading public candles' : 'Public candles unavailable'}</h2>
+        <p>{symbol} · {timeframe} · {exchangeName}</p>
+      </div>
+      <Button disabled={isLoading} onClick={onRetry} size="sm" variant="ghost">
+        Retry
+      </Button>
+    </div>
+  );
+}
+
 type IndicatorSettingsModalProps = {
   config: ChartIndicatorConfig;
   onClose: () => void;
@@ -1531,6 +1604,23 @@ function syncDraftWithMarker(draft: PositionDraft, type: TradeMarkerType, price:
     case 'tp2':
       return draft;
   }
+}
+
+function buildMarkerSyncRows(markers: TradeMarker[], draft: PositionDraft) {
+  const markerByType = new Map(markers.map((marker) => [marker.type, marker]));
+  const entryMarker = markerByType.get('entry') ?? markerByType.get('buyLimit') ?? markerByType.get('sellLimit');
+  const rows = [
+    { label: 'Entry', marker: entryMarker, value: draft.entry },
+    { label: 'SL', marker: markerByType.get('stopLoss'), value: draft.stopLoss },
+    { label: 'TP', marker: markerByType.get('takeProfit') ?? markerByType.get('exit'), value: draft.takeProfit },
+    { label: 'TP2', marker: markerByType.get('tp2'), value: markerByType.get('tp2')?.price },
+  ];
+
+  return rows.map((row) => ({
+    label: row.label,
+    placed: Boolean(row.marker),
+    value: row.marker ? formatUsd(row.marker.price) : typeof row.value === 'number' ? formatUsd(row.value) : '--',
+  }));
 }
 
 function recalculateDraftSize(draft: PositionDraft): PositionDraft {
@@ -1799,7 +1889,7 @@ function exchangeMarketStatusLabel(exchange: ExchangeConnection | undefined, isM
   }
 
   if (exchange.id === 'binance') {
-    return isMarketDataLive ? 'Marché · Binance live' : hasBinancePrices ? 'Marché · Binance REST' : 'Marché · fallback local';
+    return isMarketDataLive ? 'Marché · Binance live' : hasBinancePrices ? 'Marché · Binance REST' : 'Marché · bougies indisponibles';
   }
 
   if (candleStatus === 'live' && hasPublicRestMarketData(exchange.id)) {

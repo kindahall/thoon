@@ -1,7 +1,7 @@
 'use client';
 
 import { Bot, BrainCircuit, CheckCircle2, Lock, Save, ShieldCheck, SlidersHorizontal } from 'lucide-react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 import { PreferencesSectionNav } from '../../components/preferences/PreferencesSectionNav';
 import { Badge, Button, Card, HelpPopover } from '../../components/ui';
@@ -57,13 +57,22 @@ const askActions: Array<{ label: string; key: AgentAction }> = [
 export function AgentSettingsPage({ aiStatus, settings }: AgentSettingsPageProps) {
   const [draft, setDraft] = useState(settings);
   const [status, setStatus] = useState('Ready');
+  const draftRef = useRef(settings);
 
   function updateLimit<K extends keyof AgentSettings['limits']>(key: K, value: AgentSettings['limits'][K]) {
-    setDraft((current) => ({ ...current, limits: { ...current.limits, [key]: value } }));
+    const nextDraft = { ...draftRef.current, limits: { ...draftRef.current.limits, [key]: value } };
+
+    draftRef.current = nextDraft;
+    setDraft(nextDraft);
+    setStatus('Unsaved changes');
   }
 
   function updateInstruction<K extends keyof AgentSettings['instructions']>(key: K, value: string) {
-    setDraft((current) => ({ ...current, instructions: { ...current.instructions, [key]: value } }));
+    const nextDraft = { ...draftRef.current, instructions: { ...draftRef.current.instructions, [key]: value } };
+
+    draftRef.current = nextDraft;
+    setDraft(nextDraft);
+    setStatus('Unsaved changes');
   }
 
   function togglePermission(key: AgentPermission) {
@@ -71,19 +80,32 @@ export function AgentSettingsPage({ aiStatus, settings }: AgentSettingsPageProps
       return;
     }
 
-    setDraft((current) => ({ ...current, permissions: { ...current.permissions, [key]: !current.permissions[key] } }));
+    commitDraft((current) => ({ ...current, permissions: { ...current.permissions, [key]: !current.permissions[key] } }), 'Permission saved');
   }
 
-  async function save() {
+  async function persist(nextDraft: AgentSettings, successMessage = 'Saved') {
     setStatus('Saving');
 
     try {
-      const nextSettings = await patchJson<AgentSettings>('/api/agent/settings', draft);
+      const nextSettings = await patchJson<AgentSettings>('/api/agent/settings', nextDraft);
+      draftRef.current = nextSettings;
       setDraft(nextSettings);
-      setStatus('Saved');
+      setStatus(successMessage);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Save failed');
     }
+  }
+
+  function commitDraft(update: (current: AgentSettings) => AgentSettings, successMessage: string) {
+    const next = update(draftRef.current);
+
+    draftRef.current = next;
+    setDraft(next);
+    void persist(next, successMessage);
+  }
+
+  async function save() {
+    await persist(draftRef.current);
   }
 
   return (
@@ -116,13 +138,13 @@ export function AgentSettingsPage({ aiStatus, settings }: AgentSettingsPageProps
             </div>
             <div className="agent-mode-row" aria-label="Strategy Agent mode">
               {modeOptions.map((mode) => (
-                <button className={draft.mode === mode.value ? 'is-active' : undefined} key={mode.value} onClick={() => setDraft((current) => ({ ...current, mode: mode.value }))} type="button">
+                <button className={draft.mode === mode.value ? 'is-active' : undefined} key={mode.value} onClick={() => commitDraft((current) => ({ ...current, mode: mode.value }), `${mode.label} saved`)} type="button">
                   {mode.label}
                 </button>
               ))}
             </div>
             <label className="agent-toggle-line">
-              <input checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} type="checkbox" />
+              <input checked={draft.enabled} onChange={(event) => commitDraft((current) => ({ ...current, enabled: event.target.checked }), event.target.checked ? 'Agent enabled' : 'Agent suspended')} type="checkbox" />
               <span>Agent enabled</span>
               <strong>{draft.mode.replace('_', ' ')}</strong>
             </label>
@@ -193,7 +215,7 @@ export function AgentSettingsPage({ aiStatus, settings }: AgentSettingsPageProps
             <div className="agent-ask-grid">
               {askActions.map((action) => (
                 <label key={action.key}>
-                  <input checked={Boolean(draft.askBefore[action.key])} onChange={(event) => setDraft((current) => ({ ...current, askBefore: { ...current.askBefore, [action.key]: event.target.checked } }))} type="checkbox" />
+                  <input checked={Boolean(draft.askBefore[action.key])} onChange={(event) => commitDraft((current) => ({ ...current, askBefore: { ...current.askBefore, [action.key]: event.target.checked } }), `${action.label} rule saved`)} type="checkbox" />
                   <span>{action.label}</span>
                 </label>
               ))}

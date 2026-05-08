@@ -48,6 +48,15 @@ test('strategy agent renders, protects core strategy and exposes Codex research 
   assertIncludes(preferences, 'Autonomy', 'Agent preferences render autonomy');
   assertIncludes(preferences, 'Permissions', 'Agent preferences render permissions');
 
+  const appLayoutSource = await readSource('src/layouts/AppLayout.tsx');
+  assertIncludes(appLayoutSource, '/api/agent/settings', 'Topbar autonomy status reads persisted agent settings');
+  assertIncludes(appLayoutSource, 'toggleAgentAutonomy', 'Topbar autonomy badge can be toggled');
+  assertIncludes(appLayoutSource, 'topbar-autonomy-toggle', 'Topbar autonomy state is an action, not static text');
+
+  const agentSettingsSource = await readSource('src/screens/preferences/AgentSettingsPage.tsx');
+  assertIncludes(agentSettingsSource, 'commitDraft', 'Agent preference buttons persist through API commits');
+  assertIncludes(agentSettingsSource, "patchJson<AgentSettings>('/api/agent/settings'", 'Agent preferences save to the backend');
+
   const coreLab = await fetchPage('/strategies/core-lab');
   assertIncludes(coreLab, 'Original Protected', 'Core Lab protects original');
   assertIncludes(coreLab, 'jimmy', 'Jimmy Lab renders protected Pine strategy');
@@ -126,6 +135,7 @@ test('chart trading controls and risk engine hooks are present', async ({ fetchP
   assertIncludes(chart, 'Stop Loss', 'Stop loss marker renders');
   assertIncludes(chart, 'R/R', 'Position builder shows risk reward');
   assertIncludes(chart, 'Save Setup', 'Save setup action renders');
+  assertIncludes(chart, 'Linked trade markers', 'Position builder exposes marker sync status');
   assertIncludes(chart, '/strategies/new?pair=BTC%2FUSDT', 'Chart converts setup to strategy');
   assertIncludes(chart, '/alerts?pair=BTC%2FUSDT', 'Chart creates alert');
 
@@ -133,8 +143,13 @@ test('chart trading controls and risk engine hooks are present', async ({ fetchP
   assertIncludes(chartSource, 'evaluateRiskEngine', 'Position Builder uses Risk Engine');
   assertIncludes(chartSource, 'setLiveOrderConfirmationOpen(true)', 'Live order opens confirmation');
   assertIncludes(chartSource, 'syncDraftWithMarker', 'Trade markers update the draft');
+  assertIncludes(chartSource, 'buildMarkerSyncRows', 'Position Builder renders marker sync rows');
+  assertIncludes(chartSource, "upsertMarker('tp2'", 'TP2 field writes a real chart marker');
+  assertIncludes(chartSource, 'ChartCandleState', 'Chart renders a loading/unavailable state while public candles load');
+  assertIncludes(chartSource, 'setChartCandles([])', 'Chart does not show local candles while changing pairs');
   assertIncludes(chartSource, 'Confirm Live Order', 'Live confirmation modal exists');
   assert(!chartSource.includes('updateChartCandleWithLivePrice'), 'Live ticks do not rewrite the visible candle window');
+  assert(!chartSource.includes('setChartCandles(market.candles)'), 'Chart never swaps in seeded local candles during public-candle loading');
 
   const tradingChartSource = await readSource('src/components/chart/TradingChart.tsx');
   assertIncludes(tradingChartSource, 'dataWindowIdentity', 'Chart fits only when the candle window changes');
@@ -192,6 +207,9 @@ test('bot, strategy, backtest and paper flows expose functional states', async (
   assertIncludes(backtestSource, 'exportBacktestReport', 'Save Report exports the current calculated report');
   assertIncludes(backtestSource, 'URL.createObjectURL', 'Save Report creates a real downloadable report');
   assertIncludes(backtestSource, 'backtest-actions-card__status', 'Bottom backtest actions expose local action status');
+  assertIncludes(backtestSource, 'actionOnClick={() => void runBacktest()}', 'Empty backtest state runs a real backtest action');
+  assertIncludes(backtestSource, 'backtestPresetStorageKey', 'Backtest presets persist locally');
+  assertIncludes(backtestSource, 'setAdvancedPanelOpen', 'Backtest filters open a real detail panel');
 
   const backtest = await fetchPage('/backtest?strategyId=strat-jimmy');
   assertIncludes(backtest, 'Equity Curve', 'Backtest displays results');
@@ -219,9 +237,18 @@ test('preferences, secrets, empty states and error states are protected', async 
 
   const emptyStateSource = await readSource('src/components/ui/EmptyState.tsx');
   assertIncludes(emptyStateSource, 'ui-state', 'Empty state component exists');
+  assertIncludes(emptyStateSource, 'actionOnClick', 'Empty state primary action can run a real callback');
 
   const errorStateSource = await readSource('src/components/ui/ErrorState.tsx');
   assertIncludes(errorStateSource, 'ui-state--error', 'Error state component exists');
+
+  const profile = await fetchPage('/preferences/profile');
+  assertIncludes(profile, 'Account Details', 'Profile page renders editable account details');
+  assertIncludes(profile, '/preferences/appearance', 'Profile page links to preference sections');
+
+  const profileSource = await readSource('src/screens/preferences/ProfileSettingsPage.tsx');
+  assertIncludes(profileSource, 'PreferencesSectionNav active="profile"', 'Profile page uses the validated preferences layout');
+  assertIncludes(profileSource, 'profile-settings-hero', 'Profile page renders a full-width profile header');
 
   const riskRules = await fetchPage('/preferences/risk-rules');
   assertIncludes(riskRules, 'Block Order Test', 'Risk Rules exposes block order modal trigger');

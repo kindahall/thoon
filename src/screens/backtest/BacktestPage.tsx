@@ -39,6 +39,19 @@ type BacktestRunState = {
   status: BacktestRunStatus;
 };
 
+type BacktestPreset = {
+  dateRange: string;
+  exchangeId: string;
+  fees: number;
+  id: string;
+  initialCapital: number;
+  savedAt: string;
+  slippage: number;
+  strategyId: string;
+  symbol: string;
+  timeframe: Timeframe;
+};
+
 const tabs: Array<{ id: BacktestTab; label: string }> = [
   { id: 'trades', label: 'Trades' },
   { id: 'monthly', label: 'Monthly Returns' },
@@ -47,6 +60,7 @@ const tabs: Array<{ id: BacktestTab; label: string }> = [
   { id: 'analysis', label: 'Chart Analysis' },
 ];
 
+const backtestPresetStorageKey = 'thoon.backtest.presets.v1';
 const timeframes: Timeframe[] = ['1m', '5m', '15m', '30m', '1h', '2h', '4h', '1d', '1w', '1M', '1y'];
 const tradesPageSize = 10;
 const backtestRangeShortcuts: Array<{ label: string; value: string }> = [
@@ -71,6 +85,9 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
   const [activeTab, setActiveTab] = useState<BacktestTab>('trades');
   const [runStatus, setRunStatus] = useState('Ready');
   const [runState, setRunState] = useState<BacktestRunState>({ message: '', status: 'idle' });
+  const [presets, setPresets] = useState<BacktestPreset[]>([]);
+  const [presetPanelOpen, setPresetPanelOpen] = useState(false);
+  const [advancedPanelOpen, setAdvancedPanelOpen] = useState(false);
 
   const strategy = strategies.find((item) => item.id === strategyId) ?? strategies[0];
   const selectedExchange = exchangeConnections.find((exchange) => exchange.id === exchangeId) ?? exchangeConnections[0];
@@ -100,6 +117,24 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
     ? `${reportExchangeName} public candles · ${report.generatedAt ? formatRunDate(report.generatedAt) : 'latest run'}`
     : `${selectedExchange?.name ?? 'Binance'} selected`;
 
+  useEffect(() => {
+    const rawPresets = window.localStorage.getItem(backtestPresetStorageKey);
+
+    if (!rawPresets) {
+      return;
+    }
+
+    try {
+      const parsedPresets = JSON.parse(rawPresets);
+
+      if (Array.isArray(parsedPresets)) {
+        setPresets(parsedPresets.filter(isBacktestPreset).slice(0, 8));
+      }
+    } catch {
+      setPresets([]);
+    }
+  }, []);
+
   function changeStrategy(nextStrategyId: string) {
     const nextStrategy = strategies.find((item) => item.id === nextStrategyId);
     setStrategyId(nextStrategyId);
@@ -108,6 +143,41 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
       setSymbol(nextStrategy.market);
       setTimeframe(nextStrategy.timeframe);
     }
+  }
+
+  function applyPreset(preset: BacktestPreset) {
+    setExchangeId(preset.exchangeId);
+    setStrategyId(preset.strategyId);
+    setSymbol(preset.symbol);
+    setTimeframe(preset.timeframe);
+    setDateRange(preset.dateRange);
+    setInitialCapital(preset.initialCapital);
+    setFees(preset.fees);
+    setSlippage(preset.slippage);
+    setPresetPanelOpen(false);
+    setRunStatus('Preset loaded');
+  }
+
+  function savePreset() {
+    const savedAt = new Date().toISOString();
+    const preset: BacktestPreset = {
+      dateRange,
+      exchangeId,
+      fees,
+      id: `${strategyId}-${symbol}-${timeframe}-${dateRange}`.replace(/[^a-zA-Z0-9_-]+/g, '-'),
+      initialCapital,
+      savedAt,
+      slippage,
+      strategyId,
+      symbol,
+      timeframe,
+    };
+    const nextPresets = [preset, ...presets.filter((item) => item.id !== preset.id)].slice(0, 8);
+
+    setPresets(nextPresets);
+    window.localStorage.setItem(backtestPresetStorageKey, JSON.stringify(nextPresets));
+    setPresetPanelOpen(true);
+    setRunStatus('Preset saved');
   }
 
   async function executeBacktest(kind: BacktestRunKind) {
@@ -263,9 +333,9 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
             <span>{runStatus}</span>
           </div>
           <div className="backtest-preset-actions">
-            <Button disabled icon={<FolderOpen size={15} />} size="sm" variant="ghost">Load Preset</Button>
-            <Button disabled icon={<FileCheck2 size={15} />} size="sm" variant="ghost">Save Preset</Button>
-            <Button disabled icon={<MoreHorizontal size={15} />} size="sm" variant="ghost">More</Button>
+            <Button icon={<FolderOpen size={15} />} onClick={() => setPresetPanelOpen((current) => !current)} size="sm" variant="ghost">Load Preset</Button>
+            <Button icon={<FileCheck2 size={15} />} onClick={savePreset} size="sm" variant="ghost">Save Preset</Button>
+            <Button icon={<MoreHorizontal size={15} />} onClick={() => setAdvancedPanelOpen((current) => !current)} size="sm" variant="ghost">More</Button>
           </div>
         </div>
 
@@ -307,10 +377,35 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
               </option>
             ))}
           </BacktestSelect>
-          <button className="backtest-filter-button" disabled type="button" aria-label="Backtest filters">
+          <button className={advancedPanelOpen ? 'backtest-filter-button is-active' : 'backtest-filter-button'} onClick={() => setAdvancedPanelOpen((current) => !current)} type="button" aria-label="Backtest filters">
             <SlidersHorizontal size={18} />
           </button>
         </div>
+
+        {presetPanelOpen ? (
+          <div className="backtest-preset-panel" aria-label="Saved backtest presets">
+            {presets.length ? (
+              presets.map((preset) => (
+                <button key={preset.id} onClick={() => applyPreset(preset)} type="button">
+                  <strong>{strategyNameForPreset(strategies, preset.strategyId)}</strong>
+                  <span>{preset.symbol} · {preset.timeframe} · {preset.dateRange} · {exchangeNameForPreset(exchangeConnections, preset.exchangeId)}</span>
+                  <time dateTime={preset.savedAt}>{formatRunDate(preset.savedAt)}</time>
+                </button>
+              ))
+            ) : (
+              <span>No saved presets yet.</span>
+            )}
+          </div>
+        ) : null}
+
+        {advancedPanelOpen ? (
+          <div className="backtest-advanced-panel" aria-label="Backtest advanced details">
+            <SummaryMetric label="Source" value={strategy?.agentSource?.sourceId ?? 'manual-strategy'} />
+            <SummaryMetric label="Exchange" value={selectedExchange?.name ?? exchangeId} />
+            <SummaryMetric label="Mode" value="Public candles only" />
+            <SummaryMetric label="Display Rule" value="Trusted runs only" />
+          </div>
+        ) : null}
 
         <div className="backtest-data-strip">
           <span>
@@ -330,6 +425,7 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
         <div className="backtest-empty-grid">
           <EmptyState
             actionLabel="Run Backtest"
+            actionOnClick={() => void runBacktest()}
             description={`Selected source: ${selectedExchange?.name ?? 'Binance'} public candles.`}
             icon={<BarChart3 size={20} />}
             secondaryActionHref="/strategies"
@@ -478,6 +574,35 @@ function BacktestRunStateBanner({ state }: { state: BacktestRunState }) {
       </div>
     </div>
   );
+}
+
+function isBacktestPreset(value: unknown): value is BacktestPreset {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const preset = value as Partial<BacktestPreset>;
+
+  return (
+    typeof preset.dateRange === 'string' &&
+    typeof preset.exchangeId === 'string' &&
+    typeof preset.fees === 'number' &&
+    typeof preset.id === 'string' &&
+    typeof preset.initialCapital === 'number' &&
+    typeof preset.savedAt === 'string' &&
+    typeof preset.slippage === 'number' &&
+    typeof preset.strategyId === 'string' &&
+    typeof preset.symbol === 'string' &&
+    typeof preset.timeframe === 'string'
+  );
+}
+
+function strategyNameForPreset(strategies: Strategy[], strategyId: string) {
+  return strategies.find((strategy) => strategy.id === strategyId)?.name ?? strategyId;
+}
+
+function exchangeNameForPreset(exchanges: ExchangeConnection[], exchangeId: string) {
+  return exchanges.find((exchange) => exchange.id === exchangeId)?.name ?? exchangeId;
 }
 
 function backtestRunTitle(state: BacktestRunState) {

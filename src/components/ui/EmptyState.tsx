@@ -7,6 +7,7 @@ import { Button } from './Button';
 type EmptyStateProps = {
   actionHref?: string;
   actionLabel?: string;
+  actionOnClick?: () => void;
   description?: string;
   icon?: ReactNode;
   secondaryActionHref?: string;
@@ -17,6 +18,7 @@ type EmptyStateProps = {
 export function EmptyState({
   actionHref,
   actionLabel,
+  actionOnClick,
   description,
   icon = <CircleDashed size={20} />,
   secondaryActionHref,
@@ -32,7 +34,7 @@ export function EmptyState({
       </div>
       {actionLabel || secondaryActionLabel ? (
         <div className="ui-state__actions">
-          {actionLabel ? <StateAction href={actionHref} label={actionLabel} variant="primary" /> : null}
+          {actionLabel ? <StateAction href={actionHref} label={actionLabel} onClick={actionOnClick} variant="primary" /> : null}
           {secondaryActionLabel ? <StateAction href={secondaryActionHref} label={secondaryActionLabel} variant="ghost" /> : null}
         </div>
       ) : null}
@@ -40,13 +42,13 @@ export function EmptyState({
   );
 }
 
-function StateAction({ href, label, variant }: { href?: string; label: string; variant: 'primary' | 'ghost' }) {
+function StateAction({ href, label, onClick, variant }: { href?: string; label: string; onClick?: () => void; variant: 'primary' | 'ghost' }) {
   if (href) {
     return <Link className={`ui-button ui-button--${variant} ui-button--sm`} href={href}>{label}</Link>;
   }
 
   return (
-    <Button size="sm" variant={variant}>
+    <Button onClick={onClick} size="sm" variant={variant}>
       {label}
     </Button>
   );
