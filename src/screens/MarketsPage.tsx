@@ -2,10 +2,11 @@
 
 import { Bell, Filter, LineChart, Plus, Search, Star } from 'lucide-react';
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 
 import { Badge, Card, HelpPopover } from '../components/ui';
 import { useBinanceLiveMarkets } from '../hooks/useBinanceLiveMarkets';
+import { postJson } from '../services/api-client';
 import type { MarketCategory, MarketDataStatus, MarketOverview, MarketPair } from '../types/market';
 import { formatCompact, formatCompactUsd, formatPercent, formatUsd } from '../utils/format';
 
@@ -33,8 +34,10 @@ export function MarketsPage({ favoriteSymbols: initialFavoriteSymbols, initialOv
   const [tableFiltered, setTableFiltered] = useState(false);
   const [compactColumns, setCompactColumns] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const favoriteSymbols = useMemo(() => new Set(initialFavoriteSymbols), [initialFavoriteSymbols]);
+  const [favoriteSymbols, setFavoriteSymbols] = useState(() => new Set(initialFavoriteSymbols));
+  const [actionStatus, setActionStatus] = useState('Ready');
   const overview = useMemo(() => buildLiveOverview(initialOverview, pairs), [initialOverview, pairs]);
+  const sentiment = useMemo(() => buildMarketSentiment(pairs), [pairs]);
   const visiblePairs = useMemo(() => {
     const categoryPairs = activeCategory === 'all' ? pairs : pairs.filter((pair) => pair.category === activeCategory);
     const query = searchQuery.trim().toLowerCase();
@@ -57,6 +60,32 @@ export function MarketsPage({ favoriteSymbols: initialFavoriteSymbols, initialOv
 
     return sortedPairs.slice(0, 5);
   }, [moverMode, visiblePairs]);
+  const dataSourceLabel = connected ? 'Binance public tickers' : `${initialStatus.provider} cache`;
+
+  async function toggleFavorite(symbol: string) {
+    const wasFavorite = favoriteSymbols.has(symbol);
+    const nextFavorites = new Set(favoriteSymbols);
+
+    if (wasFavorite) {
+      nextFavorites.delete(symbol);
+    } else {
+      nextFavorites.add(symbol);
+    }
+
+    setFavoriteSymbols(nextFavorites);
+    setActionStatus(wasFavorite ? `${symbol} removed from watchlist` : `${symbol} added to watchlist`);
+
+    try {
+      await postJson('/api/watchlists', {
+        action: wasFavorite ? 'remove-pair' : 'add-pair',
+        listId: 'favorites',
+        symbol,
+      });
+    } catch (error) {
+      setFavoriteSymbols(favoriteSymbols);
+      setActionStatus(error instanceof Error ? error.message : 'Watchlist update failed');
+    }
+  }
 
   return (
     <section className="markets-page" aria-label="Markets workspace">
@@ -66,11 +95,12 @@ export function MarketsPage({ favoriteSymbols: initialFavoriteSymbols, initialOv
           <p>Discover cryptocurrencies and track market trends.</p>
         </div>
         <div className="workspace-header__right">
-          <Badge tone={connected ? 'positive' : 'warning'}>{connected ? 'Binance live' : 'Local fallback'}</Badge>
+          <Badge tone={connected ? 'positive' : 'warning'}>{connected ? 'Binance live' : 'Local cache'}</Badge>
           <div className="market-search" role="search">
             <Search size={16} />
             <input aria-label="Search markets" onChange={(event) => setSearchQuery(event.target.value)} placeholder={lastEventAt ? `Tick ${new Date(lastEventAt).toLocaleTimeString('fr-FR')}` : 'Search markets'} value={searchQuery} />
           </div>
+          <span className="market-action-status" aria-live="polite">{actionStatus}</span>
           <HelpPopover
             items={['Open a pair on Charts.', 'Add pairs to Watchlist or Strategy.', 'Create alerts from any row.']}
             title="Markets"
@@ -87,11 +117,11 @@ export function MarketsPage({ favoriteSymbols: initialFavoriteSymbols, initialOv
       </div>
 
       <div className="market-stat-grid">
-        <MarketStat delta={1.92} label="Market Cap" value={formatCompactUsd(overview.marketCap)} />
-        <MarketStat delta={6.34} label="24h Volume" value={formatCompactUsd(overview.volume24h)} />
-        <MarketStat delta={-0.38} label="BTC Dominance" value={`${overview.btcDominance.toFixed(2)}%`} />
-        <MarketStat delta={0.21} label="ETH Dominance" value={`${overview.ethDominance.toFixed(2)}%`} />
-        <MarketStat delta={124} label="Active Cryptos" value={formatCompact(overview.activeCryptos)} />
+        <MarketStat label="Tracked Market Cap" source={dataSourceLabel} value={formatCompactUsd(overview.marketCap)} />
+        <MarketStat label="Tracked 24h Volume" source={dataSourceLabel} value={formatCompactUsd(overview.volume24h)} />
+        <MarketStat label="BTC Share" source="Tracked pairs" value={`${overview.btcDominance.toFixed(2)}%`} />
+        <MarketStat label="ETH Share" source="Tracked pairs" value={`${overview.ethDominance.toFixed(2)}%`} />
+        <MarketStat label="Tracked Pairs" source={connected ? `${initialStatus.pairCount} live feeds` : 'Local records'} value={formatCompact(overview.activeCryptos)} />
       </div>
 
       <div className="markets-grid">
@@ -139,7 +169,7 @@ export function MarketsPage({ favoriteSymbols: initialFavoriteSymbols, initialOv
                 <span>Actions</span>
               </div>
               {visiblePairs.slice(0, 9).map((pair, index) => (
-                <MarketRow compact={compactColumns} favorite={favoriteSymbols.has(pair.symbol)} index={index + 1} key={pair.symbol} pair={pair} />
+                <MarketRow compact={compactColumns} favorite={favoriteSymbols.has(pair.symbol)} index={index + 1} key={pair.symbol} onToggleFavorite={toggleFavorite} pair={pair} />
               ))}
             </div>
           </Card>
@@ -173,14 +203,14 @@ export function MarketsPage({ favoriteSymbols: initialFavoriteSymbols, initialOv
             <div className="market-section-header">
               <h2>Market Sentiment</h2>
             </div>
-            <div className="sentiment-gauge" aria-label="Market sentiment 72">
-              <span>72</span>
-              <strong>Greed</strong>
+            <div className={`sentiment-gauge sentiment-gauge--${sentiment.tone}`} aria-label={`Market sentiment ${sentiment.score}`} style={{ '--sentiment-score': `${sentiment.score}%` } as CSSProperties}>
+              <span>{sentiment.score}</span>
+              <strong>{sentiment.label}</strong>
             </div>
             <div className="sentiment-breakdown">
-              <span className="negative">10% Fear</span>
-              <span>20% Neutral</span>
-              <span className="positive">70% Greed</span>
+              <span className="negative">{sentiment.fear}% Fear</span>
+              <span>{sentiment.neutral}% Neutral</span>
+              <span className="positive">{sentiment.greed}% Greed</span>
             </div>
           </Card>
         </aside>
@@ -189,13 +219,12 @@ export function MarketsPage({ favoriteSymbols: initialFavoriteSymbols, initialOv
   );
 }
 
-function MarketStat({ delta, label, value }: { delta: number; label: string; value: string }) {
+function MarketStat({ label, source, value }: { label: string; source: string; value: string }) {
   return (
     <Card className="market-stat-card">
       <span>{label}</span>
       <strong>{value}</strong>
-      <small className={delta >= 0 ? 'positive' : 'negative'}>{formatPercent(delta)}</small>
-      <i aria-hidden="true" />
+      <small>{source}</small>
     </Card>
   );
 }
@@ -208,11 +237,29 @@ function buildLiveOverview(seedOverview: MarketOverview, pairs: MarketPair[]): M
 
   return {
     ...seedOverview,
+    activeCryptos: pairs.length,
     btcDominance: btc && marketCap ? (btc.marketCap / marketCap) * 100 : seedOverview.btcDominance,
     ethDominance: eth && marketCap ? (eth.marketCap / marketCap) * 100 : seedOverview.ethDominance,
     marketCap,
     sentiment: pairs.filter((pair) => pair.change24h >= 0).length >= pairs.length / 2 ? 'Risk-on' : 'Risk-off',
     volume24h,
+  };
+}
+
+function buildMarketSentiment(pairs: MarketPair[]) {
+  const total = Math.max(pairs.length, 1);
+  const greedCount = pairs.filter((pair) => pair.change24h > 0.1).length;
+  const fearCount = pairs.filter((pair) => pair.change24h < -0.1).length;
+  const neutralCount = Math.max(0, total - greedCount - fearCount);
+  const score = Math.round(((greedCount + neutralCount * 0.5) / total) * 100);
+
+  return {
+    fear: Math.round((fearCount / total) * 100),
+    greed: Math.round((greedCount / total) * 100),
+    label: score >= 60 ? 'Greed' : score <= 40 ? 'Fear' : 'Neutral',
+    neutral: Math.round((neutralCount / total) * 100),
+    score,
+    tone: score >= 60 ? 'positive' : score <= 40 ? 'negative' : 'neutral',
   };
 }
 
@@ -236,7 +283,19 @@ function HeatmapTile({ index, pair }: { index: number; pair: MarketPair }) {
   );
 }
 
-function MarketRow({ compact, favorite, index, pair }: { compact: boolean; favorite: boolean; index: number; pair: MarketPair }) {
+function MarketRow({
+  compact,
+  favorite,
+  index,
+  onToggleFavorite,
+  pair,
+}: {
+  compact: boolean;
+  favorite: boolean;
+  index: number;
+  onToggleFavorite: (symbol: string) => void;
+  pair: MarketPair;
+}) {
   const pairParam = encodeURIComponent(pair.symbol);
 
   return (
@@ -252,21 +311,21 @@ function MarketRow({ compact, favorite, index, pair }: { compact: boolean; favor
       <span>{formatCompactUsd(pair.volume24h)}</span>
       {!compact ? <span>{formatCompactUsd(pair.marketCap)}</span> : null}
       <span>
-        <Link className="market-watchlist-link" href={`/watchlist?add=${pairParam}`} title="Add to watchlist">
+        <button aria-label={favorite ? `Remove ${pair.symbol} from watchlist` : `Add ${pair.symbol} to watchlist`} className="market-watchlist-link" onClick={() => onToggleFavorite(pair.symbol)} title={favorite ? 'Remove from watchlist' : 'Add to watchlist'} type="button">
           <Star className={favorite ? 'is-favorite' : undefined} size={16} />
-        </Link>
+        </button>
       </span>
       <span className="market-row-actions">
-        <Link href={`/charts?pair=${pairParam}`} title="Open on chart">
+        <Link aria-label={`Open ${pair.symbol} on chart`} href={`/charts?pair=${pairParam}`} title="Open on chart">
           <LineChart size={15} />
         </Link>
-        <Link href={`/watchlist?add=${pairParam}`} title="Add to watchlist">
-          <Star size={15} />
-        </Link>
-        <Link href={`/strategies/new?pair=${pairParam}`} title="Add to strategy">
+        <button aria-label={favorite ? `Remove ${pair.symbol} from watchlist` : `Add ${pair.symbol} to watchlist`} onClick={() => onToggleFavorite(pair.symbol)} title={favorite ? 'Remove from watchlist' : 'Add to watchlist'} type="button">
+          <Star className={favorite ? 'is-favorite' : undefined} size={15} />
+        </button>
+        <Link aria-label={`Create strategy for ${pair.symbol}`} href={`/strategies/new?pair=${pairParam}`} title="Add to strategy">
           <Plus size={15} />
         </Link>
-        <Link href={`/alerts?pair=${pairParam}`} title="Create alert">
+        <Link aria-label={`Create alert for ${pair.symbol}`} href={`/alerts?pair=${pairParam}`} title="Create alert">
           <Bell size={15} />
         </Link>
       </span>

@@ -110,14 +110,17 @@ test('strategy agent renders, protects core strategy and exposes Codex research 
   assertIncludes(drawerSource, 'write_journal_note', 'Agent drawer exposes journal note action');
 });
 
-test('navigation links carry pair and strategy params', async ({ fetchPage }) => {
+test('navigation links carry pair and strategy params', async ({ fetchPage, readSource }) => {
   const watchlist = await fetchPage('/watchlist');
   assertIncludes(watchlist, 'No tracked pairs', 'Watchlist starts empty without seeded pairs');
   assertIncludes(watchlist, '/markets', 'Empty watchlist links to real market selection');
 
   const markets = await fetchPage('/markets');
   assertIncludes(markets, '/charts?pair=BTC%2FUSDT', 'Markets opens BTC on chart');
-  assertIncludes(markets, '/watchlist?add=BTC%2FUSDT', 'Markets adds BTC to watchlist');
+  assertIncludes(markets, '/charts?pair=SOL%2FUSDT', 'Markets opens the selected row symbol on chart');
+  assertIncludes(markets, 'Tracked Pairs', 'Markets reports tracked local pairs instead of fake global active crypto count');
+  const marketsSource = await readSource('src/screens/MarketsPage.tsx');
+  assertIncludes(marketsSource, "postJson('/api/watchlists'", 'Markets mutates watchlist through the API');
 
   const strategy = await fetchPage('/strategies/strat-jimmy');
   assertIncludes(strategy, '/backtest?strategyId=strat-jimmy', 'Strategy opens backtest');
@@ -151,9 +154,16 @@ test('chart trading controls and risk engine hooks are present', async ({ fetchP
   assert(!chartSource.includes('updateChartCandleWithLivePrice'), 'Live ticks do not rewrite the visible candle window');
   assert(!chartSource.includes('setChartCandles(market.candles)'), 'Chart never swaps in seeded local candles during public-candle loading');
 
+  const chartsPageSource = await readSource('src/screens/ChartsPage.tsx');
+  assertIncludes(chartsPageSource, "key={initialPair ?? 'stored-pair'}", 'Chart workspace remounts when a market action opens a different pair');
+
   const tradingChartSource = await readSource('src/components/chart/TradingChart.tsx');
   assertIncludes(tradingChartSource, 'dataWindowIdentity', 'Chart fits only when the candle window changes');
   assert(!tradingChartSource.includes('scrollToRealTime'), 'Chart does not auto-scroll after passive live updates');
+
+  const tradingViewSource = await readSource('src/components/chart/TradingViewChart.tsx');
+  assertIncludes(tradingViewSource, 'tradingview-chart__iframe', 'TradingView has an iframe fallback when tv.js is unavailable');
+  assertIncludes(tradingViewSource, "return `${prefix}:${base}${quote}PERP`", 'Binance perpetual symbols use the TradingView PERP format');
 
   const riskEngineSource = await readSource('src/services/risk-engine.ts');
   assertIncludes(riskEngineSource, 'stopLossPrice > 0', 'Risk Engine rejects zero stop-loss');

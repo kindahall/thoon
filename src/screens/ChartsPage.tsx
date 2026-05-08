@@ -35,6 +35,7 @@ export async function ChartsPage({ initialPair }: ChartsPageProps) {
       defaultPreferences={getUserPreferences()}
       exchangeConnections={listExchangeConnections()}
       initialPair={initialPair}
+      key={initialPair ?? 'stored-pair'}
       journalTrades={listJournalTrades()}
       marketPairs={marketPairs}
       openOrders={listOpenOrders()}

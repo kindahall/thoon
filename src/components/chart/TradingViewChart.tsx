@@ -32,8 +32,9 @@ export function TradingViewChart({ exchangeId, marketType, symbol, timeframe }: 
   const reactId = useId();
   const containerId = useMemo(() => `tradingview_${reactId.replace(/[^a-zA-Z0-9_-]/g, '')}`, [reactId]);
   const { resolvedTheme } = useTheme();
-  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [loadState, setLoadState] = useState<'iframe' | 'loading' | 'ready'>('loading');
   const tradingViewSymbol = useMemo(() => toTradingViewSymbol(symbol, exchangeId, marketType), [exchangeId, marketType, symbol]);
+  const embedUrl = useMemo(() => buildTradingViewEmbedUrl(tradingViewSymbol, timeframe, resolvedTheme), [resolvedTheme, timeframe, tradingViewSymbol]);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,7 +78,7 @@ export function TradingViewChart({ exchangeId, marketType, symbol, timeframe }: 
       })
       .catch(() => {
         if (!cancelled) {
-          setLoadState('error');
+          setLoadState('iframe');
         }
       });
 
@@ -87,12 +88,19 @@ export function TradingViewChart({ exchangeId, marketType, symbol, timeframe }: 
   }, [containerId, resolvedTheme, timeframe, tradingViewSymbol]);
 
   return (
-    <div className="tradingview-chart" aria-label={`${symbol} TradingView chart`}>
-      {loadState !== 'ready' ? (
+    <div className={`tradingview-chart tradingview-chart--${loadState}`} aria-label={`${symbol} TradingView chart`}>
+      {loadState === 'loading' ? (
         <div className={`tradingview-chart__state tradingview-chart__state--${loadState}`}>
-          <strong>{loadState === 'error' ? 'TradingView indisponible' : 'TradingView charge le chart'}</strong>
+          <strong>TradingView charge le chart</strong>
           <span>{tradingViewSymbol} · {timeframeLabel(timeframe)}</span>
         </div>
+      ) : null}
+      {loadState === 'iframe' ? (
+        <iframe
+          className="tradingview-chart__iframe"
+          src={embedUrl}
+          title={`${tradingViewSymbol} TradingView`}
+        />
       ) : null}
       <div className="tradingview-chart__container" id={containerId} />
     </div>
@@ -108,6 +116,16 @@ function loadTradingViewScript() {
     const existingScript = document.getElementById(tradingViewScriptId) as HTMLScriptElement | null;
 
     if (existingScript) {
+      if (existingScript.dataset.status === 'ready') {
+        resolve();
+        return;
+      }
+
+      if (existingScript.dataset.status === 'error') {
+        reject(new Error('TradingView script failed'));
+        return;
+      }
+
       existingScript.addEventListener('load', () => resolve(), { once: true });
       existingScript.addEventListener('error', () => reject(new Error('TradingView script failed')), { once: true });
       return;
@@ -118,10 +136,34 @@ function loadTradingViewScript() {
     script.async = true;
     script.id = tradingViewScriptId;
     script.src = 'https://s3.tradingview.com/tv.js';
-    script.addEventListener('load', () => resolve(), { once: true });
-    script.addEventListener('error', () => reject(new Error('TradingView script failed')), { once: true });
+    script.addEventListener('load', () => {
+      script.dataset.status = 'ready';
+      resolve();
+    }, { once: true });
+    script.addEventListener('error', () => {
+      script.dataset.status = 'error';
+      reject(new Error('TradingView script failed'));
+    }, { once: true });
     document.head.appendChild(script);
   });
+}
+
+function buildTradingViewEmbedUrl(symbol: string, timeframe: Timeframe, theme: 'dark' | 'light') {
+  const params = new URLSearchParams({
+    allow_symbol_change: '1',
+    calendar: '0',
+    hideideas: '1',
+    interval: toTradingViewInterval(timeframe),
+    locale: 'fr',
+    saveimage: '1',
+    style: '1',
+    symbol,
+    theme,
+    timezone: 'Etc/UTC',
+    withdateranges: '1',
+  });
+
+  return `https://s.tradingview.com/widgetembed/?${params.toString()}`;
 }
 
 function toTradingViewInterval(timeframe: Timeframe) {
@@ -147,10 +189,16 @@ function toTradingViewSymbol(symbol: string, exchangeId: string, marketType: Tra
   const prefix = exchangePrefixes[exchangeId] ?? 'BINANCE';
   const base = normalizeBase(rawBase, exchangeId);
   const quote = normalizeQuote(rawQuote, exchangeId);
-  const supportsPerpetualSuffix = ['binance', 'bybit', 'okx', 'bitget'].includes(exchangeId);
-  const suffix = marketType !== 'spot' && supportsPerpetualSuffix ? '.P' : '';
 
-  return `${prefix}:${base}${quote}${suffix}`;
+  if (marketType !== 'spot' && exchangeId === 'binance') {
+    return `${prefix}:${base}${quote}PERP`;
+  }
+
+  if (marketType !== 'spot' && ['bybit', 'okx', 'bitget'].includes(exchangeId)) {
+    return `${prefix}:${base}${quote}.P`;
+  }
+
+  return `${prefix}:${base}${quote}`;
 }
 
 function normalizeBase(base: string, exchangeId: string) {

@@ -1089,6 +1089,16 @@ h2 {
   background: transparent;
 }
 
+.market-action-status {
+  max-width: 220px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .market-categories {
   gap: 6px;
   flex-wrap: wrap;
@@ -1138,20 +1148,9 @@ h2 {
 }
 
 .market-stat-card small {
+  color: var(--text-muted);
+  font-size: 12px;
   font-weight: 800;
-}
-
-.market-stat-card i {
-  position: absolute;
-  right: 14px;
-  bottom: 18px;
-  width: 86px;
-  height: 24px;
-  opacity: 0.72;
-  background:
-    linear-gradient(135deg, transparent 0 12%, var(--profit) 12% 15%, transparent 15% 28%, var(--profit) 28% 31%, transparent 31% 45%, var(--profit) 45% 48%, transparent 48% 64%, var(--profit) 64% 67%, transparent 67%),
-    linear-gradient(180deg, transparent, color-mix(in srgb, var(--profit) 18%, transparent));
-  clip-path: polygon(0 78%, 12% 68%, 22% 74%, 34% 52%, 44% 58%, 56% 38%, 70% 46%, 84% 24%, 100% 16%, 100% 100%, 0 100%);
 }
 
 .markets-grid {
@@ -1286,21 +1285,32 @@ h2 {
 
 .market-watchlist-link {
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   color: var(--text-muted);
+  border: 0;
+  background: transparent;
+  cursor: pointer;
 }
 
-.market-row-actions a {
+.market-row-actions a,
+.market-row-actions button {
   display: inline-grid;
   place-items: center;
   width: 28px;
   height: 28px;
+  padding: 0;
   color: var(--text-muted);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface);
+  cursor: pointer;
 }
 
-.market-row-actions a:hover {
+.market-row-actions a:hover,
+.market-row-actions button:hover,
+.market-watchlist-link:hover {
   color: var(--text);
   border-color: var(--border-strong);
 }
@@ -1366,7 +1376,7 @@ h2 {
   inset: 0;
   content: "";
   border-radius: 999px 999px 0 0;
-  background: conic-gradient(from 270deg at 50% 100%, var(--risk), var(--warning) 30%, var(--profit) 72%, var(--surface-muted) 72% 100%);
+  background: conic-gradient(from 270deg at 50% 100%, var(--risk), var(--warning) 30%, var(--profit) var(--sentiment-score, 50%), var(--surface-muted) var(--sentiment-score, 50%) 100%);
   mask: radial-gradient(circle at 50% 100%, transparent 0 57%, #000 58% 71%, transparent 72%);
 }
 
@@ -1380,6 +1390,16 @@ h2 {
 .sentiment-gauge strong {
   margin-top: -28px;
   color: var(--profit);
+}
+
+.sentiment-gauge--negative span,
+.sentiment-gauge--negative strong {
+  color: var(--risk);
+}
+
+.sentiment-gauge--neutral span,
+.sentiment-gauge--neutral strong {
+  color: var(--warning);
 }
 
 .sentiment-breakdown {
@@ -9887,10 +9907,20 @@ h2 {
   inset: 0;
 }
 
+.tradingview-chart--iframe .tradingview-chart__container {
+  display: none;
+}
+
 .tradingview-chart iframe {
   width: 100% !important;
   height: 100% !important;
   border: 0;
+}
+
+.tradingview-chart__iframe {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
 }
 
 .tradingview-chart__state {
@@ -9917,10 +9947,6 @@ h2 {
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 780;
-}
-
-.tradingview-chart__state--error {
-  color: var(--risk);
 }
 
 .trading-chart,
