@@ -134,6 +134,11 @@ test('chart trading controls and risk engine hooks are present', async ({ fetchP
   assertIncludes(chartSource, 'setLiveOrderConfirmationOpen(true)', 'Live order opens confirmation');
   assertIncludes(chartSource, 'syncDraftWithMarker', 'Trade markers update the draft');
   assertIncludes(chartSource, 'Confirm Live Order', 'Live confirmation modal exists');
+  assert(!chartSource.includes('updateChartCandleWithLivePrice'), 'Live ticks do not rewrite the visible candle window');
+
+  const tradingChartSource = await readSource('src/components/chart/TradingChart.tsx');
+  assertIncludes(tradingChartSource, 'dataWindowIdentity', 'Chart fits only when the candle window changes');
+  assert(!tradingChartSource.includes('scrollToRealTime'), 'Chart does not auto-scroll after passive live updates');
 
   const riskEngineSource = await readSource('src/services/risk-engine.ts');
   assertIncludes(riskEngineSource, 'stopLossPrice > 0', 'Risk Engine rejects zero stop-loss');

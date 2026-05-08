@@ -121,6 +121,9 @@ export function TradingChart({
   const fittedDataIdentityRef = useRef<string | null>(null);
   const { resolvedTheme } = useTheme();
   const priceRange = resolvePriceRange(candles, markers, drawings);
+  const firstCandleTime = candles[0]?.time ?? 'empty';
+  const lastCandleTime = candles[candles.length - 1]?.time ?? 'empty';
+  const dataWindowIdentity = `${dataIdentity}:${candles.length}:${firstCandleTime}:${lastCandleTime}`;
 
   useEffect(() => {
     if (!surfaceRef.current) {
@@ -269,14 +272,11 @@ export function TradingChart({
     vwapSeriesRef.current?.setData(indicators.vwap.enabled ? buildVwapData(candles) : []);
     volumeSeriesRef.current?.setData(indicators.volume.enabled ? toVolumeData(candles) : []);
 
-    if (fittedDataIdentityRef.current !== dataIdentity) {
-      fittedDataIdentityRef.current = dataIdentity;
+    if (fittedDataIdentityRef.current !== dataWindowIdentity) {
+      fittedDataIdentityRef.current = dataWindowIdentity;
       chartRef.current?.timeScale().fitContent();
-      return;
     }
-
-    chartRef.current?.timeScale().scrollToRealTime();
-  }, [candles, dataIdentity, indicators]);
+  }, [candles, dataWindowIdentity, indicators]);
 
   useEffect(() => {
     const candleSeries = candleSeriesRef.current;

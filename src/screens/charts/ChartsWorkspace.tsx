@@ -311,16 +311,6 @@ export function ChartsWorkspace({
   }, [market.symbol, selectedExchangeId, timeframe]);
 
   useEffect(() => {
-    if (!lastEventAt) {
-      return;
-    }
-
-    if (selectedExchangeId === 'binance') {
-      setChartCandles((currentCandles) => updateChartCandleWithLivePrice(currentCandles.length ? currentCandles : market.candles, market.lastPrice, lastEventAt, timeframe));
-    }
-  }, [lastEventAt, market.candles, market.lastPrice, selectedExchangeId, timeframe]);
-
-  useEffect(() => {
     if (hasChartSetup || !Number.isFinite(visibleMarketPrice)) {
       return;
     }
@@ -1797,67 +1787,6 @@ function resolveInitialSymbol(marketPairs: MarketPair[], initialPair?: string) {
   }
 
   return marketPairs[0]?.symbol ?? 'BTC/USDT';
-}
-
-function updateChartCandleWithLivePrice(candles: Candle[], lastPrice: number, eventTime: number, timeframe: Timeframe) {
-  if (!candles.length || !Number.isFinite(lastPrice)) {
-    return candles;
-  }
-
-  const intervalSeconds = timeframeToSeconds(timeframe);
-  const eventCandleTime = Math.floor(eventTime / 1000 / intervalSeconds) * intervalSeconds;
-  const lastCandle = candles[candles.length - 1];
-
-  if (eventCandleTime > lastCandle.time) {
-    return [
-      ...candles,
-      {
-        close: lastPrice,
-        high: Math.max(lastCandle.close, lastPrice),
-        low: Math.min(lastCandle.close, lastPrice),
-        open: lastCandle.close,
-        time: eventCandleTime,
-        volume: 0,
-      },
-    ].slice(-candles.length);
-  }
-
-  return [
-    ...candles.slice(0, -1),
-    {
-      ...lastCandle,
-      close: lastPrice,
-      high: Math.max(lastCandle.high, lastPrice),
-      low: Math.min(lastCandle.low, lastPrice),
-    },
-  ];
-}
-
-function timeframeToSeconds(timeframe: Timeframe) {
-  switch (timeframe) {
-    case '1m':
-      return 60;
-    case '5m':
-      return 5 * 60;
-    case '15m':
-      return 15 * 60;
-    case '30m':
-      return 30 * 60;
-    case '1h':
-      return 60 * 60;
-    case '2h':
-      return 2 * 60 * 60;
-    case '4h':
-      return 4 * 60 * 60;
-    case '1d':
-      return 24 * 60 * 60;
-    case '1w':
-      return 7 * 24 * 60 * 60;
-    case '1M':
-      return 30 * 24 * 60 * 60;
-    case '1y':
-      return 365 * 24 * 60 * 60;
-  }
 }
 
 function timeframeLabel(timeframe: Timeframe) {
