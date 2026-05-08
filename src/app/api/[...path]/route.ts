@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { JIMMY_LEGACY_STRATEGY_IDS, JIMMY_SOURCE_ID, JIMMY_STRATEGY_ID } from '../../../config/jimmy-strategy';
+import { JIMMY_LEGACY_STRATEGY_IDS, JIMMY_STRATEGY_ID } from '../../../config/jimmy-strategy';
 import { appendAuditEvent } from '../../../server/audit';
 import { runBacktestFromCandles } from '../../../server/backtest-engine';
 import {
@@ -38,6 +38,7 @@ import { getMarketCandles, getMarketDataSnapshot } from '../../../services/marke
 import type { PositionDraft, Timeframe } from '../../../types/market';
 import { buildRiskOrderInputFromDraft, evaluateRiskEngine } from '../../../services/risk-engine';
 import type { AgentAction, AgentRun, Alert, ApiKeyRecord, BacktestReport, Bot, JournalTrade, Order, Position, Strategy, StrategyCondition, StrategyRiskSettings } from '../../../types/trading';
+import { findVisibleStrategyRecord, isExecutableStrategy, strategyIdFromResearchRecord, visibleStrategyRecords as buildVisibleStrategyRecords } from '../../../utils/strategy-catalog';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -160,10 +161,10 @@ async function getHandler(request: NextRequest, context: RouteContext) {
   }
 
   if (path[0] === 'strategies') {
-    const visibleStrategies = visibleStrategyRecords(db);
-    const requestedId = normalizeStrategyId(path[1], db);
+    const visibleStrategies = buildVisibleStrategyRecords(db.strategyRecords, db.strategyResearchRecords);
+    const requestedStrategy = path[1] ? findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, path[1]) : undefined;
 
-    return json(path[1] ? visibleStrategies.find((strategy) => strategy.id === requestedId) : visibleStrategies);
+    return json(path[1] ? requestedStrategy : visibleStrategies);
   }
 
   if (path[0] === 'bots') {
@@ -421,7 +422,7 @@ async function postHandler(request: NextRequest, context: RouteContext) {
     if (path[1] && path[2] === 'duplicate') {
       return json(
         updateThoonDb((db) => {
-          const source = db.strategyRecords.find((strategy) => strategy.id === path[1]);
+          const source = findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, path[1]);
 
           if (!source) {
             throw new ApiError('Strategy not found', 404);
@@ -779,7 +780,7 @@ async function postHandler(request: NextRequest, context: RouteContext) {
   if (path[0] === 'backtests') {
     const db = readThoonDb();
     const strategyId = normalizeStrategyId(asString(body.strategyId) || db.strategyRecords[0]?.id || 'manual', db);
-    const strategy = db.strategyRecords.find((record) => record.id === strategyId) ?? db.strategyRecords[0];
+    const strategy = findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, strategyId);
 
     if (!strategy) {
       return json({ error: 'Strategy not found.' }, 404);
@@ -789,7 +790,9 @@ async function postHandler(request: NextRequest, context: RouteContext) {
       return json(
         {
           error: `${strategy.name} does not have a real executable backtest engine yet. The run was blocked instead of showing fake results.`,
-          details: 'Only jimmy and agent strategies explicitly linked to the protected jimmy Pine source can currently run through the candle engine.',
+          details: strategy.agentSource?.sourceId.startsWith('tradingview:')
+            ? 'This TradingView item is a public research candidate. It is visible in Strategies and Backtest, but it needs a real Pine-to-engine implementation before Thoon can calculate results.'
+            : 'Only jimmy and agent strategies explicitly linked to the protected jimmy Pine source can currently run through the candle engine.',
         },
         422,
       );
@@ -1196,10 +1199,17 @@ async function patchHandler(request: NextRequest, context: RouteContext) {
   if (path[0] === 'strategies' && path[1]) {
     return json(
       updateThoonDb((db) => {
-        const strategy = db.strategyRecords.find((item) => item.id === path[1]);
+        let strategy = db.strategyRecords.find((item) => item.id === path[1]);
 
         if (!strategy) {
-          throw new ApiError('Strategy not found', 404);
+          const visibleStrategy = findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, path[1]);
+
+          if (!visibleStrategy) {
+            throw new ApiError('Strategy not found', 404);
+          }
+
+          strategy = { ...visibleStrategy, updatedAt: new Date().toISOString() };
+          db.strategyRecords = [strategy, ...db.strategyRecords];
         }
 
         if (body.status === 'active' || body.status === 'draft' || body.status === 'archived') {
@@ -1376,7 +1386,13 @@ async function deleteHandler(_request: NextRequest, context: RouteContext) {
   }
 
   if (path[0] === 'strategies' && path[1]) {
-    return json(updateThoonDb((db) => ({ deleted: removeById(db.strategyRecords, path[1]) })));
+    return json(updateThoonDb((db) => {
+      const deletedStrategy = removeById(db.strategyRecords, path[1]);
+      const beforeResearchCount = db.strategyResearchRecords.length;
+      db.strategyResearchRecords = db.strategyResearchRecords.filter((record) => strategyIdFromResearchRecord(record) !== path[1]);
+
+      return { deleted: deletedStrategy || db.strategyResearchRecords.length !== beforeResearchCount };
+    }));
   }
 
   if (path[0] === 'bots' && path[1]) {
@@ -1542,7 +1558,7 @@ async function agentAction(body: Record<string, unknown>) {
 
   if (action === 'analyze_strategy' || action === 'create_report') {
     const db = readThoonDb();
-    const strategy = strategyId ? db.strategyRecords.find((item) => item.id === strategyId) : undefined;
+    const strategy = strategyId ? findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, strategyId) : undefined;
     const versions = strategyId ? db.strategyVersionRecords.filter((item) => item.strategyId === strategyId) : db.strategyVersionRecords;
 
     try {
@@ -1559,7 +1575,7 @@ async function agentAction(body: Record<string, unknown>) {
 
   if (action === 'run_backtest') {
     const db = readThoonDb();
-    const strategy = strategyId ? db.strategyRecords.find((item) => item.id === strategyId) : undefined;
+    const strategy = strategyId ? findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, strategyId) : undefined;
 
     if (strategy) {
       if (!isExecutableBacktestStrategy(strategy)) {
@@ -1591,7 +1607,7 @@ async function agentAction(body: Record<string, unknown>) {
 
   if (action === 'research_tradingview') {
     const db = readThoonDb();
-    const strategy = strategyId ? db.strategyRecords.find((item) => item.id === strategyId) : undefined;
+    const strategy = strategyId ? findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, strategyId) : undefined;
     const decision = evaluateAgentAction(db, action, { confirmed, strategyId, versionId });
 
     if (decision.allowed && !decision.requiredConfirmation) {
@@ -1606,7 +1622,7 @@ async function agentAction(body: Record<string, unknown>) {
   return json(
     updateThoonDb((db) => {
       const decision = evaluateAgentAction(db, action, { confirmed, strategyId, versionId });
-      const strategy = strategyId ? db.strategyRecords.find((item) => item.id === strategyId) : undefined;
+      const strategy = strategyId ? findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, strategyId) : undefined;
       const version = versionId ? db.strategyVersionRecords.find((item) => item.id === versionId) : strategy ? latestStrategyVersion(db, strategy.id) : undefined;
       const runBase = createAgentRunBase(db, action, decision, strategy?.id, version?.id, confirmed);
 
@@ -1929,15 +1945,11 @@ function normalizeStrategyId(value: string | undefined, db: ThoonDb) {
     return JIMMY_STRATEGY_ID;
   }
 
-  return db.strategyRecords.some((strategy) => strategy.id === value) ? value : JIMMY_STRATEGY_ID;
-}
-
-function visibleStrategyRecords(db: ThoonDb) {
-  return db.strategyRecords.filter((strategy) => !JIMMY_LEGACY_STRATEGY_IDS.includes(strategy.id));
+  return findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, value)?.id ?? JIMMY_STRATEGY_ID;
 }
 
 function isExecutableBacktestStrategy(strategy: Strategy) {
-  return strategy.id === JIMMY_STRATEGY_ID || strategy.agentSource?.sourceId === JIMMY_SOURCE_ID;
+  return isExecutableStrategy(strategy);
 }
 
 function positiveValue(value: unknown, fallback: number) {

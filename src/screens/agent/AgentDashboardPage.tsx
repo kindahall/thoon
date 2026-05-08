@@ -5,6 +5,7 @@ import type { ReactNode } from 'react';
 import { StrategyAgentDrawer } from '../../components/agent/StrategyAgentDrawer';
 import { Badge, Card } from '../../components/ui';
 import type { AgentQueueTask, AgentReport, AgentRun, AgentSettings, AgentSuggestion, BacktestReport, JournalTrade, Strategy, StrategyResearchRecord, StrategyVersion } from '../../types/trading';
+import { strategyIdFromResearchRecord } from '../../utils/strategy-catalog';
 import { formatUsd } from '../../utils/format';
 
 type AgentDashboardPageProps = {
@@ -94,13 +95,23 @@ export function AgentDashboardPage({ aiStatus, backtests, journalTrades, reports
           </div>
           <div className="agent-compact-list agent-research-list">
             {researchRecords.length ? (
-              researchRecords.slice(0, 5).map((record) => (
-                <a href={record.url} key={record.id} rel="noreferrer" target="_blank">
-                  <strong>{record.title}</strong>
-                  <span>{[record.author, ...record.concepts.slice(0, 3)].filter(Boolean).join(' · ') || record.publicDescription}</span>
-                  <Badge tone={record.sourceVisibility === 'protected_source' ? 'warning' : record.sourceVisibility === 'open_source' ? 'positive' : 'neutral'}>{formatSourceVisibility(record.sourceVisibility)}</Badge>
-                </a>
-              ))
+              researchRecords.slice(0, 5).map((record) => {
+                const strategyId = strategyIdFromResearchRecord(record);
+
+                return (
+                  <div className="agent-research-item" key={record.id}>
+                    <a href={record.url} rel="noreferrer" target="_blank">
+                      <strong>{record.title}</strong>
+                      <span>{[record.author, ...record.concepts.slice(0, 3)].filter(Boolean).join(' · ') || record.publicDescription}</span>
+                    </a>
+                    <div className="agent-research-actions">
+                      <Badge tone={record.sourceVisibility === 'protected_source' ? 'warning' : record.sourceVisibility === 'open_source' ? 'positive' : 'neutral'}>{formatSourceVisibility(record.sourceVisibility)}</Badge>
+                      <Link href={`/strategies/${strategyId}`}>Strategy</Link>
+                      <Link href={`/backtest?strategyId=${strategyId}`}>Backtest</Link>
+                    </div>
+                  </div>
+                );
+              })
             ) : (
               <div className="agent-empty-line">No public TradingView research saved yet.</div>
             )}

@@ -441,7 +441,7 @@ export type BacktestReport = {
   };
   drawdown: number;
   drawdownCurve?: number[];
-  engine?: 'jimmy-pine-v5-candle-engine';
+  engine?: 'jimmy-pine-v5-candle-engine' | 'thoon-concept-candle-engine';
   equityCurve?: number[];
   executionModel?: string;
   exchangeId?: string;

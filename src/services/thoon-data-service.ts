@@ -1,8 +1,8 @@
-import { JIMMY_LEGACY_STRATEGY_IDS, JIMMY_STRATEGY_ID } from '../config/jimmy-strategy';
 import type { MetricTone, PreferenceSectionKey, WorkspaceRow, WorkspaceSummary, WorkspaceSummaryKey } from '../types/trading';
 import { formatCompact, formatCompactUsd, formatPercent, formatUsd } from '../utils/format';
 import { readThoonDb } from '../server/thoon-db';
 import { getStrategyAgentAiStatus } from '../server/strategy-agent-ai';
+import { canonicalStrategyId, findVisibleStrategyRecord, visibleStrategyRecords } from '../utils/strategy-catalog';
 
 export function getWorkspaceSummary(key: WorkspaceSummaryKey): WorkspaceSummary {
   const {
@@ -17,10 +17,11 @@ export function getWorkspaceSummary(key: WorkspaceSummaryKey): WorkspaceSummary 
     plannedOrderRecords,
     riskRulesRecord,
     strategyRecords,
+    strategyResearchRecords,
     userPreferencesRecord,
     watchlistRecords,
   } = readThoonDb();
-  const canonicalStrategies = canonicalStrategyRecords(strategyRecords);
+  const canonicalStrategies = visibleStrategyRecords(strategyRecords, strategyResearchRecords);
   const canonicalReports = backtestReportRecords.filter((report) => report.source === 'calculated');
 
   switch (key) {
@@ -254,13 +255,15 @@ export function listStrategyIds(): string[] {
 }
 
 export function listStrategies() {
-  return canonicalStrategyRecords(readThoonDb().strategyRecords);
+  const { strategyRecords, strategyResearchRecords } = readThoonDb();
+
+  return visibleStrategyRecords(strategyRecords, strategyResearchRecords);
 }
 
 export function getStrategy(id: string) {
-  const canonicalId = canonicalStrategyId(id);
+  const { strategyRecords, strategyResearchRecords } = readThoonDb();
 
-  return canonicalStrategyRecords(readThoonDb().strategyRecords).find((strategy) => strategy.id === canonicalId);
+  return findVisibleStrategyRecord(strategyRecords, strategyResearchRecords, id);
 }
 
 export function listBacktestReports() {
@@ -355,9 +358,8 @@ export function getCreateStrategySummary(pair?: string): WorkspaceSummary {
 }
 
 export function getStrategyDetailSummary(id: string): WorkspaceSummary | undefined {
-  const { backtestReportRecords, botRecords, strategyRecords } = readThoonDb();
-  const canonicalId = canonicalStrategyId(id);
-  const strategy = canonicalStrategyRecords(strategyRecords).find((item) => item.id === canonicalId);
+  const { backtestReportRecords, botRecords, strategyRecords, strategyResearchRecords } = readThoonDb();
+  const strategy = findVisibleStrategyRecord(strategyRecords, strategyResearchRecords, id);
 
   if (!strategy) {
     return undefined;
@@ -411,14 +413,14 @@ export function getCreateBotSummary(): WorkspaceSummary {
 }
 
 export function getBotDetailSummary(id: string): WorkspaceSummary | undefined {
-  const { botRecords, strategyRecords } = readThoonDb();
+  const { botRecords, strategyRecords, strategyResearchRecords } = readThoonDb();
   const bot = botRecords.find((item) => item.id === id);
 
   if (!bot) {
     return undefined;
   }
 
-  const strategy = canonicalStrategyRecords(strategyRecords).find((item) => item.id === canonicalStrategyId(bot.strategyId));
+  const strategy = findVisibleStrategyRecord(strategyRecords, strategyResearchRecords, bot.strategyId);
 
   return {
     actionLabel: 'Open Chart',
@@ -705,16 +707,4 @@ function toneFromNumber(value: number): MetricTone {
   }
 
   return 'neutral';
-}
-
-function canonicalStrategyId(id: string | undefined) {
-  if (!id || JIMMY_LEGACY_STRATEGY_IDS.includes(id)) {
-    return JIMMY_STRATEGY_ID;
-  }
-
-  return id;
-}
-
-function canonicalStrategyRecords<T extends { id: string }>(records: T[]) {
-  return records.filter((strategy) => !JIMMY_LEGACY_STRATEGY_IDS.includes(strategy.id));
 }

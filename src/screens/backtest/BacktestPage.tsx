@@ -10,6 +10,7 @@ import { useBinanceLiveMarkets } from '../../hooks/useBinanceLiveMarkets';
 import { ApiClientError, postJson } from '../../services/api-client';
 import type { MarketPair, Timeframe } from '../../types/market';
 import type { AgentReport, AgentRun, AgentSettings, AgentSuggestion, BacktestReport, BacktestTrade, ExchangeConnection, Strategy, StrategyVersion } from '../../types/trading';
+import { isResearchOnlyStrategy } from '../../utils/strategy-catalog';
 import { formatPercent, formatUsd } from '../../utils/format';
 
 type BacktestPageProps = {
@@ -113,6 +114,7 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
   const buyHoldLast = buyHoldSeries[buyHoldSeries.length - 1] ?? reportInitialCapital;
   const buyHoldReturn = report?.buyHoldReturn ?? 0;
   const reportExchangeName = report?.exchangeName ?? selectedExchange?.name ?? 'Binance';
+  const isResearchAdaptation = Boolean(strategy?.agentSource?.sourceId.startsWith('tradingview:'));
   const reportSourceLabel = report
     ? `${reportExchangeName} public candles · ${report.generatedAt ? formatRunDate(report.generatedAt) : 'latest run'}`
     : `${selectedExchange?.name ?? 'Binance'} selected`;
@@ -373,7 +375,7 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
           <BacktestSelect label="Strategy" onChange={changeStrategy} value={strategyId}>
             {strategies.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.name}
+                {isResearchOnlyStrategy(item) ? `${item.name} · Thoon concept adaptation` : item.name}
               </option>
             ))}
           </BacktestSelect>
@@ -402,7 +404,7 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
           <div className="backtest-advanced-panel" aria-label="Backtest advanced details">
             <SummaryMetric label="Source" value={strategy?.agentSource?.sourceId ?? 'manual-strategy'} />
             <SummaryMetric label="Exchange" value={selectedExchange?.name ?? exchangeId} />
-            <SummaryMetric label="Mode" value="Public candles only" />
+            <SummaryMetric label="Mode" value={isResearchAdaptation ? 'Thoon concept adaptation' : 'Public candles only'} />
             <SummaryMetric label="Display Rule" value="Trusted runs only" />
           </div>
         ) : null}
@@ -416,6 +418,8 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
           {report?.dataWindow ? <span>{formatRunDate(report.dataWindow.firstCandleAt)} to {formatRunDate(report.dataWindow.lastCandleAt)}</span> : null}
           {report?.dataWindow ? <span>{report.dataWindow.candleChecksum}</span> : null}
           <span>{symbol} · {timeframe} · {dateRange}</span>
+          {isResearchAdaptation ? <span>TradingView concept adapted by Thoon engine.</span> : null}
+          {strategies.some(isResearchOnlyStrategy) ? <span>Thoon concept adaptation available for agent research strategies.</span> : null}
           <span>Paper only. Live orders still require Risk Engine confirmation.</span>
         </div>
         {runState.status !== 'idle' ? <BacktestRunStateBanner state={runState} /> : null}
@@ -841,7 +845,7 @@ function isTrustedBacktestReport(report: BacktestReport) {
   return (
     report.source === 'calculated' &&
     (report.marketDataSource === 'binance-live' || Boolean(report.marketDataSource?.endsWith('-public-rest'))) &&
-    report.engine === 'jimmy-pine-v5-candle-engine' &&
+    isTrustedBacktestEngine(report.engine) &&
     Boolean(report.dataWindow?.candleChecksum) &&
     Boolean(report.dataWindow?.firstCandleAt) &&
     Boolean(report.dataWindow?.lastCandleAt) &&
@@ -855,6 +859,10 @@ function isTrustedBacktestReport(report: BacktestReport) {
     Array.isArray(report.monthlyReturns) &&
     Array.isArray(report.trades)
   );
+}
+
+function isTrustedBacktestEngine(engine: BacktestReport['engine']) {
+  return engine === 'jimmy-pine-v5-candle-engine' || engine === 'thoon-concept-candle-engine';
 }
 
 function formatTradeDate(value: string) {

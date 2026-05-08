@@ -12,6 +12,7 @@ import { agentQueueTasks, agentReports, agentRuns, agentSuggestions, defaultAgen
 import { backtestReports, strategies } from '../mock-data/strategies';
 import { watchlists } from '../mock-data/watchlists';
 import type { MarketPair } from '../types/market';
+import { strategyIdFromResearchRecord } from '../utils/strategy-catalog';
 import type {
   AgentQueueTask,
   AgentReport,
@@ -206,7 +207,8 @@ export async function flushPendingPostgresMirror() {
 function migrateDb(db: Partial<ThoonDb>): ThoonDb {
   const seed = createSeedDb();
   const strategyRecords = mergeSeedRecords(seed.strategyRecords, db.strategyRecords).filter((strategy) => !JIMMY_LEGACY_STRATEGY_IDS.includes(strategy.id));
-  const visibleStrategyIds = new Set(strategyRecords.map((strategy) => strategy.id));
+  const strategyResearchRecords = db.strategyResearchRecords ?? [];
+  const visibleStrategyIds = new Set([...strategyRecords.map((strategy) => strategy.id), ...strategyResearchRecords.map(strategyIdFromResearchRecord)]);
 
   return {
     ...seed,
@@ -228,7 +230,7 @@ function migrateDb(db: Partial<ThoonDb>): ThoonDb {
     savedSetupRecords: db.savedSetupRecords ?? [],
     sessionRecords: db.sessionRecords ?? [],
     strategyRecords,
-    strategyResearchRecords: db.strategyResearchRecords ?? [],
+    strategyResearchRecords,
     strategyVersionRecords: mergeSeedRecords(seed.strategyVersionRecords, db.strategyVersionRecords).filter((record) => visibleStrategyIds.has(record.strategyId)),
     schemaVersion: 1,
   };
@@ -251,7 +253,7 @@ function isTrustedBacktestReportRecord(record: BacktestReport, visibleStrategyId
     record.source === 'calculated' &&
     visibleStrategyIds.has(record.strategyId) &&
     (record.marketDataSource === 'binance-live' || Boolean(record.marketDataSource?.endsWith('-public-rest'))) &&
-    record.engine === 'jimmy-pine-v5-candle-engine' &&
+    isTrustedBacktestEngine(record.engine) &&
     Boolean(record.dataWindow?.candleChecksum) &&
     Boolean(record.dataWindow?.firstCandleAt) &&
     Boolean(record.dataWindow?.lastCandleAt) &&
@@ -265,6 +267,10 @@ function isTrustedBacktestReportRecord(record: BacktestReport, visibleStrategyId
     Array.isArray(record.monthlyReturns) &&
     Array.isArray(record.trades)
   );
+}
+
+function isTrustedBacktestEngine(engine: BacktestReport['engine']) {
+  return engine === 'jimmy-pine-v5-candle-engine' || engine === 'thoon-concept-candle-engine';
 }
 
 function normalizeBotRecords(records: Bot[] | undefined, visibleStrategyIds: Set<string>): Bot[] {

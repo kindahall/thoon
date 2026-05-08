@@ -52,13 +52,19 @@ export function runBacktestFromCandles(input: RunBacktestInput): BacktestReport 
   const candles = selectPeriodCandles(input.candles, input.period, input.timeframe);
   const warnings: string[] = [];
   const profile = jimmyProfileFor(input.timeframe);
+  const isJimmyBacktest = isJimmyStrategy(input.strategy);
+  const isResearchAdaptation = Boolean(input.strategy.agentSource?.sourceId.startsWith('tradingview:'));
 
   if (candles.length < 40) {
     warnings.push(`Only ${candles.length} candles available. Results need more history before promotion.`);
   }
 
-  if (candles.length < profile.longMaLength && isJimmyStrategy(input.strategy)) {
+  if (candles.length < profile.longMaLength && isJimmyBacktest) {
     warnings.push(`MA ${profile.longMaLength} needs ${profile.longMaLength} candles; MA-based jimmy checks stay inactive until enough live candles exist.`);
+  }
+
+  if (isResearchAdaptation) {
+    warnings.push('TradingView source is backtested as a Thoon concept adaptation from public metadata, not as the exact Pine script unless open code is later implemented.');
   }
 
   const closes = candles.map((candle) => candle.close);
@@ -189,9 +195,11 @@ export function runBacktestFromCandles(input: RunBacktestInput): BacktestReport 
         : undefined,
     drawdown: roundMoney(Math.min(0, ...drawdownCurve)),
     drawdownCurve: downsample(drawdownCurve, 80),
-    engine: 'jimmy-pine-v5-candle-engine',
+    engine: isJimmyBacktest ? 'jimmy-pine-v5-candle-engine' : 'thoon-concept-candle-engine',
     equityCurve: downsample(equityCurve.length ? equityCurve : [input.initialCapital], 80),
-    executionModel: 'Signals are evaluated from exchange OHLCV candles; entries use candle close with configured slippage, exits use candle high/low against ATR stop, ATR trail, take-profit and MA cross.',
+    executionModel: isJimmyBacktest
+      ? 'Signals are evaluated from exchange OHLCV candles; entries use candle close with configured slippage, exits use candle high/low against ATR stop, ATR trail, take-profit and MA cross.'
+      : 'Thoon concept adaptation: public research concepts are converted into explicit candle rules, then evaluated on exchange OHLCV with configured slippage, ATR risk, trailing stop and take-profit.',
     exchangeId: input.exchangeId,
     exchangeName: input.exchangeName,
     feesPct: input.feesPct,

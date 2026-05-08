@@ -83,8 +83,39 @@ test('strategy agent renders, protects core strategy and exposes Codex research 
   });
   const researchBody = await research.text();
   assertStatus(research, 200, 'Agent TradingView research action runs');
+  const researchJson = JSON.parse(researchBody);
+  const researchRecord = researchJson.result.records[0];
+  const researchStrategyId = strategyIdFromResearchRecord(researchRecord);
+  const researchTitleNeedle = researchRecord.title.split('>')[0].trim();
   assertIncludes(researchBody, 'tradingview.com/script', 'TradingView research stores sourced public script URLs');
   assertIncludes(researchBody, 'concepts', 'TradingView research stores concepts, not fake strategy numbers');
+
+  const strategiesAfterResearch = await fetchPage('/strategies');
+  assertIncludes(strategiesAfterResearch, researchTitleNeedle, 'TradingView research appears in Strategies as a candidate');
+  assertIncludes(strategiesAfterResearch, 'TradingView concept', 'Strategies labels research candidates as concept adaptations');
+
+  const backtestAfterResearch = await fetchPage(`/backtest?strategyId=${encodeURIComponent(researchStrategyId)}`);
+  assertIncludes(backtestAfterResearch, researchTitleNeedle, 'TradingView research appears in Backtest strategy selector');
+  assertIncludes(normalizeReactHtml(backtestAfterResearch), 'Thoon concept adaptation', 'Backtest labels TradingView candidates as adapted concepts');
+
+  const researchBacktest = await apiRequest('/api/backtests', {
+    body: JSON.stringify({
+      fees: 0.06,
+      initialCapital: 10000,
+      period: '30D',
+      slippage: 0.02,
+      strategyId: researchStrategyId,
+      symbol: 'BTC/USDT',
+      timeframe: '1h',
+    }),
+    headers: { 'content-type': 'application/json' },
+    method: 'POST',
+  });
+  const researchBacktestBody = await researchBacktest.text();
+  const researchBacktestJson = JSON.parse(researchBacktestBody);
+  assertStatus(researchBacktest, 201, 'TradingView research candidate can run a real adapted backtest');
+  assertEqual(researchBacktestJson.engine, 'thoon-concept-candle-engine', 'Research candidate uses the Thoon concept candle engine');
+  assertIncludes(researchBacktestBody, '"source":"calculated"', 'Research candidate backtest is calculated, not seeded');
 
   const aiSource = await readSource('src/server/strategy-agent-ai.ts');
   assertIncludes(aiSource, 'callCodexProvider', 'Codex provider exists server-side');
@@ -786,6 +817,17 @@ async function waitForServer(baseUrl, timeoutMs = 45_000) {
 
 function normalizeBaseUrl(value) {
   return value ? value.replace(/\/$/, '') : null;
+}
+
+function strategyIdFromResearchRecord(record) {
+  const rawSlug = record.url.match(/\/script\/([^/]+)/)?.[1] ?? record.title;
+  const slug = rawSlug.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 72) || 'tradingview';
+
+  return `strat-tv-${slug}`;
+}
+
+function normalizeReactHtml(value) {
+  return value.replace(/<!-- -->/g, '');
 }
 
 function delay(ms) {

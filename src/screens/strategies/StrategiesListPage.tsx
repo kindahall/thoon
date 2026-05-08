@@ -7,6 +7,7 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { Badge, Card, EmptyState, HelpPopover, IconButton } from '../../components/ui';
 import { postJson } from '../../services/api-client';
 import type { Strategy } from '../../types/trading';
+import { isResearchOnlyStrategy } from '../../utils/strategy-catalog';
 import { formatPercent } from '../../utils/format';
 
 type StrategiesListPageProps = {
@@ -140,7 +141,7 @@ export function StrategiesListPage({ strategies }: StrategiesListPageProps) {
                         </span>
                         <div>
                           <strong>{strategy.name}</strong>
-                          <small>Risk {strategy.riskPerTrade}%</small>
+                          <small>{isResearchOnlyStrategy(strategy) ? 'TradingView concept · real adapted backtest' : `Risk ${strategy.riskPerTrade}%`}</small>
                         </div>
                       </Link>
                       <Badge tone="neutral">{formatStrategyType(strategy.type)}</Badge>
@@ -148,9 +149,18 @@ export function StrategiesListPage({ strategies }: StrategiesListPageProps) {
                       <span>{strategy.timeframe}</span>
                       <Badge tone={strategy.status === 'active' ? 'positive' : strategy.status === 'draft' ? 'warning' : 'neutral'}>{strategy.status}</Badge>
                       <div className="strategy-performance">
-                        <strong className={strategy.performance30d >= 0 ? 'positive' : 'negative'}>{formatPercent(strategy.performance30d)}</strong>
-                        <span>ROI</span>
-                        <StrategySparkline positive={strategy.performance30d >= 0} />
+                        {isResearchOnlyStrategy(strategy) && strategy.performance30d === 0 ? (
+                          <>
+                            <strong>No run</strong>
+                            <span>adapted</span>
+                          </>
+                        ) : (
+                          <>
+                            <strong className={strategy.performance30d >= 0 ? 'positive' : 'negative'}>{formatPercent(strategy.performance30d)}</strong>
+                            <span>ROI</span>
+                            <StrategySparkline positive={strategy.performance30d >= 0} />
+                          </>
+                        )}
                       </div>
                       <div className="strategy-actions">
                         <Link aria-label={`Test ${strategy.name}`} className="ui-icon-button" href={`/backtest?strategyId=${encodeURIComponent(strategy.id)}`} title={`Test ${strategy.name}`}>

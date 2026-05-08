@@ -302,19 +302,9 @@ function VersionHistory({ strategy, versions }: { strategy: Strategy; versions: 
   return (
     <div className="strategy-list-panel">
       <div>
-        <strong>v1.2</strong>
+        <strong>No real versions yet</strong>
         <span>{formatShortDate(strategy.updatedAt)}</span>
-        <span>Risk tuned</span>
-      </div>
-      <div>
-        <strong>v1.1</strong>
-        <span>Apr 30</span>
-        <span>Exit rules</span>
-      </div>
-      <div>
-        <strong>v1.0</strong>
-        <span>Apr 24</span>
-        <span>Initial draft</span>
+        <span>Run the agent to create a tracked variant.</span>
       </div>
     </div>
   );
