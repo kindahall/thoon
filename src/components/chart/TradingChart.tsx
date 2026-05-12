@@ -22,7 +22,41 @@ import {
 import type { Candle } from '../../types/market';
 import { useTheme } from '../../hooks/useTheme';
 import { sanitizeCandles } from '../../utils/candles';
+import {
+  adxSeries,
+  aroonSeries,
+  atrSeries,
+  bollingerBands,
+  cciSeries,
+  cmfSeries,
+  donchianChannel,
+  exponentialAverageSeries,
+  hullMovingAverageSeries,
+  ichimokuLines,
+  keltnerChannel,
+  macdSeries,
+  mfiSeries,
+  momentumSeries,
+  movingAverageSeries,
+  normalizeChartIndicatorConfig,
+  obvSeries,
+  parabolicSarSeries,
+  rocSeries,
+  rsiSeries,
+  stochasticSeries,
+  stochRsiSeries,
+  supertrendSeries,
+  trixSeries,
+  volumeWeightedMovingAverageSeries,
+  vwapSeries,
+  weightedMovingAverageSeries,
+  williamsRSeries,
+  type ChartIndicatorConfig,
+  type IndicatorPoint,
+} from '../../utils/chart-indicators';
 import { formatUsd } from '../../utils/format';
+
+export type { ChartIndicatorConfig };
 
 type TradingChartProps = {
   activeDrawingTool?: ChartDrawingType;
@@ -64,27 +98,6 @@ export type ChartDrawing = {
   upperPrice?: number;
 };
 
-export type ChartIndicatorConfig = {
-  ema: {
-    enabled: boolean;
-    period: number;
-  };
-  maFast: {
-    enabled: boolean;
-    period: number;
-  };
-  maSlow: {
-    enabled: boolean;
-    period: number;
-  };
-  volume: {
-    enabled: boolean;
-  };
-  vwap: {
-    enabled: boolean;
-  };
-};
-
 type PositionPreview = {
   direction: 'long' | 'short';
   entry: number;
@@ -111,13 +124,52 @@ export function TradingChart({
   positionPreview,
 }: TradingChartProps) {
   const chartCandles = useMemo(() => sanitizeCandles(candles), [candles]);
+  const activeIndicators = useMemo(() => normalizeChartIndicatorConfig(indicators), [indicators]);
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const adxSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const aroonDownSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const aroonUpSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const atrSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const bollingerLowerSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const bollingerMiddleSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const bollingerUpperSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const cciSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const cmfSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const donchianLowerSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const donchianMiddleSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const donchianUpperSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const emaSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const hmaSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const ichimokuBaseSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const ichimokuConversionSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const ichimokuSpanASeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const ichimokuSpanBSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const keltnerLowerSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const keltnerMiddleSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const keltnerUpperSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const maFastSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const maSlowSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const macdHistogramSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
+  const macdLineSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const macdSignalSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const mfiSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const momentumSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const obvSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const parabolicSarSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const rocSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const rsiSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const stochasticDSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const stochasticKSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const stochRsiDSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const stochRsiKSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const supertrendSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const trixSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const vwapSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const vwmaSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const williamsRSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const wmaSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const priceLineRefs = useRef<IPriceLine[]>([]);
   const fittedDataIdentityRef = useRef<string | null>(null);
@@ -195,37 +247,58 @@ export function TradingChart({
       wickUpColor: '#62e6a8',
     });
 
-    const maFastSeries = chart.addSeries(LineSeries, {
-      color: isLight ? 'rgba(3, 143, 196, 0.78)' : 'rgba(38, 200, 255, 0.82)',
-      crosshairMarkerVisible: false,
-      lastValueVisible: false,
-      lineWidth: 2,
-      priceLineVisible: false,
-    });
+    const addLineSeries = (color: string, priceScaleId?: string, lineWidth: 1 | 2 = 2, lineStyle?: LineStyle) =>
+      chart.addSeries(LineSeries, {
+        color,
+        crosshairMarkerVisible: false,
+        lastValueVisible: false,
+        lineStyle,
+        lineWidth,
+        priceLineVisible: false,
+        priceScaleId,
+      });
 
-    const maSlowSeries = chart.addSeries(LineSeries, {
-      color: isLight ? 'rgba(186, 122, 0, 0.82)' : 'rgba(255, 212, 90, 0.78)',
-      crosshairMarkerVisible: false,
-      lastValueVisible: false,
-      lineWidth: 2,
-      priceLineVisible: false,
-    });
-
-    const emaSeries = chart.addSeries(LineSeries, {
-      color: isLight ? 'rgba(145, 90, 255, 0.78)' : 'rgba(165, 108, 255, 0.82)',
-      crosshairMarkerVisible: false,
-      lastValueVisible: false,
-      lineWidth: 2,
-      priceLineVisible: false,
-    });
-
-    const vwapSeries = chart.addSeries(LineSeries, {
-      color: isLight ? 'rgba(0, 154, 115, 0.74)' : 'rgba(98, 230, 168, 0.74)',
-      crosshairMarkerVisible: false,
-      lastValueVisible: false,
-      lineWidth: 2,
-      priceLineVisible: false,
-    });
+    const maFastSeries = addLineSeries(isLight ? 'rgba(3, 143, 196, 0.78)' : 'rgba(38, 200, 255, 0.82)');
+    const maSlowSeries = addLineSeries(isLight ? 'rgba(186, 122, 0, 0.82)' : 'rgba(255, 212, 90, 0.78)');
+    const emaSeries = addLineSeries(isLight ? 'rgba(145, 90, 255, 0.78)' : 'rgba(165, 108, 255, 0.82)');
+    const wmaSeries = addLineSeries(isLight ? 'rgba(255, 122, 200, 0.72)' : 'rgba(255, 122, 200, 0.78)');
+    const hmaSeries = addLineSeries(isLight ? 'rgba(53, 213, 255, 0.76)' : 'rgba(53, 213, 255, 0.82)');
+    const vwmaSeries = addLineSeries(isLight ? 'rgba(0, 154, 115, 0.72)' : 'rgba(100, 244, 210, 0.74)');
+    const vwapSeries = addLineSeries(isLight ? 'rgba(0, 154, 115, 0.74)' : 'rgba(98, 230, 168, 0.74)');
+    const bollingerUpperSeries = addLineSeries('rgba(38, 200, 255, 0.62)', undefined, 1);
+    const bollingerMiddleSeries = addLineSeries('rgba(38, 200, 255, 0.44)', undefined, 1, LineStyle.Dotted);
+    const bollingerLowerSeries = addLineSeries('rgba(38, 200, 255, 0.62)', undefined, 1);
+    const donchianUpperSeries = addLineSeries('rgba(255, 212, 90, 0.56)', undefined, 1);
+    const donchianMiddleSeries = addLineSeries('rgba(255, 212, 90, 0.34)', undefined, 1, LineStyle.Dotted);
+    const donchianLowerSeries = addLineSeries('rgba(255, 212, 90, 0.56)', undefined, 1);
+    const keltnerUpperSeries = addLineSeries('rgba(165, 108, 255, 0.52)', undefined, 1);
+    const keltnerMiddleSeries = addLineSeries('rgba(165, 108, 255, 0.34)', undefined, 1, LineStyle.Dotted);
+    const keltnerLowerSeries = addLineSeries('rgba(165, 108, 255, 0.52)', undefined, 1);
+    const ichimokuConversionSeries = addLineSeries('rgba(38, 200, 255, 0.66)', undefined, 1);
+    const ichimokuBaseSeries = addLineSeries('rgba(255, 95, 117, 0.66)', undefined, 1);
+    const ichimokuSpanASeries = addLineSeries('rgba(98, 230, 168, 0.48)', undefined, 1);
+    const ichimokuSpanBSeries = addLineSeries('rgba(255, 212, 90, 0.48)', undefined, 1);
+    const supertrendSeries = addLineSeries('rgba(98, 230, 168, 0.86)', undefined, 2);
+    const parabolicSarSeries = addLineSeries('rgba(255, 184, 107, 0.78)', undefined, 1, LineStyle.Dotted);
+    const rsiSeries = addLineSeries('rgba(38, 200, 255, 0.9)', 'oscillator');
+    const stochasticKSeries = addLineSeries('rgba(98, 230, 168, 0.86)', 'oscillator');
+    const stochasticDSeries = addLineSeries('rgba(255, 212, 90, 0.86)', 'oscillator');
+    const stochRsiKSeries = addLineSeries('rgba(53, 213, 255, 0.82)', 'oscillator');
+    const stochRsiDSeries = addLineSeries('rgba(255, 122, 200, 0.82)', 'oscillator');
+    const cciSeries = addLineSeries('rgba(165, 108, 255, 0.84)', 'oscillator');
+    const williamsRSeries = addLineSeries('rgba(255, 184, 107, 0.84)', 'oscillator');
+    const rocSeries = addLineSeries('rgba(100, 244, 210, 0.82)', 'oscillator');
+    const momentumSeries = addLineSeries('rgba(255, 95, 117, 0.78)', 'oscillator');
+    const trixSeries = addLineSeries('rgba(38, 200, 255, 0.78)', 'oscillator');
+    const atrSeries = addLineSeries('rgba(255, 212, 90, 0.78)', 'oscillator');
+    const macdLineSeries = addLineSeries('rgba(38, 200, 255, 0.86)', 'oscillator');
+    const macdSignalSeries = addLineSeries('rgba(255, 212, 90, 0.86)', 'oscillator');
+    const obvSeries = addLineSeries('rgba(98, 230, 168, 0.76)', 'oscillator');
+    const mfiSeries = addLineSeries('rgba(100, 244, 210, 0.82)', 'oscillator');
+    const cmfSeries = addLineSeries('rgba(255, 184, 107, 0.82)', 'oscillator');
+    const adxSeries = addLineSeries('rgba(165, 108, 255, 0.86)', 'oscillator');
+    const aroonUpSeries = addLineSeries('rgba(98, 230, 168, 0.76)', 'oscillator');
+    const aroonDownSeries = addLineSeries('rgba(255, 95, 117, 0.76)', 'oscillator');
 
     const volumeSeries = chart.addSeries(HistogramSeries, {
       lastValueVisible: false,
@@ -234,16 +307,63 @@ export function TradingChart({
       priceScaleId: 'volume',
     });
 
+    const macdHistogramSeries = chart.addSeries(HistogramSeries, {
+      lastValueVisible: false,
+      priceLineVisible: false,
+      priceScaleId: 'oscillator',
+    });
+
     chart.priceScale('volume').applyOptions({
       scaleMargins: { bottom: 0, top: 0.78 },
+    });
+    chart.priceScale('oscillator').applyOptions({
+      scaleMargins: { bottom: 0.08, top: 0.72 },
     });
 
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
+    adxSeriesRef.current = adxSeries;
+    aroonDownSeriesRef.current = aroonDownSeries;
+    aroonUpSeriesRef.current = aroonUpSeries;
+    atrSeriesRef.current = atrSeries;
+    bollingerLowerSeriesRef.current = bollingerLowerSeries;
+    bollingerMiddleSeriesRef.current = bollingerMiddleSeries;
+    bollingerUpperSeriesRef.current = bollingerUpperSeries;
+    cciSeriesRef.current = cciSeries;
+    cmfSeriesRef.current = cmfSeries;
+    donchianLowerSeriesRef.current = donchianLowerSeries;
+    donchianMiddleSeriesRef.current = donchianMiddleSeries;
+    donchianUpperSeriesRef.current = donchianUpperSeries;
     emaSeriesRef.current = emaSeries;
+    hmaSeriesRef.current = hmaSeries;
+    ichimokuBaseSeriesRef.current = ichimokuBaseSeries;
+    ichimokuConversionSeriesRef.current = ichimokuConversionSeries;
+    ichimokuSpanASeriesRef.current = ichimokuSpanASeries;
+    ichimokuSpanBSeriesRef.current = ichimokuSpanBSeries;
+    keltnerLowerSeriesRef.current = keltnerLowerSeries;
+    keltnerMiddleSeriesRef.current = keltnerMiddleSeries;
+    keltnerUpperSeriesRef.current = keltnerUpperSeries;
     maFastSeriesRef.current = maFastSeries;
     maSlowSeriesRef.current = maSlowSeries;
+    macdHistogramSeriesRef.current = macdHistogramSeries;
+    macdLineSeriesRef.current = macdLineSeries;
+    macdSignalSeriesRef.current = macdSignalSeries;
+    mfiSeriesRef.current = mfiSeries;
+    momentumSeriesRef.current = momentumSeries;
+    obvSeriesRef.current = obvSeries;
+    parabolicSarSeriesRef.current = parabolicSarSeries;
+    rocSeriesRef.current = rocSeries;
+    rsiSeriesRef.current = rsiSeries;
+    stochasticDSeriesRef.current = stochasticDSeries;
+    stochasticKSeriesRef.current = stochasticKSeries;
+    stochRsiDSeriesRef.current = stochRsiDSeries;
+    stochRsiKSeriesRef.current = stochRsiKSeries;
+    supertrendSeriesRef.current = supertrendSeries;
+    trixSeriesRef.current = trixSeries;
     vwapSeriesRef.current = vwapSeries;
+    vwmaSeriesRef.current = vwmaSeries;
+    williamsRSeriesRef.current = williamsRSeries;
+    wmaSeriesRef.current = wmaSeries;
     volumeSeriesRef.current = volumeSeries;
     fittedDataIdentityRef.current = null;
 
@@ -251,10 +371,48 @@ export function TradingChart({
       priceLineRefs.current = [];
       chartRef.current = null;
       candleSeriesRef.current = null;
+      adxSeriesRef.current = null;
+      aroonDownSeriesRef.current = null;
+      aroonUpSeriesRef.current = null;
+      atrSeriesRef.current = null;
+      bollingerLowerSeriesRef.current = null;
+      bollingerMiddleSeriesRef.current = null;
+      bollingerUpperSeriesRef.current = null;
+      cciSeriesRef.current = null;
+      cmfSeriesRef.current = null;
+      donchianLowerSeriesRef.current = null;
+      donchianMiddleSeriesRef.current = null;
+      donchianUpperSeriesRef.current = null;
       emaSeriesRef.current = null;
+      hmaSeriesRef.current = null;
+      ichimokuBaseSeriesRef.current = null;
+      ichimokuConversionSeriesRef.current = null;
+      ichimokuSpanASeriesRef.current = null;
+      ichimokuSpanBSeriesRef.current = null;
+      keltnerLowerSeriesRef.current = null;
+      keltnerMiddleSeriesRef.current = null;
+      keltnerUpperSeriesRef.current = null;
       maFastSeriesRef.current = null;
       maSlowSeriesRef.current = null;
+      macdHistogramSeriesRef.current = null;
+      macdLineSeriesRef.current = null;
+      macdSignalSeriesRef.current = null;
+      mfiSeriesRef.current = null;
+      momentumSeriesRef.current = null;
+      obvSeriesRef.current = null;
+      parabolicSarSeriesRef.current = null;
+      rocSeriesRef.current = null;
+      rsiSeriesRef.current = null;
+      stochasticDSeriesRef.current = null;
+      stochasticKSeriesRef.current = null;
+      stochRsiDSeriesRef.current = null;
+      stochRsiKSeriesRef.current = null;
+      supertrendSeriesRef.current = null;
+      trixSeriesRef.current = null;
       vwapSeriesRef.current = null;
+      vwmaSeriesRef.current = null;
+      williamsRSeriesRef.current = null;
+      wmaSeriesRef.current = null;
       volumeSeriesRef.current = null;
       chart.remove();
     };
@@ -268,17 +426,72 @@ export function TradingChart({
     }
 
     candleSeries.setData(toCandlestickData(chartCandles));
-    maFastSeriesRef.current?.setData(indicators.maFast.enabled ? buildMovingAverageData(chartCandles, indicators.maFast.period) : []);
-    maSlowSeriesRef.current?.setData(indicators.maSlow.enabled ? buildMovingAverageData(chartCandles, indicators.maSlow.period) : []);
-    emaSeriesRef.current?.setData(indicators.ema.enabled ? buildExponentialAverageData(chartCandles, indicators.ema.period) : []);
-    vwapSeriesRef.current?.setData(indicators.vwap.enabled ? buildVwapData(chartCandles) : []);
-    volumeSeriesRef.current?.setData(indicators.volume.enabled ? toVolumeData(chartCandles) : []);
+    maFastSeriesRef.current?.setData(activeIndicators.maFast.enabled ? toLineData(movingAverageSeries(chartCandles, activeIndicators.maFast.period)) : []);
+    maSlowSeriesRef.current?.setData(activeIndicators.maSlow.enabled ? toLineData(movingAverageSeries(chartCandles, activeIndicators.maSlow.period)) : []);
+    emaSeriesRef.current?.setData(activeIndicators.ema.enabled ? toLineData(exponentialAverageSeries(chartCandles, activeIndicators.ema.period)) : []);
+    wmaSeriesRef.current?.setData(activeIndicators.wma.enabled ? toLineData(weightedMovingAverageSeries(chartCandles, activeIndicators.wma.period)) : []);
+    hmaSeriesRef.current?.setData(activeIndicators.hma.enabled ? toLineData(hullMovingAverageSeries(chartCandles, activeIndicators.hma.period)) : []);
+    vwmaSeriesRef.current?.setData(activeIndicators.vwma.enabled ? toLineData(volumeWeightedMovingAverageSeries(chartCandles, activeIndicators.vwma.period)) : []);
+    vwapSeriesRef.current?.setData(activeIndicators.vwap.enabled ? toLineData(vwapSeries(chartCandles)) : []);
+    volumeSeriesRef.current?.setData(activeIndicators.volume.enabled ? toVolumeData(chartCandles) : []);
+
+    const bollinger = activeIndicators.bollinger.enabled ? bollingerBands(chartCandles, activeIndicators.bollinger.period, activeIndicators.bollinger.stdDev) : [];
+    bollingerUpperSeriesRef.current?.setData(toLineData(bollinger.map((point) => ({ time: point.time, value: point.upper }))));
+    bollingerMiddleSeriesRef.current?.setData(toLineData(bollinger.map((point) => ({ time: point.time, value: point.middle }))));
+    bollingerLowerSeriesRef.current?.setData(toLineData(bollinger.map((point) => ({ time: point.time, value: point.lower }))));
+
+    const donchian = activeIndicators.donchian.enabled ? donchianChannel(chartCandles, activeIndicators.donchian.period) : [];
+    donchianUpperSeriesRef.current?.setData(toLineData(donchian.map((point) => ({ time: point.time, value: point.upper }))));
+    donchianMiddleSeriesRef.current?.setData(toLineData(donchian.map((point) => ({ time: point.time, value: point.middle }))));
+    donchianLowerSeriesRef.current?.setData(toLineData(donchian.map((point) => ({ time: point.time, value: point.lower }))));
+
+    const keltner = activeIndicators.keltner.enabled ? keltnerChannel(chartCandles, activeIndicators.keltner.period, activeIndicators.keltner.multiplier) : [];
+    keltnerUpperSeriesRef.current?.setData(toLineData(keltner.map((point) => ({ time: point.time, value: point.upper }))));
+    keltnerMiddleSeriesRef.current?.setData(toLineData(keltner.map((point) => ({ time: point.time, value: point.middle }))));
+    keltnerLowerSeriesRef.current?.setData(toLineData(keltner.map((point) => ({ time: point.time, value: point.lower }))));
+
+    const ichimoku = activeIndicators.ichimoku.enabled ? ichimokuLines(chartCandles, activeIndicators.ichimoku.conversionPeriod, activeIndicators.ichimoku.basePeriod, activeIndicators.ichimoku.spanBPeriod) : [];
+    ichimokuConversionSeriesRef.current?.setData(toLineData(ichimoku.map((point) => ({ time: point.time, value: point.conversion }))));
+    ichimokuBaseSeriesRef.current?.setData(toLineData(ichimoku.map((point) => ({ time: point.time, value: point.base }))));
+    ichimokuSpanASeriesRef.current?.setData(toLineData(ichimoku.map((point) => ({ time: point.time, value: point.spanA }))));
+    ichimokuSpanBSeriesRef.current?.setData(toLineData(ichimoku.map((point) => ({ time: point.time, value: point.spanB }))));
+
+    supertrendSeriesRef.current?.setData(activeIndicators.supertrend.enabled ? toLineData(supertrendSeries(chartCandles, activeIndicators.supertrend.period, activeIndicators.supertrend.multiplier)) : []);
+    parabolicSarSeriesRef.current?.setData(activeIndicators.parabolicSar.enabled ? toLineData(parabolicSarSeries(chartCandles, activeIndicators.parabolicSar.step, activeIndicators.parabolicSar.max)) : []);
+    atrSeriesRef.current?.setData(activeIndicators.atr.enabled ? toLineData(atrSeries(chartCandles, activeIndicators.atr.period)) : []);
+    rsiSeriesRef.current?.setData(activeIndicators.rsi.enabled ? toLineData(rsiSeries(chartCandles, activeIndicators.rsi.period)) : []);
+    cciSeriesRef.current?.setData(activeIndicators.cci.enabled ? toLineData(cciSeries(chartCandles, activeIndicators.cci.period)) : []);
+    williamsRSeriesRef.current?.setData(activeIndicators.williamsR.enabled ? toLineData(williamsRSeries(chartCandles, activeIndicators.williamsR.period)) : []);
+    rocSeriesRef.current?.setData(activeIndicators.roc.enabled ? toLineData(rocSeries(chartCandles, activeIndicators.roc.period)) : []);
+    momentumSeriesRef.current?.setData(activeIndicators.momentum.enabled ? toLineData(momentumSeries(chartCandles, activeIndicators.momentum.period)) : []);
+    trixSeriesRef.current?.setData(activeIndicators.trix.enabled ? toLineData(trixSeries(chartCandles, activeIndicators.trix.period)) : []);
+    obvSeriesRef.current?.setData(activeIndicators.obv.enabled ? toLineData(obvSeries(chartCandles)) : []);
+    mfiSeriesRef.current?.setData(activeIndicators.mfi.enabled ? toLineData(mfiSeries(chartCandles, activeIndicators.mfi.period)) : []);
+    cmfSeriesRef.current?.setData(activeIndicators.cmf.enabled ? toLineData(cmfSeries(chartCandles, activeIndicators.cmf.period)) : []);
+    adxSeriesRef.current?.setData(activeIndicators.adx.enabled ? toLineData(adxSeries(chartCandles, activeIndicators.adx.period)) : []);
+
+    const stochastic = activeIndicators.stochastic.enabled ? stochasticSeries(chartCandles, activeIndicators.stochastic.kPeriod, activeIndicators.stochastic.dPeriod) : undefined;
+    stochasticKSeriesRef.current?.setData(stochastic ? toLineData(stochastic.k) : []);
+    stochasticDSeriesRef.current?.setData(stochastic ? toLineData(stochastic.d) : []);
+
+    const stochRsi = activeIndicators.stochRsi.enabled ? stochRsiSeries(chartCandles, activeIndicators.stochRsi.rsiPeriod, activeIndicators.stochRsi.stochPeriod, activeIndicators.stochRsi.dPeriod) : undefined;
+    stochRsiKSeriesRef.current?.setData(stochRsi ? toLineData(stochRsi.k) : []);
+    stochRsiDSeriesRef.current?.setData(stochRsi ? toLineData(stochRsi.d) : []);
+
+    const macd = activeIndicators.macd.enabled ? macdSeries(chartCandles, activeIndicators.macd.fastPeriod, activeIndicators.macd.slowPeriod, activeIndicators.macd.signalPeriod) : undefined;
+    macdLineSeriesRef.current?.setData(macd ? toLineData(macd.line) : []);
+    macdSignalSeriesRef.current?.setData(macd ? toLineData(macd.signal) : []);
+    macdHistogramSeriesRef.current?.setData(macd ? toHistogramData(macd.histogram) : []);
+
+    const aroon = activeIndicators.aroon.enabled ? aroonSeries(chartCandles, activeIndicators.aroon.period) : [];
+    aroonUpSeriesRef.current?.setData(toLineData(aroon.map((point) => ({ time: point.time, value: point.up }))));
+    aroonDownSeriesRef.current?.setData(toLineData(aroon.map((point) => ({ time: point.time, value: point.down }))));
 
     if (fittedDataIdentityRef.current !== dataWindowIdentity) {
       fittedDataIdentityRef.current = dataWindowIdentity;
       chartRef.current?.timeScale().fitContent();
     }
-  }, [chartCandles, dataWindowIdentity, indicators]);
+  }, [activeIndicators, chartCandles, dataWindowIdentity]);
 
   useEffect(() => {
     const candleSeries = candleSeriesRef.current;
@@ -543,54 +756,6 @@ function roundPrice(price: number) {
   return Number(price.toFixed(2));
 }
 
-function buildMovingAverageData(candles: Candle[], period: number): LineData<Time>[] {
-  return candles.map<LineData<Time>>((candle, index) => {
-    const start = Math.max(0, index - period + 1);
-    const window = candles.slice(start, index + 1);
-    const average = window.reduce((sum, item) => sum + item.close, 0) / window.length;
-
-    return {
-      time: candle.time as Time,
-      value: Number(average.toFixed(4)),
-    };
-  });
-}
-
-function buildExponentialAverageData(candles: Candle[], period: number): LineData<Time>[] {
-  if (!candles.length) {
-    return [];
-  }
-
-  const safePeriod = Math.max(1, Math.round(period));
-  const multiplier = 2 / (safePeriod + 1);
-  let ema = candles[0].close;
-
-  return candles.map<LineData<Time>>((candle, index) => {
-    ema = index === 0 ? candle.close : candle.close * multiplier + ema * (1 - multiplier);
-
-    return {
-      time: candle.time as Time,
-      value: ema,
-    };
-  });
-}
-
-function buildVwapData(candles: Candle[]): LineData<Time>[] {
-  let cumulativePriceVolume = 0;
-  let cumulativeVolume = 0;
-
-  return candles.map<LineData<Time>>((candle) => {
-    const typicalPrice = (candle.high + candle.low + candle.close) / 3;
-    cumulativePriceVolume += typicalPrice * candle.volume;
-    cumulativeVolume += candle.volume;
-
-    return {
-      time: candle.time as Time,
-      value: cumulativeVolume > 0 ? cumulativePriceVolume / cumulativeVolume : candle.close,
-    };
-  });
-}
-
 function toCandlestickData(candles: Candle[]): CandlestickData<Time>[] {
   return candles.map<CandlestickData<Time>>((candle) => ({
     close: candle.close,
@@ -598,6 +763,21 @@ function toCandlestickData(candles: Candle[]): CandlestickData<Time>[] {
     low: candle.low,
     open: candle.open,
     time: candle.time as Time,
+  }));
+}
+
+function toLineData(points: IndicatorPoint[]): LineData<Time>[] {
+  return points.map<LineData<Time>>((point) => ({
+    time: point.time as Time,
+    value: Number(point.value.toFixed(6)),
+  }));
+}
+
+function toHistogramData(points: IndicatorPoint[]): HistogramData<Time>[] {
+  return points.map<HistogramData<Time>>((point) => ({
+    color: point.value >= 0 ? 'rgba(98, 230, 168, 0.34)' : 'rgba(255, 95, 117, 0.34)',
+    time: point.time as Time,
+    value: Number(point.value.toFixed(6)),
   }));
 }
 

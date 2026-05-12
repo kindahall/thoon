@@ -15,7 +15,7 @@ import {
   MoveDiagonal,
   RotateCcw,
   Save,
-  SlidersHorizontal,
+  Search,
   Settings2,
   ShieldCheck,
   Square,
@@ -37,6 +37,36 @@ import { getTradingErrorDefinition } from '../../services/trading-error-service'
 import type { Candle, MarketCategory, MarketPair, PositionDraft, Timeframe } from '../../types/market';
 import type { AgentReport, AgentRun, AgentSettings, AgentSuggestion, Bot as TradingBot, ExchangeConnection, JournalTrade, Order, OrderExecutionSource, Position, RiskRules, Strategy, StrategyVersion, TradeLimits, UserPreferences } from '../../types/trading';
 import { normalizeCandle, sanitizeCandles } from '../../utils/candles';
+import {
+  adxSeries,
+  aroonSeries,
+  atrSeries,
+  bollingerBands,
+  cciSeries,
+  cmfSeries,
+  defaultChartIndicatorConfig,
+  donchianChannel,
+  exponentialAverageSeries,
+  hullMovingAverageSeries,
+  keltnerChannel,
+  latestValue,
+  macdSeries,
+  mfiSeries,
+  momentumSeries,
+  movingAverageSeries,
+  normalizeChartIndicatorConfig,
+  obvSeries,
+  rocSeries,
+  rsiSeries,
+  stochasticSeries,
+  stochRsiSeries,
+  supertrendSeries,
+  trixSeries,
+  volumeWeightedMovingAverageSeries,
+  vwapSeries,
+  weightedMovingAverageSeries,
+  williamsRSeries,
+} from '../../utils/chart-indicators';
 import { formatCompact, formatCompactUsd, formatPercent, formatUsd } from '../../utils/format';
 
 type ChartsWorkspaceProps = {
@@ -77,13 +107,54 @@ const chartWorkspaceDraftsStorageKey = 'thoon.chartWorkspaceDrafts';
 const savedSetupStorageKey = 'thoon.savedSetups';
 const maximumSavedSetups = 8;
 const publicRestExchangeIds = new Set(['bybit', 'okx', 'bitget', 'kraken', 'kucoin', 'coinbase-advanced']);
-const defaultIndicatorConfig: ChartIndicatorConfig = {
-  ema: { enabled: false, period: 21 },
-  maFast: { enabled: true, period: 50 },
-  maSlow: { enabled: true, period: 200 },
-  volume: { enabled: true },
-  vwap: { enabled: false },
+const defaultIndicatorConfig = defaultChartIndicatorConfig;
+type IndicatorCategory = 'Trend' | 'Momentum' | 'Volatility' | 'Volume';
+type IndicatorField = {
+  key: string;
+  label: string;
+  max?: number;
+  min: number;
+  step?: number;
 };
+type IndicatorCatalogItem = {
+  category: IndicatorCategory;
+  description: string;
+  fields: IndicatorField[];
+  key: keyof ChartIndicatorConfig;
+  label: string;
+};
+const indicatorCategories: Array<IndicatorCategory | 'All'> = ['All', 'Trend', 'Momentum', 'Volatility', 'Volume'];
+const indicatorCatalog: IndicatorCatalogItem[] = [
+  { category: 'Trend', description: 'Classic fast SMA overlay.', fields: [{ key: 'period', label: 'Period', min: 1, max: 500 }], key: 'maFast', label: 'Moving Average Fast' },
+  { category: 'Trend', description: 'Classic slow SMA overlay.', fields: [{ key: 'period', label: 'Period', min: 1, max: 500 }], key: 'maSlow', label: 'Moving Average Slow' },
+  { category: 'Trend', description: 'Exponential moving average.', fields: [{ key: 'period', label: 'Period', min: 1, max: 500 }], key: 'ema', label: 'EMA' },
+  { category: 'Trend', description: 'Weighted moving average.', fields: [{ key: 'period', label: 'Period', min: 1, max: 500 }], key: 'wma', label: 'WMA' },
+  { category: 'Trend', description: 'Hull moving average.', fields: [{ key: 'period', label: 'Period', min: 1, max: 500 }], key: 'hma', label: 'HMA' },
+  { category: 'Trend', description: 'Volume weighted moving average.', fields: [{ key: 'period', label: 'Period', min: 1, max: 500 }], key: 'vwma', label: 'VWMA' },
+  { category: 'Trend', description: 'Session volume weighted average price.', fields: [], key: 'vwap', label: 'VWAP' },
+  { category: 'Trend', description: 'ATR based trend line.', fields: [{ key: 'period', label: 'ATR', min: 1, max: 100 }, { key: 'multiplier', label: 'Factor', min: 0.1, max: 10, step: 0.1 }], key: 'supertrend', label: 'Supertrend' },
+  { category: 'Trend', description: 'Stop and reverse trend dots.', fields: [{ key: 'step', label: 'Step', min: 0.001, max: 1, step: 0.001 }, { key: 'max', label: 'Max', min: 0.01, max: 1, step: 0.01 }], key: 'parabolicSar', label: 'Parabolic SAR' },
+  { category: 'Trend', description: 'Conversion, base and cloud lines.', fields: [{ key: 'conversionPeriod', label: 'Tenkan', min: 1, max: 100 }, { key: 'basePeriod', label: 'Kijun', min: 1, max: 200 }, { key: 'spanBPeriod', label: 'Span B', min: 1, max: 300 }], key: 'ichimoku', label: 'Ichimoku' },
+  { category: 'Volatility', description: 'Standard deviation envelope.', fields: [{ key: 'period', label: 'Period', min: 1, max: 300 }, { key: 'stdDev', label: 'Std Dev', min: 0.1, max: 5, step: 0.1 }], key: 'bollinger', label: 'Bollinger Bands' },
+  { category: 'Volatility', description: 'Highest high and lowest low channel.', fields: [{ key: 'period', label: 'Period', min: 1, max: 300 }], key: 'donchian', label: 'Donchian Channel' },
+  { category: 'Volatility', description: 'EMA channel using ATR width.', fields: [{ key: 'period', label: 'Period', min: 1, max: 300 }, { key: 'multiplier', label: 'Factor', min: 0.1, max: 10, step: 0.1 }], key: 'keltner', label: 'Keltner Channel' },
+  { category: 'Volatility', description: 'Average true range.', fields: [{ key: 'period', label: 'Period', min: 1, max: 100 }], key: 'atr', label: 'ATR' },
+  { category: 'Momentum', description: 'Relative strength oscillator.', fields: [{ key: 'period', label: 'Period', min: 1, max: 100 }], key: 'rsi', label: 'RSI' },
+  { category: 'Momentum', description: 'Trend momentum and signal histogram.', fields: [{ key: 'fastPeriod', label: 'Fast', min: 1, max: 100 }, { key: 'slowPeriod', label: 'Slow', min: 1, max: 200 }, { key: 'signalPeriod', label: 'Signal', min: 1, max: 100 }], key: 'macd', label: 'MACD' },
+  { category: 'Momentum', description: 'Fast stochastic oscillator.', fields: [{ key: 'kPeriod', label: '%K', min: 1, max: 100 }, { key: 'dPeriod', label: '%D', min: 1, max: 50 }], key: 'stochastic', label: 'Stochastic' },
+  { category: 'Momentum', description: 'Stochastic applied to RSI.', fields: [{ key: 'rsiPeriod', label: 'RSI', min: 1, max: 100 }, { key: 'stochPeriod', label: 'Stoch', min: 1, max: 100 }, { key: 'dPeriod', label: '%D', min: 1, max: 50 }], key: 'stochRsi', label: 'Stoch RSI' },
+  { category: 'Momentum', description: 'Commodity channel index.', fields: [{ key: 'period', label: 'Period', min: 1, max: 100 }], key: 'cci', label: 'CCI' },
+  { category: 'Momentum', description: 'Williams percent range.', fields: [{ key: 'period', label: 'Period', min: 1, max: 100 }], key: 'williamsR', label: 'Williams %R' },
+  { category: 'Momentum', description: 'Rate of change.', fields: [{ key: 'period', label: 'Period', min: 1, max: 100 }], key: 'roc', label: 'ROC' },
+  { category: 'Momentum', description: 'Close minus prior close.', fields: [{ key: 'period', label: 'Period', min: 1, max: 100 }], key: 'momentum', label: 'Momentum' },
+  { category: 'Momentum', description: 'Triple EMA momentum.', fields: [{ key: 'period', label: 'Period', min: 1, max: 100 }], key: 'trix', label: 'TRIX' },
+  { category: 'Momentum', description: 'Trend strength index.', fields: [{ key: 'period', label: 'Period', min: 1, max: 100 }], key: 'adx', label: 'ADX' },
+  { category: 'Momentum', description: 'Aroon up and down oscillator.', fields: [{ key: 'period', label: 'Period', min: 1, max: 100 }], key: 'aroon', label: 'Aroon' },
+  { category: 'Volume', description: 'Exchange volume histogram.', fields: [], key: 'volume', label: 'Volume' },
+  { category: 'Volume', description: 'On balance volume.', fields: [], key: 'obv', label: 'OBV' },
+  { category: 'Volume', description: 'Money flow index.', fields: [{ key: 'period', label: 'Period', min: 1, max: 100 }], key: 'mfi', label: 'MFI' },
+  { category: 'Volume', description: 'Chaikin money flow.', fields: [{ key: 'period', label: 'Period', min: 1, max: 100 }], key: 'cmf', label: 'CMF' },
+];
 const markerDefinitions: Array<{
   color: string;
   icon: ReactNode;
@@ -174,7 +245,7 @@ export function ChartsWorkspace({
   const hasBinancePrices = market.exchange === 'Binance';
   const [draft, setDraft] = useState(market.draft);
   const [chartDrawings, setChartDrawings] = useState<ChartDrawing[]>([]);
-  const [indicatorConfig, setIndicatorConfig] = useState<ChartIndicatorConfig>(defaultIndicatorConfig);
+  const [indicatorConfig, setIndicatorConfig] = useState<ChartIndicatorConfig>(() => normalizeChartIndicatorConfig(defaultIndicatorConfig));
   const [tradeMarkers, setTradeMarkers] = useState<TradeMarker[]>([]);
   const [plannedOrderDrafts, setPlannedOrderDrafts] = useState<Order[]>([]);
   const [selectedMarkerType, setSelectedMarkerType] = useState<TradeMarkerType | null>(null);
@@ -653,14 +724,14 @@ export function ChartsWorkspace({
     setSetupMessage(drawing ? `${drawing.label} removed` : 'Drawing removed');
   }
 
-  function updateIndicatorGroup<Key extends keyof ChartIndicatorConfig>(key: Key, patch: Partial<ChartIndicatorConfig[Key]>) {
+  function updateIndicatorGroup(key: keyof ChartIndicatorConfig, patch: Partial<ChartIndicatorConfig[keyof ChartIndicatorConfig]>) {
     setIndicatorConfig((currentConfig) => ({
       ...currentConfig,
       [key]: {
         ...currentConfig[key],
         ...patch,
       },
-    }));
+    }) as ChartIndicatorConfig);
   }
 
   function handleChartToolSelect(tool: ChartToolId) {
@@ -1064,7 +1135,7 @@ export function ChartsWorkspace({
     setTimeframe(setup.timeframe);
     setDraft(setup.draft);
     setChartDrawings(setup.drawings ?? []);
-    setIndicatorConfig(setup.indicators ?? defaultIndicatorConfig);
+    setIndicatorConfig(normalizeChartIndicatorConfig(setup.indicators));
     setTradeMarkers(setup.markers);
     setPlannedOrderDrafts(setup.plannedOrders);
     setExecutionIntent(setup.executionIntent ?? 'manual');
@@ -1089,7 +1160,7 @@ export function ChartsWorkspace({
       exchangeId: defaultExchangeId,
       executionIntent: 'manual',
       id: 'reset',
-      indicators: defaultIndicatorConfig,
+      indicators: normalizeChartIndicatorConfig(defaultIndicatorConfig),
       markers: [],
       name: 'Reset',
       notes: '',
@@ -1808,44 +1879,60 @@ function ChartCandleState({
 type IndicatorSettingsModalProps = {
   config: ChartIndicatorConfig;
   onClose: () => void;
-  onUpdate: <Key extends keyof ChartIndicatorConfig>(key: Key, patch: Partial<ChartIndicatorConfig[Key]>) => void;
+  onUpdate: (key: keyof ChartIndicatorConfig, patch: Partial<ChartIndicatorConfig[keyof ChartIndicatorConfig]>) => void;
   open: boolean;
 };
 
 function IndicatorSettingsModal({ config, onClose, onUpdate, open }: IndicatorSettingsModalProps) {
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState<IndicatorCategory | 'All'>('All');
+  const normalizedConfig = normalizeChartIndicatorConfig(config);
+  const activeCount = indicatorCatalog.filter((indicator) => normalizedConfig[indicator.key].enabled).length;
+  const filteredCatalog = indicatorCatalog.filter((indicator) => {
+    const matchesCategory = category === 'All' || indicator.category === category;
+    const haystack = `${indicator.label} ${indicator.description} ${indicator.category}`.toLowerCase();
+
+    return matchesCategory && haystack.includes(query.trim().toLowerCase());
+  });
+
   return (
     <Modal onClose={onClose} open={open} title="Indicators">
       <div className="indicator-settings-panel">
-        <IndicatorControl
-          enabled={config.maFast.enabled}
-          label="Moving Average Fast"
-          onPeriodChange={(period) => onUpdate('maFast', { period })}
-          onToggle={() => onUpdate('maFast', { enabled: !config.maFast.enabled })}
-          period={config.maFast.period}
-        />
-        <IndicatorControl
-          enabled={config.maSlow.enabled}
-          label="Moving Average Slow"
-          onPeriodChange={(period) => onUpdate('maSlow', { period })}
-          onToggle={() => onUpdate('maSlow', { enabled: !config.maSlow.enabled })}
-          period={config.maSlow.period}
-        />
-        <IndicatorControl
-          enabled={config.ema.enabled}
-          label="EMA"
-          onPeriodChange={(period) => onUpdate('ema', { period })}
-          onToggle={() => onUpdate('ema', { enabled: !config.ema.enabled })}
-          period={config.ema.period}
-        />
-        <div className="indicator-toggle-row">
-          <button className={config.vwap.enabled ? 'is-active' : undefined} onClick={() => onUpdate('vwap', { enabled: !config.vwap.enabled })} type="button">
-            <Activity size={15} />
-            VWAP
+        <div className="indicator-library-head">
+          <div>
+            <strong>{indicatorCatalog.length} indicators</strong>
+            <span>{activeCount} active · Trend, momentum, volatility and volume</span>
+          </div>
+          <button
+            onClick={() => {
+              setQuery('');
+              setCategory('All');
+            }}
+            type="button"
+          >
+            Reset View
           </button>
-          <button className={config.volume.enabled ? 'is-active' : undefined} onClick={() => onUpdate('volume', { enabled: !config.volume.enabled })} type="button">
-            <SlidersHorizontal size={15} />
-            Volume
-          </button>
+        </div>
+        <label className="indicator-search-field">
+          <Search size={15} />
+          <input aria-label="Search indicators" onChange={(event) => setQuery(event.target.value)} placeholder="Search RSI, MACD, Ichimoku..." value={query} />
+        </label>
+        <div className="indicator-category-tabs" aria-label="Indicator categories">
+          {indicatorCategories.map((item) => (
+            <button className={category === item ? 'is-active' : undefined} key={item} onClick={() => setCategory(item)} type="button">
+              {item}
+            </button>
+          ))}
+        </div>
+        <div className="indicator-library-list">
+          {filteredCatalog.map((indicator) => (
+            <IndicatorControl
+              config={normalizedConfig[indicator.key] as Record<string, boolean | number>}
+              indicator={indicator}
+              key={indicator.key}
+              onUpdate={(patch) => onUpdate(indicator.key, patch as Partial<ChartIndicatorConfig[keyof ChartIndicatorConfig]>)}
+            />
+          ))}
         </div>
         <Button onClick={onClose} size="sm" variant="primary">
           Apply
@@ -1856,40 +1943,58 @@ function IndicatorSettingsModal({ config, onClose, onUpdate, open }: IndicatorSe
 }
 
 function IndicatorControl({
-  enabled,
-  label,
-  onPeriodChange,
-  onToggle,
-  period,
+  config,
+  indicator,
+  onUpdate,
 }: {
-  enabled: boolean;
-  label: string;
-  onPeriodChange: (period: number) => void;
-  onToggle: () => void;
-  period: number;
+  config: Record<string, boolean | number>;
+  indicator: IndicatorCatalogItem;
+  onUpdate: (patch: Record<string, boolean | number>) => void;
 }) {
-  return (
-    <div className="indicator-control-row">
-      <button className={enabled ? 'is-active' : undefined} onClick={onToggle} type="button">
-        {label}
-      </button>
-      <label>
-        <span>Period</span>
-        <input
-          min={1}
-          onChange={(event) => {
-            const nextPeriod = Number(event.target.value);
+  const enabled = Boolean(config.enabled);
 
-            if (Number.isFinite(nextPeriod)) {
-              onPeriodChange(Math.max(1, Math.round(nextPeriod)));
-            }
-          }}
-          type="number"
-          value={period}
-        />
-      </label>
+  return (
+    <div className={`indicator-control-row${enabled ? ' is-active' : ''}`}>
+      <button className={enabled ? 'is-active' : undefined} onClick={() => onUpdate({ enabled: !enabled })} type="button">
+        <span>
+          <strong>{indicator.label}</strong>
+          <small>{indicator.category}</small>
+        </span>
+      </button>
+      <p>{indicator.description}</p>
+      {indicator.fields.length ? (
+        <div className="indicator-field-grid">
+          {indicator.fields.map((field) => (
+            <label key={field.key}>
+              <span>{field.label}</span>
+              <input
+                max={field.max}
+                min={field.min}
+                onChange={(event) => {
+                  const nextValue = Number(event.target.value);
+
+                  if (Number.isFinite(nextValue)) {
+                    onUpdate({ [field.key]: clampIndicatorField(nextValue, field) });
+                  }
+                }}
+                step={field.step ?? 1}
+                type="number"
+                value={Number(config[field.key] ?? field.min)}
+              />
+            </label>
+          ))}
+        </div>
+      ) : (
+        <span className="indicator-no-fields">No parameters</span>
+      )}
     </div>
   );
+}
+
+function clampIndicatorField(value: number, field: IndicatorField) {
+  const clamped = Math.min(field.max ?? Number.POSITIVE_INFINITY, Math.max(field.min, value));
+
+  return field.step && field.step < 1 ? Number(clamped.toFixed(3)) : Math.round(clamped);
 }
 
 function TimeframeMenu({ items, onChange, value }: { items: Timeframe[]; onChange: (value: Timeframe) => void; value: Timeframe }) {
@@ -2327,65 +2432,124 @@ function countOrdersInDays(orders: Order[], days: number) {
   return orders.filter((order) => new Date(order.createdAt).getTime() >= cutoff).length;
 }
 
-function movingAverage(candles: Candle[], period: number) {
-  const window = candles.slice(Math.max(0, candles.length - period));
-
-  if (window.length === 0) {
-    return 0;
-  }
-
-  return window.reduce((sum, candle) => sum + candle.close, 0) / window.length;
-}
-
 function buildIndicatorReadouts(candles: Candle[], config: ChartIndicatorConfig) {
+  const normalizedConfig = normalizeChartIndicatorConfig(config);
   const readouts: Array<{ label: string; tone?: 'positive' | 'warning'; value: string }> = [];
 
-  if (config.maFast.enabled) {
-    readouts.push({ label: `MA ${config.maFast.period}`, value: formatUsd(movingAverage(candles, config.maFast.period)) });
+  if (normalizedConfig.maFast.enabled) {
+    readouts.push({ label: `MA ${normalizedConfig.maFast.period}`, value: formatUsd(latestValue(movingAverageSeries(candles, normalizedConfig.maFast.period))) });
   }
 
-  if (config.maSlow.enabled) {
-    readouts.push({ label: `MA ${config.maSlow.period}`, tone: 'warning', value: formatUsd(movingAverage(candles, config.maSlow.period)) });
+  if (normalizedConfig.maSlow.enabled) {
+    readouts.push({ label: `MA ${normalizedConfig.maSlow.period}`, tone: 'warning', value: formatUsd(latestValue(movingAverageSeries(candles, normalizedConfig.maSlow.period))) });
   }
 
-  if (config.ema.enabled) {
-    readouts.push({ label: `EMA ${config.ema.period}`, value: formatUsd(exponentialAverage(candles, config.ema.period)) });
+  if (normalizedConfig.ema.enabled) {
+    readouts.push({ label: `EMA ${normalizedConfig.ema.period}`, value: formatUsd(latestValue(exponentialAverageSeries(candles, normalizedConfig.ema.period))) });
   }
 
-  if (config.vwap.enabled) {
-    readouts.push({ label: 'VWAP', tone: 'positive', value: formatUsd(vwap(candles)) });
+  if (normalizedConfig.wma.enabled) {
+    readouts.push({ label: `WMA ${normalizedConfig.wma.period}`, value: formatUsd(latestValue(weightedMovingAverageSeries(candles, normalizedConfig.wma.period))) });
+  }
+
+  if (normalizedConfig.hma.enabled) {
+    readouts.push({ label: `HMA ${normalizedConfig.hma.period}`, value: formatUsd(latestValue(hullMovingAverageSeries(candles, normalizedConfig.hma.period))) });
+  }
+
+  if (normalizedConfig.vwma.enabled) {
+    readouts.push({ label: `VWMA ${normalizedConfig.vwma.period}`, value: formatUsd(latestValue(volumeWeightedMovingAverageSeries(candles, normalizedConfig.vwma.period))) });
+  }
+
+  if (normalizedConfig.vwap.enabled) {
+    readouts.push({ label: 'VWAP', tone: 'positive', value: formatUsd(latestValue(vwapSeries(candles))) });
+  }
+
+  if (normalizedConfig.bollinger.enabled) {
+    const latest = bollingerBands(candles, normalizedConfig.bollinger.period, normalizedConfig.bollinger.stdDev).at(-1);
+    readouts.push({ label: 'BB', value: latest ? `${formatUsd(latest.lower)} / ${formatUsd(latest.upper)}` : '--' });
+  }
+
+  if (normalizedConfig.donchian.enabled) {
+    const latest = donchianChannel(candles, normalizedConfig.donchian.period).at(-1);
+    readouts.push({ label: 'DON', tone: 'warning', value: latest ? `${formatUsd(latest.lower)} / ${formatUsd(latest.upper)}` : '--' });
+  }
+
+  if (normalizedConfig.keltner.enabled) {
+    const latest = keltnerChannel(candles, normalizedConfig.keltner.period, normalizedConfig.keltner.multiplier).at(-1);
+    readouts.push({ label: 'KELT', value: latest ? `${formatUsd(latest.lower)} / ${formatUsd(latest.upper)}` : '--' });
+  }
+
+  if (normalizedConfig.supertrend.enabled) {
+    readouts.push({ label: 'ST', tone: 'positive', value: formatUsd(latestValue(supertrendSeries(candles, normalizedConfig.supertrend.period, normalizedConfig.supertrend.multiplier))) });
+  }
+
+  if (normalizedConfig.rsi.enabled) {
+    readouts.push({ label: `RSI ${normalizedConfig.rsi.period}`, value: formatIndicatorValue(latestValue(rsiSeries(candles, normalizedConfig.rsi.period))) });
+  }
+
+  if (normalizedConfig.macd.enabled) {
+    const macd = macdSeries(candles, normalizedConfig.macd.fastPeriod, normalizedConfig.macd.slowPeriod, normalizedConfig.macd.signalPeriod);
+    readouts.push({ label: 'MACD', value: formatIndicatorValue(latestValue(macd.histogram)) });
+  }
+
+  if (normalizedConfig.stochastic.enabled) {
+    readouts.push({ label: 'STOCH', value: formatIndicatorValue(latestValue(stochasticSeries(candles, normalizedConfig.stochastic.kPeriod, normalizedConfig.stochastic.dPeriod).k)) });
+  }
+
+  if (normalizedConfig.stochRsi.enabled) {
+    readouts.push({ label: 'StochRSI', value: formatIndicatorValue(latestValue(stochRsiSeries(candles, normalizedConfig.stochRsi.rsiPeriod, normalizedConfig.stochRsi.stochPeriod, normalizedConfig.stochRsi.dPeriod).k)) });
+  }
+
+  if (normalizedConfig.cci.enabled) {
+    readouts.push({ label: 'CCI', value: formatIndicatorValue(latestValue(cciSeries(candles, normalizedConfig.cci.period))) });
+  }
+
+  if (normalizedConfig.williamsR.enabled) {
+    readouts.push({ label: 'W%R', value: formatIndicatorValue(latestValue(williamsRSeries(candles, normalizedConfig.williamsR.period))) });
+  }
+
+  if (normalizedConfig.roc.enabled) {
+    readouts.push({ label: 'ROC', value: `${formatIndicatorValue(latestValue(rocSeries(candles, normalizedConfig.roc.period)))}%` });
+  }
+
+  if (normalizedConfig.momentum.enabled) {
+    readouts.push({ label: 'MOM', value: formatIndicatorValue(latestValue(momentumSeries(candles, normalizedConfig.momentum.period))) });
+  }
+
+  if (normalizedConfig.trix.enabled) {
+    readouts.push({ label: 'TRIX', value: `${formatIndicatorValue(latestValue(trixSeries(candles, normalizedConfig.trix.period)))}%` });
+  }
+
+  if (normalizedConfig.atr.enabled) {
+    readouts.push({ label: 'ATR', tone: 'warning', value: formatIndicatorValue(latestValue(atrSeries(candles, normalizedConfig.atr.period))) });
+  }
+
+  if (normalizedConfig.obv.enabled) {
+    readouts.push({ label: 'OBV', value: formatCompact(latestValue(obvSeries(candles))) });
+  }
+
+  if (normalizedConfig.mfi.enabled) {
+    readouts.push({ label: 'MFI', value: formatIndicatorValue(latestValue(mfiSeries(candles, normalizedConfig.mfi.period))) });
+  }
+
+  if (normalizedConfig.cmf.enabled) {
+    readouts.push({ label: 'CMF', value: formatIndicatorValue(latestValue(cmfSeries(candles, normalizedConfig.cmf.period))) });
+  }
+
+  if (normalizedConfig.adx.enabled) {
+    readouts.push({ label: 'ADX', value: formatIndicatorValue(latestValue(adxSeries(candles, normalizedConfig.adx.period))) });
+  }
+
+  if (normalizedConfig.aroon.enabled) {
+    const latest = aroonSeries(candles, normalizedConfig.aroon.period).at(-1);
+    readouts.push({ label: 'AROON', value: latest ? `${formatIndicatorValue(latest.up)} / ${formatIndicatorValue(latest.down)}` : '--' });
   }
 
   return readouts;
 }
 
-function exponentialAverage(candles: Candle[], period: number) {
-  const first = candles[0];
-
-  if (!first) {
-    return 0;
-  }
-
-  const safePeriod = Math.max(1, Math.round(period));
-  const multiplier = 2 / (safePeriod + 1);
-
-  return candles.slice(1).reduce((ema, candle) => candle.close * multiplier + ema * (1 - multiplier), first.close);
-}
-
-function vwap(candles: Candle[]) {
-  const totals = candles.reduce(
-    (sum, candle) => {
-      const typicalPrice = (candle.high + candle.low + candle.close) / 3;
-
-      return {
-        priceVolume: sum.priceVolume + typicalPrice * candle.volume,
-        volume: sum.volume + candle.volume,
-      };
-    },
-    { priceVolume: 0, volume: 0 },
-  );
-
-  return totals.volume > 0 ? totals.priceVolume / totals.volume : candles[candles.length - 1]?.close ?? 0;
+function formatIndicatorValue(value: number) {
+  return Math.abs(value) >= 1000 ? formatCompact(value) : value.toFixed(2);
 }
 
 function getMarketStripPairs(pairs: MarketPair[], selectedSymbol: string) {
