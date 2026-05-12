@@ -75,20 +75,51 @@ const backtestRangeShortcuts: Array<{ label: string; value: string }> = [
   { label: '1Y', value: '1Y' },
 ];
 
+function findLatestTrustedBacktest(reports: BacktestReport[]) {
+  return listRecentTrustedBacktests(reports)[0];
+}
+
+function findDefaultTrustedBacktest(reports: BacktestReport[], settings: AgentSettings) {
+  return listRankedTrustedBacktests(reports, settings)[0] ?? findLatestTrustedBacktest(reports);
+}
+
+function listRecentTrustedBacktests(reports: BacktestReport[]) {
+  return reports
+    .filter(isTrustedBacktestReport)
+    .sort((left, right) => new Date(right.generatedAt ?? 0).getTime() - new Date(left.generatedAt ?? 0).getTime());
+}
+
+function listRankedTrustedBacktests(reports: BacktestReport[], settings: AgentSettings) {
+  return listRecentTrustedBacktests(reports)
+    .map((report) => ({ report, verdict: assessBacktestPaperReadiness(report, settings) }))
+    .sort((left, right) => {
+      const eligibilityDelta = Number(right.verdict.eligible) - Number(left.verdict.eligible);
+
+      if (eligibilityDelta !== 0) {
+        return eligibilityDelta;
+      }
+
+      return right.verdict.score - left.verdict.score || right.report.profitFactor - left.report.profitFactor || right.report.netProfit - left.report.netProfit;
+    })
+    .map((item) => item.report);
+}
+
 export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSuggestions, agentVersions, exchangeConnections, initialPair, initialReportId, initialStrategyId, initialTimeframe, marketPairs, reports: initialReports, strategies }: BacktestPageProps) {
   const { connected: isBinanceLive, pairs: liveMarketPairs } = useBinanceLiveMarkets(marketPairs);
   const requestedReport = initialReportId ? initialReports.find((report) => report.id === initialReportId) : undefined;
-  const initialStrategy = strategies.find((strategy) => strategy.id === requestedReport?.strategyId) ?? strategies.find((strategy) => strategy.id === initialStrategyId) ?? strategies.find((strategy) => strategy.market === initialPair) ?? strategies[0];
-  const initialExecutionSettings = requestedReport?.executionSettings ?? defaultBacktestExecutionSettings(initialStrategy);
+  const defaultReport = !requestedReport && !initialStrategyId && !initialPair && !initialTimeframe ? findDefaultTrustedBacktest(initialReports, agentSettings) : undefined;
+  const initialReport = requestedReport ?? defaultReport;
+  const initialStrategy = strategies.find((strategy) => strategy.id === initialReport?.strategyId) ?? strategies.find((strategy) => strategy.id === initialStrategyId) ?? strategies.find((strategy) => strategy.market === initialPair) ?? strategies[0];
+  const initialExecutionSettings = initialReport?.executionSettings ?? defaultBacktestExecutionSettings(initialStrategy);
   const [reports, setReports] = useState(initialReports);
-  const [strategyId, setStrategyId] = useState(requestedReport?.strategyId ?? initialStrategy?.id ?? '');
-  const [symbol, setSymbol] = useState(requestedReport?.market ?? initialPair ?? initialStrategy?.market ?? liveMarketPairs[0]?.symbol ?? 'BTC/USDT');
-  const [timeframe, setTimeframe] = useState<Timeframe>(normalizeBacktestTimeframe(requestedReport?.timeframe ?? initialTimeframe) ?? initialStrategy?.timeframe ?? '15m');
-  const [dateRange, setDateRange] = useState(requestedReport?.period ?? '90D');
-  const [exchangeId, setExchangeId] = useState(requestedReport?.exchangeId ?? 'binance');
-  const [initialCapital, setInitialCapital] = useState(requestedReport?.initialCapital ?? 10000);
-  const [fees, setFees] = useState(requestedReport?.feesPct ?? 0.06);
-  const [slippage, setSlippage] = useState(requestedReport?.slippagePct ?? 0.02);
+  const [strategyId, setStrategyId] = useState(initialReport?.strategyId ?? initialStrategy?.id ?? '');
+  const [symbol, setSymbol] = useState(initialReport?.market ?? initialPair ?? initialStrategy?.market ?? liveMarketPairs[0]?.symbol ?? 'BTC/USDT');
+  const [timeframe, setTimeframe] = useState<Timeframe>(normalizeBacktestTimeframe(initialReport?.timeframe ?? initialTimeframe) ?? initialStrategy?.timeframe ?? '15m');
+  const [dateRange, setDateRange] = useState(initialReport?.period ?? '90D');
+  const [exchangeId, setExchangeId] = useState(initialReport?.exchangeId ?? 'binance');
+  const [initialCapital, setInitialCapital] = useState(initialReport?.initialCapital ?? 10000);
+  const [fees, setFees] = useState(initialReport?.feesPct ?? 0.06);
+  const [slippage, setSlippage] = useState(initialReport?.slippagePct ?? 0.02);
   const [directionMode, setDirectionMode] = useState<BacktestExecutionSettings['directionMode']>(initialExecutionSettings.directionMode);
   const [leverage, setLeverage] = useState(initialExecutionSettings.leverage);
   const [marketType, setMarketType] = useState<BacktestExecutionSettings['marketType']>(initialExecutionSettings.marketType);
@@ -127,6 +158,7 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
   const selectedExchange = exchangeConnections.find((exchange) => exchange.id === exchangeId) ?? exchangeConnections[0];
   const matchingReports = reports.filter((item) => item.strategyId === strategyId && item.source === 'calculated' && item.market === symbol && item.timeframe === timeframe && item.period === dateRange && (item.exchangeId ?? 'binance') === exchangeId && sameReportInputCosts(item, initialCapital, fees, slippage) && sameExecutionSettings(item.executionSettings, executionSettings));
   const report = matchingReports.find((item) => item.id === initialReportId && isTrustedBacktestReport(item)) ?? matchingReports.find(isTrustedBacktestReport);
+  const recentTrustedReports = useMemo(() => listRankedTrustedBacktests(reports, agentSettings), [agentSettings, reports]);
   const selectedPair = liveMarketPairs.find((pair) => pair.symbol === symbol) ?? liveMarketPairs[0];
   const hiddenSeedReports = reports.filter((item) => item.strategyId === strategyId && item.source !== 'calculated').length;
   const hiddenInvalidReports = matchingReports.filter((item) => !isTrustedBacktestReport(item)).length;
@@ -209,6 +241,25 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
     applyExecutionSettings(preset.executionSettings);
     setPresetPanelOpen(false);
     setRunStatus('Preset loaded');
+  }
+
+  function applyReport(nextReport: BacktestReport) {
+    setExchangeId(nextReport.exchangeId ?? 'binance');
+    setStrategyId(nextReport.strategyId);
+    setSymbol(nextReport.market ?? symbol);
+    setTimeframe(normalizeBacktestTimeframe(nextReport.timeframe) ?? timeframe);
+    setDateRange(nextReport.period ?? '90D');
+    setInitialCapital(nextReport.initialCapital ?? 10000);
+    setFees(nextReport.feesPct ?? 0.06);
+    setSlippage(nextReport.slippagePct ?? 0.02);
+    applyExecutionSettings(nextReport.executionSettings ?? defaultBacktestExecutionSettings(strategies.find((item) => item.id === nextReport.strategyId)));
+    setRunStatus(`Loaded verified report · ${nextReport.totalTrades} trades`);
+    setRunState({
+      finishedAt: new Date().toISOString(),
+      kind: 'run',
+      message: `${nextReport.id} · ${nextReport.dataWindow?.candleChecksum ?? 'no checksum'}`,
+      status: 'success',
+    });
   }
 
   function savePreset() {
@@ -538,6 +589,7 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
               <span>{hiddenInvalidReports} calculated report{hiddenInvalidReports > 1 ? 's are' : ' is'} missing full candle provenance or chart series. Run again to create a trusted report.</span>
             </Card>
           ) : null}
+          <RecentBacktestReports reports={recentTrustedReports} strategies={strategies} onLoad={applyReport} />
         </div>
       ) : (
         <div className="backtest-dashboard-grid">
@@ -613,6 +665,8 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
               {paperVerdict.eligible ? <PaperTestRecommendationActions reportId={report.id} strategyId={report.strategyId} /> : null}
             </Card>
           ) : null}
+
+          <RecentBacktestReports reports={recentTrustedReports} selectedReportId={report.id} strategies={strategies} onLoad={applyReport} />
 
           <Card className="backtest-tabs-card">
             <div className="backtest-tabs">
@@ -699,6 +753,54 @@ function BacktestRunStateBanner({ state }: { state: BacktestRunState }) {
         ) : null}
       </div>
     </div>
+  );
+}
+
+function RecentBacktestReports({ onLoad, reports, selectedReportId, strategies }: { onLoad: (report: BacktestReport) => void; reports: BacktestReport[]; selectedReportId?: string; strategies: Strategy[] }) {
+  if (!reports.length) {
+    return (
+      <Card className="backtest-recent-card">
+        <div className="backtest-panel-head">
+          <div>
+            <h2>Best Verified Backtests</h2>
+            <span>No trusted calculated report saved yet.</span>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="backtest-recent-card">
+      <div className="backtest-panel-head">
+        <div>
+          <h2>Best Verified Backtests</h2>
+          <span>Ranked from strongest to weakest. Loading keeps the exact source candles and execution settings.</span>
+        </div>
+        <Badge tone="positive">{reports.length} ready</Badge>
+      </div>
+      <div className="backtest-recent-list">
+        {reports.slice(0, 10).map((item) => {
+          const strategyName = strategies.find((strategy) => strategy.id === item.strategyId)?.name ?? item.strategyId;
+
+          return (
+            <button className={`backtest-recent-item${selectedReportId === item.id ? ' is-selected' : ''}`} key={item.id} onClick={() => onLoad(item)} type="button">
+              <span className="backtest-recent-item__main">
+                <strong>{strategyName}</strong>
+                <small>{item.market} · {item.timeframe} · {item.period} · {item.marketDataSource} · {item.candleCount ?? 0} candles · {item.dataWindow?.candleChecksum ?? 'checksum missing'}</small>
+              </span>
+              <span className="backtest-recent-item__metrics">
+                <em className={item.profitFactor >= 1 ? 'positive' : 'negative'}>{item.profitFactor.toFixed(2)} PF</em>
+                <em>{item.winRate.toFixed(1)}% WR</em>
+                <em>{item.totalTrades} trades</em>
+                <em className="negative">{item.drawdown.toFixed(1)}% DD</em>
+                <em className={item.netProfit >= 0 ? 'positive' : 'negative'}>{formatUsd(item.netProfit)}</em>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </Card>
   );
 }
 

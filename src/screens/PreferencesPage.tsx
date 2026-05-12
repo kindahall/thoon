@@ -17,28 +17,30 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import Link from 'next/link';
+import type { CSSProperties } from 'react';
 
 import { Card, HelpPopover } from '../components/ui';
 import type { Alert, ApiKeyRecord, ExchangeConnection, RiskRules, UserPreferences, UserProfile } from '../types/trading';
 
 const preferenceSections = [
-  { href: '/preferences/agent', icon: Bot, label: 'Strategy Agent' },
-  { href: '/preferences/profile', icon: User, label: 'Profile' },
-  { href: '/preferences/appearance', icon: Palette, label: 'Appearance' },
-  { href: '/preferences/trading-defaults', icon: ChartNoAxesCombined, label: 'Trading Defaults' },
-  { href: '/preferences/security', icon: Shield, label: 'Security' },
-  { href: '/preferences/notifications', icon: Bell, label: 'Notifications' },
-  { href: '/preferences/billing', icon: CreditCard, label: 'Billing & Plan' },
-  { href: '/preferences/data-privacy', icon: Database, label: 'Data & Privacy' },
-  { href: '/preferences/risk-rules', icon: Shield, label: 'Risk Rules' },
-  { href: '/preferences/trade-limits', icon: ListChecks, label: 'Trade Limits' },
-  { href: '/preferences/audit-logs', icon: ScrollText, label: 'Audit Logs' },
-  { href: '/preferences/layouts', icon: LayoutGrid, label: 'Layouts' },
-  { href: '/preferences/keyboard-shortcuts', icon: Keyboard, label: 'Keyboard Shortcuts' },
-  { href: '/preferences/advanced', icon: Wrench, label: 'Advanced' },
+  { accent: '#26c8ff', href: '/preferences/agent', icon: Bot, label: 'Strategy Agent' },
+  { accent: '#8b7cff', href: '/preferences/profile', icon: User, label: 'Profile' },
+  { accent: '#ff7ac8', href: '/preferences/appearance', icon: Palette, label: 'Appearance' },
+  { accent: '#62e6a8', href: '/preferences/trading-defaults', icon: ChartNoAxesCombined, label: 'Trading Defaults' },
+  { accent: '#ffd45a', href: '/preferences/security', icon: Shield, label: 'Security' },
+  { accent: '#37d5ff', href: '/preferences/notifications', icon: Bell, label: 'Notifications' },
+  { accent: '#ffb86b', href: '/preferences/billing', icon: CreditCard, label: 'Billing & Plan' },
+  { accent: '#64f4d2', href: '/preferences/data-privacy', icon: Database, label: 'Data & Privacy' },
+  { accent: '#ff5f75', href: '/preferences/risk-rules', icon: Shield, label: 'Risk Rules' },
+  { accent: '#62e6a8', href: '/preferences/trade-limits', icon: ListChecks, label: 'Trade Limits' },
+  { accent: '#a78bfa', href: '/preferences/audit-logs', icon: ScrollText, label: 'Audit Logs' },
+  { accent: '#26c8ff', href: '/preferences/layouts', icon: LayoutGrid, label: 'Layouts' },
+  { accent: '#64f4d2', href: '/preferences/keyboard-shortcuts', icon: Keyboard, label: 'Keyboard Shortcuts' },
+  { accent: '#ffb86b', href: '/preferences/advanced', icon: Wrench, label: 'Advanced' },
 ];
 
 type SummaryCard = {
+  accent: string;
   href: string;
   icon: LucideIcon;
   rows: Array<{ label: string; tone?: 'positive'; value: string }>;
@@ -76,7 +78,7 @@ export function PreferencesPage({ alerts, apiKeys, exchanges, preferences, profi
               const Icon = section.icon;
 
               return (
-                <Link href={section.href} key={section.href}>
+                <Link href={section.href} key={section.href} style={{ '--preference-section-accent': section.accent } as CSSProperties}>
                   <Icon size={17} />
                   <span>{section.label}</span>
                 </Link>
@@ -159,6 +161,7 @@ function buildSummaryCards({
   return [
     {
       href: '/preferences/agent',
+      accent: '#26c8ff',
       icon: Bot,
       rows: [
         { label: 'Mode', value: 'Codex' },
@@ -169,6 +172,7 @@ function buildSummaryCards({
     },
     {
       href: '/preferences/appearance',
+      accent: '#ff7ac8',
       icon: Palette,
       rows: [
         { label: 'Theme', value: titleCase(preferences.theme) },
@@ -178,6 +182,7 @@ function buildSummaryCards({
     },
     {
       href: '/preferences/trading-defaults',
+      accent: '#62e6a8',
       icon: ChartNoAxesCombined,
       rows: [
         { label: 'Default Risk', value: `${preferences.defaultRiskPerTrade.toFixed(2)}%` },
@@ -189,6 +194,7 @@ function buildSummaryCards({
     },
     {
       href: '/preferences/security',
+      accent: '#ffd45a',
       icon: Shield,
       rows: [
         { label: 'Live confirmation', tone: riskRules.confirmLiveOrders ? 'positive' : undefined, value: riskRules.confirmLiveOrders ? 'Enabled' : 'Manual' },
@@ -199,6 +205,7 @@ function buildSummaryCards({
     },
     {
       href: '/preferences/notifications',
+      accent: '#37d5ff',
       icon: Bell,
       rows: [
         { label: 'Active alerts', tone: activeAlerts ? 'positive' : undefined, value: String(activeAlerts) },
@@ -209,6 +216,7 @@ function buildSummaryCards({
     },
     {
       href: '/exchanges',
+      accent: '#64f4d2',
       icon: PlugZap,
       rows: [
         { label: 'Connected venues', tone: connectedExchanges ? 'positive' : undefined, value: String(connectedExchanges) },
@@ -219,6 +227,7 @@ function buildSummaryCards({
     },
     {
       href: '/preferences/billing',
+      accent: '#ffb86b',
       icon: CreditCard,
       rows: [
         { label: 'Current Plan', value: titleCase(preferences.billingSettings?.planId ?? 'private') },
@@ -234,7 +243,7 @@ function PreferenceOverviewCard({ card }: { card: SummaryCard }) {
   const Icon = card.icon;
 
   return (
-    <Link className="preferences-summary-card" href={card.href}>
+    <Link className="preferences-summary-card" href={card.href} style={{ '--preference-section-accent': card.accent } as CSSProperties}>
       <Card>
         <div className="preferences-summary-card__head">
           <Icon size={18} />

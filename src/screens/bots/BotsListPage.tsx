@@ -341,36 +341,7 @@ async function writeClipboardText(value: string) {
     return false;
   }
 
-  const clipboardPermission = await queryClipboardPermission();
-
-  if (clipboardPermission === 'denied') {
-    return legacyClipboardCopy(value);
-  }
-
-  if (clipboardPermission === 'granted' && navigator.clipboard?.writeText && window.isSecureContext) {
-    try {
-      await navigator.clipboard.writeText(value);
-      return true;
-    } catch {
-      return legacyClipboardCopy(value);
-    }
-  }
-
   return legacyClipboardCopy(value);
-}
-
-async function queryClipboardPermission() {
-  if (!navigator.permissions?.query) {
-    return undefined;
-  }
-
-  try {
-    const permission = await navigator.permissions.query({ name: 'clipboard-write' as PermissionName });
-
-    return permission.state;
-  } catch {
-    return undefined;
-  }
 }
 
 function legacyClipboardCopy(value: string) {

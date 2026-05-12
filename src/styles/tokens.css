@@ -15,8 +15,12 @@
   --primary-soft: rgba(38, 200, 255, 0.14);
   --profit: #62e6a8;
   --profit-soft: rgba(98, 230, 168, 0.14);
+  --success: var(--profit);
+  --success-soft: var(--profit-soft);
   --risk: #ff5f75;
   --risk-soft: rgba(255, 95, 117, 0.15);
+  --loss: var(--risk);
+  --loss-soft: var(--risk-soft);
   --warning: #ffd45a;
   --warning-soft: rgba(255, 212, 90, 0.15);
   --violet: #a56cff;
@@ -55,8 +59,12 @@
   --primary-soft: rgba(3, 143, 196, 0.12);
   --profit: #129b6b;
   --profit-soft: rgba(18, 155, 107, 0.12);
+  --success: var(--profit);
+  --success-soft: var(--profit-soft);
   --risk: #d93c58;
   --risk-soft: rgba(217, 60, 88, 0.12);
+  --loss: var(--risk);
+  --loss-soft: var(--risk-soft);
   --warning: #ba7a00;
   --warning-soft: rgba(230, 159, 32, 0.15);
   --violet: #7b4fe0;
