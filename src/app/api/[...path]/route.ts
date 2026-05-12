@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { JIMMY_LEGACY_STRATEGY_IDS, JIMMY_STRATEGY_ID } from '../../../config/jimmy-strategy';
 import { appendAuditEvent, runWithAuditContext } from '../../../server/audit';
+import { visibleAgentChatMessages } from '../../../server/agent-chat';
 import { runBacktestFromCandles } from '../../../server/backtest-engine';
 import {
   clearedSessionCookieOptions,
@@ -154,7 +155,7 @@ async function getHandler(request: NextRequest, context: RouteContext) {
     }
 
     if (path[1] === 'chat') {
-      return json(db.agentChatRecords);
+      return json(visibleAgentChatMessages(db.agentChatRecords));
     }
 
     if (path[1] === 'kronos') {
@@ -1902,6 +1903,27 @@ async function deleteHandler(_request: NextRequest, context: RouteContext) {
     );
   }
 
+  if (path[0] === 'agent' && path[1] === 'chat' && path[2]) {
+    return json(
+      updateThoonDb((db) => {
+        const deleted = db.agentChatRecords.find((message) => message.id === path[2]);
+        db.agentChatRecords = db.agentChatRecords.filter((message) => message.id !== path[2]);
+
+        if (deleted) {
+          appendAuditEvent(db, {
+            action: 'Agent chat message deleted',
+            actor: 'user',
+            details: `${deleted.role} message removed from chat history.`,
+            eventType: 'system',
+            status: 'warning',
+          });
+        }
+
+        return { deleted: Boolean(deleted), messages: visibleAgentChatMessages(db.agentChatRecords) };
+      }),
+    );
+  }
+
   if (path[0] === 'strategies' && path[1]) {
     return json(updateThoonDb((db) => {
       const existingStrategy = findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, path[1]);
@@ -2177,22 +2199,15 @@ async function agentChat(body: Record<string, unknown>) {
   };
 
   const response = updateThoonDb((db) => {
-    const instantMessage: AgentChatMessage = {
-      content: buildInstantAgentChatReply(content, db),
+    const assistantMessage: AgentChatMessage = {
+      content: 'Codex running',
       createdAt: new Date().toISOString(),
-      id: `agent-chat-thoonix-instant-${randomUUID()}`,
-      role: 'assistant',
-      status: 'completed',
-    };
-    const backgroundMessage: AgentChatMessage = {
-      content: 'Analyse profonde lancee avec Codex. Tu peux continuer a ecrire, je mets cette reponse a jour des que le job termine.',
-      createdAt: new Date().toISOString(),
-      id: `agent-chat-thoonix-job-${randomUUID()}`,
+      id: `agent-chat-codex-job-${randomUUID()}`,
       role: 'assistant',
       status: 'running',
     };
 
-    db.agentChatRecords = [backgroundMessage, instantMessage, userMessage, ...db.agentChatRecords].slice(0, 120);
+    db.agentChatRecords = [assistantMessage, userMessage, ...db.agentChatRecords].slice(0, 120);
     appendAuditEvent(db, {
       action: 'Thoonix chat request',
       actor: 'user',
@@ -2201,21 +2216,21 @@ async function agentChat(body: Record<string, unknown>) {
       status: 'success',
     });
     appendAuditEvent(db, {
-      action: 'Thoonix instant chat response',
+      action: 'Codex CLI chat queued',
       actor: 'system',
-      details: instantMessage.content.slice(0, 160),
+      details: assistantMessage.content.slice(0, 160),
       eventType: 'system',
       status: 'success',
     });
 
-    return { backgroundMessage, instantMessage, messages: db.agentChatRecords };
+    return { assistantMessage, messages: visibleAgentChatMessages(db.agentChatRecords) };
   });
 
-  void completeAgentChatInBackground({ assistantMessageId: response.backgroundMessage.id, content }).catch((error) => {
+  void completeAgentChatInBackground({ assistantMessageId: response.assistantMessage.id, content }).catch((error) => {
     logServerEvent('error', 'agent.chat_background_unhandled', { error: error instanceof Error ? error.message : String(error) });
   });
 
-  return json({ messages: response.messages, reply: response.instantMessage });
+  return json({ messages: response.messages, reply: response.assistantMessage });
 }
 
 async function completeAgentChatInBackground({ assistantMessageId, content }: { assistantMessageId: string; content: string }) {
@@ -2263,11 +2278,11 @@ async function completeAgentChatInBackground({ assistantMessageId, content }: { 
     const db = readThoonDb();
     const replyText = await runCodexAgentChat({
       appSnapshot: buildAgentChatSnapshot(db),
-      history: db.agentChatRecords.slice(0, 16).reverse(),
+      history: visibleAgentChatMessages(db.agentChatRecords).slice(0, 16).reverse(),
       message: tradingViewImportNote ? `${content}\n\n${tradingViewImportNote}` : content,
     });
     const assistantMessage: AgentChatMessage = {
-      content: replyText || 'Thoonix did not return a message.',
+      content: replyText || "Codex CLI n'a pas retourne de message.",
       createdAt: new Date().toISOString(),
       id: `agent-chat-thoonix-${randomUUID()}`,
       role: 'assistant',
@@ -2306,63 +2321,15 @@ async function completeAgentChatInBackground({ assistantMessageId, content }: { 
   }
 }
 
-function buildInstantAgentChatReply(content: string, db: ThoonDb) {
-  const normalized = normalizeChatQuery(content);
-  const strategies = buildVisibleStrategyRecords(db.strategyRecords, db.strategyResearchRecords);
-  const calculatedReports = db.backtestReportRecords.filter((report) => report.source === 'calculated');
-  const bestReport = calculatedReports
-    .slice()
-    .sort((left, right) => assessBotReadiness(right, db.agentSettingsRecord).score - assessBotReadiness(left, db.agentSettingsRecord).score || right.netProfit - left.netProfit)[0];
-  const recentResearch = db.strategyResearchRecords[0];
-  const activeTasks = db.agentQueueRecords.filter((task) => task.status === 'queued' || task.status === 'running').length;
-  const mentionsLatency = ['instant', 'instantane', 'lent', 'timeout', 'openclaw', 'codex'].some((token) => normalized.includes(token));
-  const asksForStrategies = ['strategie', 'strategies', 'tradingview', 'research', 'recherche'].some((token) => normalized.includes(token));
-  const lines = [
-    mentionsLatency
-      ? "Tu as raison: le chat ne doit pas attendre Codex CLI pour afficher une reponse. Je reponds maintenant en local tout de suite, puis Codex approfondit en arriere-plan."
-      : "Recu. Je te reponds tout de suite avec l'etat local, puis je lance l'analyse Codex en arriere-plan.",
-  ];
-
-  if (asksForStrategies || mentionsLatency) {
-    lines.push(`Recherche strategies: ${db.strategyResearchRecords.length} source${db.strategyResearchRecords.length > 1 ? 's' : ''} TradingView en memoire, ${strategies.length} strategie${strategies.length > 1 ? 's' : ''} visible${strategies.length > 1 ? 's' : ''}, ${calculatedReports.length} backtest${calculatedReports.length > 1 ? 's' : ''} calcule${calculatedReports.length > 1 ? 's' : ''}.`);
-  }
-
-  if (bestReport) {
-    const readiness = assessBotReadiness(bestReport, db.agentSettingsRecord);
-    lines.push(`Meilleur backtest verifie: ${bestReport.market} ${bestReport.timeframe}, score bot ${readiness.score}/100, PnL ${formatMoney(bestReport.netProfit)}, winrate ${bestReport.winRate.toFixed(1)}%.`);
-  } else {
-    lines.push("Pour l'instant, aucune strategie n'a encore un backtest calcule fiable a proposer en bot. Je dois importer/creer des candidates puis les valider sur bougies live.");
-  }
-
-  if (recentResearch) {
-    lines.push(`Derniere piste TradingView: ${recentResearch.title}.`);
-  }
-
-  if (shouldRunTradingViewImportFromChat(content)) {
-    lines.push('Import TradingView lance en arriere-plan: je sauvegarde les concepts publics, puis Thoon les validera par backtest/paper test.');
-  }
-
-  lines.push(`File agent: ${activeTasks} tache${activeTasks > 1 ? 's' : ''} active${activeTasks > 1 ? 's' : ''}.`);
-  lines.push("La reponse profonde remplacera le message 'Analyse profonde' quand Codex aura fini.");
-
-  return lines.join('\n');
-}
-
 function friendlyAgentChatFailure(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
+  const timeoutSeconds = Math.round(getThoonServerEnv().agentAiTimeoutMs / 1000);
 
-  if (/timed out|timeout|Codex CLI/i.test(message)) {
-    return "La reponse instantanee est deja affichee. L'analyse profonde Codex a depasse le delai serveur; je garde le chat disponible au lieu de bloquer l'interface. Relance une demande plus ciblee si tu veux une passe profonde plus courte.";
+  if (/timed out|timeout|after \d+s/i.test(message)) {
+    return `Codex indisponible: delai serveur depasse (${timeoutSeconds}s). Aucune reponse locale n'a ete injectee.`;
   }
 
-  return `La reponse instantanee est affichee, mais l'analyse profonde a echoue: ${message}`;
-}
-
-function normalizeChatQuery(value: string) {
-  return value
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase();
+  return `Codex CLI n'a pas pu repondre: ${message}`;
 }
 
 async function agentAction(body: Record<string, unknown>) {

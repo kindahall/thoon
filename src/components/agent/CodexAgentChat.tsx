@@ -1,9 +1,9 @@
 'use client';
 
-import { BrainCircuit, Send, Sparkles, Tv } from 'lucide-react';
+import { BrainCircuit, Send, Sparkles, Trash2, Tv } from 'lucide-react';
 import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 
-import { postJson } from '../../services/api-client';
+import { deleteJson, postJson } from '../../services/api-client';
 import type { KronosIntegrationProfile } from '../../server/kronos-integration';
 import type { TradingViewMcpProfile } from '../../server/tradingview-mcp-integration';
 import type { AgentChatMessage, KronosLearningProfile } from '../../types/trading';
@@ -28,6 +28,11 @@ type AgentChatResponse = {
   reply: AgentChatMessage;
 };
 
+type AgentChatDeleteResponse = {
+  deleted: boolean;
+  messages: AgentChatMessage[];
+};
+
 const quickPrompts = [
   'Ou en est ton travail dans Thoon ?',
   'Quelles ameliorations prioriser dans l application ?',
@@ -40,8 +45,11 @@ export function CodexAgentChat({ aiStatus, initialMessages, kronosLearningProfil
   const [error, setError] = useState('');
   const [messages, setMessages] = useState(initialMessages);
   const [pending, setPending] = useState(false);
+  const [deletingMessageIds, setDeletingMessageIds] = useState<string[]>([]);
   const orderedMessages = useMemo(() => messages.slice().reverse(), [messages]);
-  const providerLabel = aiStatus.provider === 'codex' ? 'Thoonix' : aiStatus.provider;
+  const providerLabel = aiStatus.provider === 'codex' ? 'Codex CLI' : aiStatus.provider;
+  const agentLabel = 'Thoonix';
+  const directLabel = 'Thoonix direct';
   const hasRunningMessages = messages.some((message) => message.status === 'running');
 
   useEffect(() => {
@@ -108,6 +116,27 @@ export function CodexAgentChat({ aiStatus, initialMessages, kronosLearningProfil
     }
   }
 
+  async function deleteMessage(messageId: string) {
+    if (deletingMessageIds.includes(messageId)) {
+      return;
+    }
+
+    const previousMessages = messages;
+    setError('');
+    setDeletingMessageIds((currentIds) => [...currentIds, messageId]);
+    setMessages((currentMessages) => currentMessages.filter((message) => message.id !== messageId));
+
+    try {
+      const response = await deleteJson<AgentChatDeleteResponse>(`/api/agent/chat/${encodeURIComponent(messageId)}`);
+      setMessages(response.messages);
+    } catch (deleteError) {
+      setMessages(previousMessages);
+      setError(deleteError instanceof Error ? deleteError.message : 'Message deletion failed');
+    } finally {
+      setDeletingMessageIds((currentIds) => currentIds.filter((id) => id !== messageId));
+    }
+  }
+
   function handleDraftKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
       return;
@@ -121,10 +150,11 @@ export function CodexAgentChat({ aiStatus, initialMessages, kronosLearningProfil
     <Card className="codex-chat-card">
       <div className="codex-chat-head">
         <div>
-          <span>Thoonix direct</span>
+          <span>{directLabel}</span>
           <h2>Chat Agent</h2>
         </div>
         <div className="codex-chat-badges">
+          {hasRunningMessages ? <CodexLiveStatus /> : null}
           <Badge tone={aiStatus.configured ? 'positive' : 'warning'}>{providerLabel}</Badge>
           <Badge tone={aiStatus.sandbox === 'danger-full-access' ? 'warning' : 'neutral'}>{aiStatus.sandbox ?? aiStatus.model}</Badge>
         </div>
@@ -135,20 +165,32 @@ export function CodexAgentChat({ aiStatus, initialMessages, kronosLearningProfil
           {orderedMessages.length ? (
             orderedMessages.slice(-10).map((message) => (
               <article className={`codex-chat-message codex-chat-message--${message.role} is-${message.status}`} key={message.id}>
-                <span>{message.role === 'user' ? 'Jimmy' : 'Thoonix'}</span>
-                <p>{displayChatContent(message)}</p>
+                <div className="codex-chat-message-head">
+                  <span>{message.role === 'user' ? 'Jimmy' : agentLabel}</span>
+                  <button
+                    aria-label="Delete message"
+                    className="codex-chat-delete"
+                    disabled={deletingMessageIds.includes(message.id)}
+                    onClick={() => void deleteMessage(message.id)}
+                    title="Delete message"
+                    type="button"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+                {message.role === 'assistant' && message.status === 'running' ? <CodexLiveStatus /> : <p>{displayChatContent(message)}</p>}
               </article>
             ))
           ) : (
             <div className="codex-chat-empty">
               <BrainCircuit size={18} />
-              <span>Demande a Thoonix son etat, une decision produit, ou une amelioration a coder.</span>
+              <span>Demande a {agentLabel} son etat, une decision produit, ou une amelioration a coder.</span>
             </div>
           )}
           {pending ? (
             <article className="codex-chat-message codex-chat-message--assistant is-running">
-              <span>Thoonix</span>
-              <p>Thoonix travaille...</p>
+              <span>{agentLabel}</span>
+              <CodexLiveStatus />
             </article>
           ) : null}
         </div>
@@ -196,7 +238,7 @@ export function CodexAgentChat({ aiStatus, initialMessages, kronosLearningProfil
           void sendMessage();
         }}
       >
-        <textarea onChange={(event) => setDraft(event.target.value)} onKeyDown={handleDraftKeyDown} placeholder="Parle directement a Thoonix..." value={draft} />
+        <textarea onChange={(event) => setDraft(event.target.value)} onKeyDown={handleDraftKeyDown} placeholder={`Parle directement a ${agentLabel}...`} value={draft} />
         <Button disabled={pending || !draft.trim()} icon={<Send size={15} />} size="sm" type="submit" variant="primary">
           Envoyer
         </Button>
@@ -206,14 +248,15 @@ export function CodexAgentChat({ aiStatus, initialMessages, kronosLearningProfil
   );
 }
 
-function displayChatContent(message: AgentChatMessage) {
-  if (message.role !== 'assistant') {
-    return message.content;
-  }
+function CodexLiveStatus() {
+  return (
+    <button aria-label="Codex CLI actif" className="codex-live-status" title="Codex CLI actif" type="button">
+      <span aria-hidden="true" />
+      Actif
+    </button>
+  );
+}
 
-  return message.content
-    .replace(/\bchat Codex\b/g, 'chat Thoonix')
-    .replace(/\bCodex direct\b/g, 'Thoonix direct')
-    .replace(/\bCodex est\b/g, 'Thoonix est')
-    .replace(/\bCodex travaille\b/g, 'Thoonix travaille');
+function displayChatContent(message: AgentChatMessage) {
+  return message.content;
 }

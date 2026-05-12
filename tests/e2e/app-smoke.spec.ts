@@ -158,6 +158,7 @@ test('chart analysis tools persist across route changes and can be saved', async
 
 test('agent chat sends with Enter and keeps Shift Enter for new lines', async ({ page }) => {
   const message = `Entrée envoie le chat ${Date.now()}`;
+  let deletedMessageId = '';
   let postedMessage = '';
   let pollCount = 0;
 
@@ -180,11 +181,26 @@ test('agent chat sends with Enter and keeps Shift Enter for new lines', async ({
     await route.fulfill({
       body: JSON.stringify({
         messages: [
-          { content: 'Analyse profonde lancee avec Codex.', createdAt: new Date().toISOString(), id: 'test-agent-deep', role: 'assistant', status: 'running' },
-          { content: 'Reponse instantanee.', createdAt: new Date().toISOString(), id: 'test-agent-instant', role: 'assistant', status: 'completed' },
+          { content: 'Codex running', createdAt: new Date().toISOString(), id: 'test-agent-deep', role: 'assistant', status: 'running' },
           { content: postedMessage, createdAt: new Date().toISOString(), id: 'test-user-message', role: 'user', status: 'completed' },
         ],
-        reply: { content: 'Reponse instantanee.', createdAt: new Date().toISOString(), id: 'test-agent-instant', role: 'assistant', status: 'completed' },
+        reply: { content: 'Codex running', createdAt: new Date().toISOString(), id: 'test-agent-deep', role: 'assistant', status: 'running' },
+      }),
+      contentType: 'application/json',
+      status: 200,
+    });
+  });
+  await page.route('**/api/agent/chat/*', async (route) => {
+    if (route.request().method() !== 'DELETE') {
+      await route.continue();
+      return;
+    }
+
+    deletedMessageId = route.request().url().split('/').pop() ?? '';
+    await route.fulfill({
+      body: JSON.stringify({
+        deleted: true,
+        messages: [{ content: 'Analyse profonde terminee.', createdAt: new Date().toISOString(), id: 'test-agent-deep', role: 'assistant', status: 'completed' }],
       }),
       contentType: 'application/json',
       status: 200,
@@ -206,6 +222,10 @@ test('agent chat sends with Enter and keeps Shift Enter for new lines', async ({
   await expect(textarea).toHaveValue('');
   await expect(page.locator('.codex-chat-thread')).toContainText(message);
   await expect(page.locator('.codex-chat-thread')).toContainText('Analyse profonde terminee.');
+  await expect(page.locator('.codex-chat-thread')).not.toContainText('Reponse instantanee');
+  await page.getByRole('button', { name: 'Delete message' }).first().click();
+  await expect(page.locator('.codex-chat-thread')).not.toContainText(message);
+  expect(deletedMessageId).toBe('test-user-message');
   expect(pollCount).toBeGreaterThan(0);
 });
 

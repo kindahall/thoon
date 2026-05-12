@@ -4,6 +4,7 @@ import { readThoonDb } from '../server/thoon-db';
 import { getStrategyAgentAiStatus } from '../server/strategy-agent-ai';
 import { getKronosIntegrationProfile } from '../server/kronos-integration';
 import { getKronosLearningProfile } from '../server/kronos-learning';
+import { visibleAgentChatMessages } from '../server/agent-chat';
 import { getTradingViewMcpProfile } from '../server/tradingview-mcp-integration';
 import { canonicalStrategyId, findVisibleStrategyRecord, visibleStrategyRecords } from '../utils/strategy-catalog';
 import { buildEndorsedStrategies } from '../utils/strategy-endorsement';
@@ -302,7 +303,7 @@ export function getAgentAiStatus() {
 }
 
 export function listAgentChatMessages() {
-  return readThoonDb().agentChatRecords;
+  return visibleAgentChatMessages(readThoonDb().agentChatRecords);
 }
 
 export function getKronosProfile() {

@@ -65,7 +65,7 @@ export function getThoonServerEnv(): ThoonServerEnv {
     agentAiIncludeSource: process.env.THOON_AGENT_AI_INCLUDE_SOURCE === 'true',
     agentAiModel: process.env.THOON_AGENT_AI_MODEL ?? process.env.OPENAI_MODEL ?? 'gpt-5.5',
     agentAiProvider: normalizeAgentAiProvider(process.env.THOON_AGENT_AI_PROVIDER),
-    agentAiTimeoutMs: positiveNumber(process.env.THOON_AGENT_AI_TIMEOUT_MS, 90000),
+    agentAiTimeoutMs: positiveNumber(process.env.THOON_AGENT_AI_TIMEOUT_MS, 240000),
     appMode: normalizeAppMode(process.env.THOON_APP_MODE),
     auditMaxEvents: positiveInteger(process.env.THOON_AUDIT_MAX_EVENTS, 1000),
     auditRetentionDays: positiveInteger(process.env.THOON_AUDIT_RETENTION_DAYS, 180),
