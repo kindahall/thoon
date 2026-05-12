@@ -23,7 +23,12 @@ const bybitIntervals: Record<Timeframe, string> = {
   '15m': '15',
 };
 
-export async function getBybitMarketCandles(seedPairs: MarketPair[], symbol: string, timeframe: Timeframe, requestedLimit?: number, options: { strict?: boolean } = {}): Promise<Candle[]> {
+type BybitCandleOptions = {
+  marketType?: 'futures' | 'perpetual' | 'spot';
+  strict?: boolean;
+};
+
+export async function getBybitMarketCandles(seedPairs: MarketPair[], symbol: string, timeframe: Timeframe, requestedLimit?: number, options: BybitCandleOptions = {}): Promise<Candle[]> {
   const pair = seedPairs.find((item) => item.symbol === symbol);
 
   if (!pair) {
@@ -37,10 +42,10 @@ export async function getBybitMarketCandles(seedPairs: MarketPair[], symbol: str
   return fetchCandles(pair, toBybitSymbol(symbol), timeframe, requestedLimit, options).catch(() => []);
 }
 
-async function fetchCandles(pair: MarketPair, symbol: string, timeframe: Timeframe, requestedLimit?: number, options: { strict?: boolean } = {}): Promise<Candle[]> {
+async function fetchCandles(pair: MarketPair, symbol: string, timeframe: Timeframe, requestedLimit?: number, options: BybitCandleOptions = {}): Promise<Candle[]> {
   const { marketKlineLimit } = getThoonServerEnv();
   const response = await fetchBybitJson<BybitKlineResponse>('/v5/market/kline', {
-    category: 'spot',
+    category: options.marketType === 'spot' ? 'spot' : 'linear',
     interval: bybitIntervals[timeframe] ?? '15',
     limit: String(Math.max(1, Math.floor(requestedLimit ?? marketKlineLimit))),
     symbol,

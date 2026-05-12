@@ -208,6 +208,9 @@ export function TradingDefaultsSettingsPage({ preferences }: TradingDefaultsSett
                   <option value="Binance">Binance</option>
                   <option value="Bybit">Bybit</option>
                   <option value="OKX">OKX</option>
+                  <option value="dYdX">dYdX</option>
+                  <option value="Hyperliquid">Hyperliquid</option>
+                  <option value="1inch">1inch</option>
                 </select>
                 <select className="trading-select" value={defaults.defaultAccount} onChange={(event) => updateDefaults({ defaultAccount: event.target.value })}>
                   <option value="Main Account">Main Account</option>

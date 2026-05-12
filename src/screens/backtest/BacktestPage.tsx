@@ -4,12 +4,13 @@ import { AlertTriangle, BarChart3, Bot, CheckCircle2, Database, FileCheck2, Fold
 import Link from 'next/link';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 
+import { PaperTestRecommendationActions } from '../../components/agent/PaperTestRecommendationActions';
 import { StrategyAgentDrawer } from '../../components/agent/StrategyAgentDrawer';
 import { Badge, Button, Card, EmptyState, HelpPopover } from '../../components/ui';
 import { useBinanceLiveMarkets } from '../../hooks/useBinanceLiveMarkets';
 import { ApiClientError, postJson } from '../../services/api-client';
 import type { MarketPair, Timeframe } from '../../types/market';
-import type { AgentReport, AgentRun, AgentSettings, AgentSuggestion, BacktestReport, BacktestTrade, ExchangeConnection, Strategy, StrategyVersion } from '../../types/trading';
+import type { AgentReport, AgentRun, AgentSettings, AgentSuggestion, BacktestExecutionSettings, BacktestReport, BacktestTrade, ExchangeConnection, Strategy, StrategyVersion } from '../../types/trading';
 import { isResearchOnlyStrategy } from '../../utils/strategy-catalog';
 import { formatPercent, formatUsd } from '../../utils/format';
 
@@ -21,7 +22,9 @@ type BacktestPageProps = {
   agentVersions: StrategyVersion[];
   exchangeConnections: ExchangeConnection[];
   initialPair?: string;
+  initialReportId?: string;
   initialStrategyId?: string;
+  initialTimeframe?: string;
   marketPairs: MarketPair[];
   reports: BacktestReport[];
   strategies: Strategy[];
@@ -43,6 +46,7 @@ type BacktestRunState = {
 type BacktestPreset = {
   dateRange: string;
   exchangeId: string;
+  executionSettings: BacktestExecutionSettings;
   fees: number;
   id: string;
   initialCapital: number;
@@ -71,18 +75,31 @@ const backtestRangeShortcuts: Array<{ label: string; value: string }> = [
   { label: '1Y', value: '1Y' },
 ];
 
-export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSuggestions, agentVersions, exchangeConnections, initialPair, initialStrategyId, marketPairs, reports: initialReports, strategies }: BacktestPageProps) {
+export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSuggestions, agentVersions, exchangeConnections, initialPair, initialReportId, initialStrategyId, initialTimeframe, marketPairs, reports: initialReports, strategies }: BacktestPageProps) {
   const { connected: isBinanceLive, pairs: liveMarketPairs } = useBinanceLiveMarkets(marketPairs);
-  const initialStrategy = strategies.find((strategy) => strategy.id === initialStrategyId) ?? strategies.find((strategy) => strategy.market === initialPair) ?? strategies[0];
+  const requestedReport = initialReportId ? initialReports.find((report) => report.id === initialReportId) : undefined;
+  const initialStrategy = strategies.find((strategy) => strategy.id === requestedReport?.strategyId) ?? strategies.find((strategy) => strategy.id === initialStrategyId) ?? strategies.find((strategy) => strategy.market === initialPair) ?? strategies[0];
+  const initialExecutionSettings = requestedReport?.executionSettings ?? defaultBacktestExecutionSettings(initialStrategy);
   const [reports, setReports] = useState(initialReports);
-  const [strategyId, setStrategyId] = useState(initialStrategy?.id ?? '');
-  const [symbol, setSymbol] = useState(initialPair ?? initialStrategy?.market ?? liveMarketPairs[0]?.symbol ?? 'BTC/USDT');
-  const [timeframe, setTimeframe] = useState<Timeframe>(initialStrategy?.timeframe ?? '15m');
-  const [dateRange, setDateRange] = useState('90D');
-  const [exchangeId, setExchangeId] = useState('binance');
-  const [initialCapital, setInitialCapital] = useState(10000);
-  const [fees, setFees] = useState(0.06);
-  const [slippage, setSlippage] = useState(0.02);
+  const [strategyId, setStrategyId] = useState(requestedReport?.strategyId ?? initialStrategy?.id ?? '');
+  const [symbol, setSymbol] = useState(requestedReport?.market ?? initialPair ?? initialStrategy?.market ?? liveMarketPairs[0]?.symbol ?? 'BTC/USDT');
+  const [timeframe, setTimeframe] = useState<Timeframe>(normalizeBacktestTimeframe(requestedReport?.timeframe ?? initialTimeframe) ?? initialStrategy?.timeframe ?? '15m');
+  const [dateRange, setDateRange] = useState(requestedReport?.period ?? '90D');
+  const [exchangeId, setExchangeId] = useState(requestedReport?.exchangeId ?? 'binance');
+  const [initialCapital, setInitialCapital] = useState(requestedReport?.initialCapital ?? 10000);
+  const [fees, setFees] = useState(requestedReport?.feesPct ?? 0.06);
+  const [slippage, setSlippage] = useState(requestedReport?.slippagePct ?? 0.02);
+  const [directionMode, setDirectionMode] = useState<BacktestExecutionSettings['directionMode']>(initialExecutionSettings.directionMode);
+  const [leverage, setLeverage] = useState(initialExecutionSettings.leverage);
+  const [marketType, setMarketType] = useState<BacktestExecutionSettings['marketType']>(initialExecutionSettings.marketType);
+  const [positionCapPct, setPositionCapPct] = useState(initialExecutionSettings.positionCapPct);
+  const [riskPerTradePct, setRiskPerTradePct] = useState(initialExecutionSettings.riskPerTradePct);
+  const [stopLossAtr, setStopLossAtr] = useState(initialExecutionSettings.stopLossAtr);
+  const [stopLossEnabled, setStopLossEnabled] = useState(initialExecutionSettings.stopLossEnabled);
+  const [takeProfitEnabled, setTakeProfitEnabled] = useState(initialExecutionSettings.takeProfitEnabled);
+  const [takeProfitR, setTakeProfitR] = useState(initialExecutionSettings.takeProfitR);
+  const [trailingStopAtr, setTrailingStopAtr] = useState(initialExecutionSettings.trailingStopAtr);
+  const [trailingStopEnabled, setTrailingStopEnabled] = useState(initialExecutionSettings.trailingStopEnabled);
   const [activeTab, setActiveTab] = useState<BacktestTab>('trades');
   const [runStatus, setRunStatus] = useState('Ready');
   const [runState, setRunState] = useState<BacktestRunState>({ message: '', status: 'idle' });
@@ -91,9 +108,25 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
   const [advancedPanelOpen, setAdvancedPanelOpen] = useState(false);
 
   const strategy = strategies.find((item) => item.id === strategyId) ?? strategies[0];
+  const executionSettings = useMemo<BacktestExecutionSettings>(
+    () => ({
+      directionMode,
+      leverage: clampBacktestNumber(leverage, 1, 125, 1),
+      marketType,
+      positionCapPct: clampBacktestNumber(positionCapPct, 1, 100, 100),
+      riskPerTradePct: clampBacktestNumber(riskPerTradePct, 0.01, 10, strategy?.riskPerTrade ?? 1),
+      stopLossAtr: clampBacktestNumber(stopLossAtr, 0.1, 20, 1.5),
+      stopLossEnabled,
+      takeProfitEnabled,
+      takeProfitR: clampBacktestNumber(takeProfitR, 0.1, 20, strategy?.riskSettings?.rrTarget ?? 2),
+      trailingStopAtr: clampBacktestNumber(trailingStopAtr, 0.1, 20, 2),
+      trailingStopEnabled,
+    }),
+    [directionMode, leverage, marketType, positionCapPct, riskPerTradePct, stopLossAtr, stopLossEnabled, strategy?.riskPerTrade, strategy?.riskSettings?.rrTarget, takeProfitEnabled, takeProfitR, trailingStopAtr, trailingStopEnabled],
+  );
   const selectedExchange = exchangeConnections.find((exchange) => exchange.id === exchangeId) ?? exchangeConnections[0];
-  const matchingReports = reports.filter((item) => item.strategyId === strategyId && item.source === 'calculated' && item.market === symbol && item.timeframe === timeframe && item.period === dateRange && (item.exchangeId ?? 'binance') === exchangeId);
-  const report = matchingReports.find(isTrustedBacktestReport);
+  const matchingReports = reports.filter((item) => item.strategyId === strategyId && item.source === 'calculated' && item.market === symbol && item.timeframe === timeframe && item.period === dateRange && (item.exchangeId ?? 'binance') === exchangeId && sameReportInputCosts(item, initialCapital, fees, slippage) && sameExecutionSettings(item.executionSettings, executionSettings));
+  const report = matchingReports.find((item) => item.id === initialReportId && isTrustedBacktestReport(item)) ?? matchingReports.find(isTrustedBacktestReport);
   const selectedPair = liveMarketPairs.find((pair) => pair.symbol === symbol) ?? liveMarketPairs[0];
   const hiddenSeedReports = reports.filter((item) => item.strategyId === strategyId && item.source !== 'calculated').length;
   const hiddenInvalidReports = matchingReports.filter((item) => !isTrustedBacktestReport(item)).length;
@@ -118,6 +151,8 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
   const reportSourceLabel = report
     ? `${reportExchangeName} public candles · ${report.generatedAt ? formatRunDate(report.generatedAt) : 'latest run'}`
     : `${selectedExchange?.name ?? 'Binance'} selected`;
+  const paperVerdict = report ? assessBacktestPaperReadiness(report, agentSettings) : undefined;
+  const botDraftHref = report ? buildBacktestBotDraftHref(report) : buildBotDraftHrefFromSelection(strategyId, symbol, timeframe);
 
   useEffect(() => {
     const rawPresets = window.localStorage.getItem(backtestPresetStorageKey);
@@ -144,7 +179,22 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
     if (nextStrategy) {
       setSymbol(nextStrategy.market);
       setTimeframe(nextStrategy.timeframe);
+      applyExecutionSettings(defaultBacktestExecutionSettings(nextStrategy));
     }
+  }
+
+  function applyExecutionSettings(settings: BacktestExecutionSettings) {
+    setDirectionMode(settings.directionMode);
+    setLeverage(settings.leverage);
+    setMarketType(settings.marketType);
+    setPositionCapPct(settings.positionCapPct);
+    setRiskPerTradePct(settings.riskPerTradePct);
+    setStopLossAtr(settings.stopLossAtr);
+    setStopLossEnabled(settings.stopLossEnabled);
+    setTakeProfitEnabled(settings.takeProfitEnabled);
+    setTakeProfitR(settings.takeProfitR);
+    setTrailingStopAtr(settings.trailingStopAtr);
+    setTrailingStopEnabled(settings.trailingStopEnabled);
   }
 
   function applyPreset(preset: BacktestPreset) {
@@ -156,6 +206,7 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
     setInitialCapital(preset.initialCapital);
     setFees(preset.fees);
     setSlippage(preset.slippage);
+    applyExecutionSettings(preset.executionSettings);
     setPresetPanelOpen(false);
     setRunStatus('Preset loaded');
   }
@@ -165,8 +216,9 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
     const preset: BacktestPreset = {
       dateRange,
       exchangeId,
+      executionSettings,
       fees,
-      id: `${strategyId}-${symbol}-${timeframe}-${dateRange}`.replace(/[^a-zA-Z0-9_-]+/g, '-'),
+      id: `${strategyId}-${symbol}-${timeframe}-${dateRange}-${executionSettings.marketType}-${executionSettings.leverage}x`.replace(/[^a-zA-Z0-9_-]+/g, '-'),
       initialCapital,
       savedAt,
       slippage,
@@ -202,6 +254,7 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
         symbol,
         timeframe,
         exchangeId,
+        executionSettings,
       });
 
       if (!isTrustedBacktestReport(report)) {
@@ -318,12 +371,21 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
             </span>
             <span>Paper Test</span>
           </Link>
-          <Link className="ui-button ui-button--ghost ui-button--sm" href={`/bots/new?strategyId=${encodeURIComponent(strategyId)}&pair=${encodeURIComponent(symbol)}`}>
-            <span className="ui-button__icon">
-              <Bot size={15} />
+          {botDraftHref ? (
+            <Link className="ui-button ui-button--ghost ui-button--sm" href={botDraftHref}>
+              <span className="ui-button__icon">
+                <Bot size={15} />
+              </span>
+              <span>Create Bot</span>
+            </Link>
+          ) : (
+            <span aria-disabled="true" className="ui-button ui-button--ghost ui-button--sm is-disabled" title="Run a trusted backtest with these exact inputs first.">
+              <span className="ui-button__icon">
+                <Bot size={15} />
+              </span>
+              <span>Create Bot</span>
             </span>
-            <span>Create Bot</span>
-          </Link>
+          )}
           <HelpPopover items={['Results are saved through the local backend.', 'Use Paper Test before any live automation.']} title="Backtest" />
         </div>
       </div>
@@ -384,6 +446,27 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
           </button>
         </div>
 
+        <div className="backtest-execution-grid" aria-label="Execution settings">
+          <BacktestSelect label="Market Type" onChange={(value) => setMarketType(value as BacktestExecutionSettings['marketType'])} value={marketType}>
+            <option value="perpetual">Perpetual</option>
+            <option value="spot">Spot</option>
+          </BacktestSelect>
+          <BacktestSelect label="Direction" onChange={(value) => setDirectionMode(value as BacktestExecutionSettings['directionMode'])} value={directionMode}>
+            <option value="both">Long + Short</option>
+            <option value="long-only">Long only</option>
+            <option value="short-only">Short only</option>
+          </BacktestSelect>
+          <BacktestNumberField label="Risk / Trade" onChange={setRiskPerTradePct} suffix="%" value={riskPerTradePct} />
+          <BacktestNumberField label="Leverage" onChange={setLeverage} suffix="x" value={leverage} />
+          <BacktestNumberField label="Position Cap" onChange={setPositionCapPct} suffix="%" value={positionCapPct} />
+          <BacktestNumberField label="Stop Loss" onChange={setStopLossAtr} suffix="ATR" value={stopLossAtr} />
+          <BacktestNumberField label="Take Profit" onChange={setTakeProfitR} suffix="R" value={takeProfitR} />
+          <BacktestNumberField label="Trailing Stop" onChange={setTrailingStopAtr} suffix="ATR" value={trailingStopAtr} />
+          <BacktestToggle checked={stopLossEnabled} label="SL ON" onChange={setStopLossEnabled} />
+          <BacktestToggle checked={takeProfitEnabled} label="TP ON" onChange={setTakeProfitEnabled} />
+          <BacktestToggle checked={trailingStopEnabled} label="Trail ON" onChange={setTrailingStopEnabled} />
+        </div>
+
         {presetPanelOpen ? (
           <div className="backtest-preset-panel" aria-label="Saved backtest presets">
             {presets.length ? (
@@ -406,6 +489,10 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
             <SummaryMetric label="Exchange" value={selectedExchange?.name ?? exchangeId} />
             <SummaryMetric label="Mode" value={isResearchAdaptation ? 'Thoon concept adaptation' : 'Public candles only'} />
             <SummaryMetric label="Display Rule" value="Trusted runs only" />
+            <SummaryMetric label="Execution" value={`${marketType} · ${leverage}x · ${riskPerTradePct}% risk`} />
+            <SummaryMetric label="Stops" value={`${stopLossEnabled ? `${stopLossAtr} ATR SL` : 'No SL'} · ${trailingStopEnabled ? `${trailingStopAtr} ATR trail` : 'No trail'}`} />
+            <SummaryMetric label="Take Profit" value={takeProfitEnabled ? `${takeProfitR}R` : 'Disabled'} />
+            <SummaryMetric label="Direction" value={directionMode.replace('-', ' ')} />
           </div>
         ) : null}
 
@@ -417,7 +504,10 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
           <span>{report ? `${report.candleCount ?? 0} candles` : 'Run required'}</span>
           {report?.dataWindow ? <span>{formatRunDate(report.dataWindow.firstCandleAt)} to {formatRunDate(report.dataWindow.lastCandleAt)}</span> : null}
           {report?.dataWindow ? <span>{report.dataWindow.candleChecksum}</span> : null}
+          {report ? <span className="backtest-source-lock">Bot source locked · {report.id} · checksum {report.dataWindow?.candleChecksum?.slice(0, 12) ?? 'missing'}</span> : <span className="backtest-source-lock is-missing">Bot waits for an exact trusted report.</span>}
           <span>{symbol} · {timeframe} · {dateRange}</span>
+          <span>{marketType} · {leverage}x · {riskPerTradePct}% risk · {directionMode.replace('-', ' ')}</span>
+          <span>{stopLossEnabled ? `SL ${stopLossAtr} ATR` : 'No SL'} · {takeProfitEnabled ? `TP ${takeProfitR}R` : 'No TP'} · {trailingStopEnabled ? `Trail ${trailingStopAtr} ATR` : 'No trail'}</span>
           {isResearchAdaptation ? <span>TradingView concept adapted by Thoon engine.</span> : null}
           {strategies.some(isResearchOnlyStrategy) ? <span>Thoon concept adaptation available for agent research strategies.</span> : null}
           <span>Paper only. Live orders still require Risk Engine confirmation.</span>
@@ -438,8 +528,8 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
           />
           {hiddenSeedReports > 0 ? (
             <Card className="backtest-source-note">
-              <strong>Seed samples hidden</strong>
-              <span>{hiddenSeedReports} old sample report{hiddenSeedReports > 1 ? 's are' : ' is'} no longer shown as real data. Run a backtest to calculate from exchange candles.</span>
+              <strong>Legacy reports hidden</strong>
+              <span>{hiddenSeedReports} legacy report{hiddenSeedReports > 1 ? 's are' : ' is'} no longer shown as real data. Run a backtest to calculate from exchange candles.</span>
             </Card>
           ) : null}
           {hiddenInvalidReports > 0 ? (
@@ -496,8 +586,33 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
               <SummaryMetric label="Total Trades" value={String(report.totalTrades)} />
               <SummaryMetric label="Winning Trades" tone="positive" value={String(winningTrades)} />
               <SummaryMetric label="Losing Trades" tone="negative" value={String(losingTrades)} />
+              <SummaryMetric label="Leverage" value={`${report.executionSettings?.leverage ?? leverage}x`} />
+              <SummaryMetric label="Risk / Trade" value={`${report.executionSettings?.riskPerTradePct ?? riskPerTradePct}%`} />
             </div>
           </Card>
+
+          {paperVerdict ? (
+            <Card className="backtest-agent-paper-card">
+              <div className="backtest-panel-head">
+                <div>
+                  <h2>Agent Paper Verdict</h2>
+                  <span>{paperVerdict.reason}</span>
+                </div>
+                <Badge tone={paperVerdict.tone}>{paperVerdict.score}/100</Badge>
+              </div>
+              <div className="backtest-agent-paper-grid">
+                <SummaryMetric label="Decision" tone={paperVerdict.tone} value={paperVerdict.label} />
+                <SummaryMetric label="Rule" tone={paperVerdict.winrateRulePassed ? 'positive' : 'warning'} value={paperVerdict.winrateRulePassed ? 'Winrate OK' : 'Winrate blocked'} />
+                <SummaryMetric label="Evidence" tone={paperVerdict.evidenceScore >= 20 ? 'positive' : 'warning'} value={`${paperVerdict.evidenceScore}/20`} />
+                <SummaryMetric label="Checksum" value={report.dataWindow?.candleChecksum?.slice(0, 12) ?? 'missing'} />
+              </div>
+              <div className="backtest-agent-paper-copy">
+                <strong>{paperVerdict.eligible ? 'Recommended for paper test only' : 'Not recommended for paper test yet'}</strong>
+                <span>{paperVerdict.usagePlan}</span>
+              </div>
+              {paperVerdict.eligible ? <PaperTestRecommendationActions reportId={report.id} strategyId={report.strategyId} /> : null}
+            </Card>
+          ) : null}
 
           <Card className="backtest-tabs-card">
             <div className="backtest-tabs">
@@ -526,6 +641,7 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
               <SummaryMetric label="Max Drawdown" tone="negative" value={`${report.drawdown.toFixed(1)}%`} />
               <SummaryMetric label="Candles Used" value={String(report.candleCount ?? 0)} />
               <SummaryMetric label="Fees + Slip" value={`${((report.feesPct ?? fees) + (report.slippagePct ?? slippage)).toFixed(2)}%`} />
+              <SummaryMetric label="Execution" value={`${report.executionSettings?.marketType ?? marketType} · ${report.executionSettings?.directionMode?.replace('-', ' ') ?? directionMode.replace('-', ' ')}`} />
             </div>
             <LineChartSvg className="drawdown-line" fill values={drawdownSeries} />
           </Card>
@@ -545,6 +661,12 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
               <span className="ui-button__icon"><RotateCcw size={15} /></span>
               <span>Paper Test</span>
             </Link>
+            {botDraftHref ? (
+              <Link className="ui-button ui-button--ghost" href={botDraftHref}>
+                <span className="ui-button__icon"><Bot size={15} /></span>
+                <span>Create Bot</span>
+              </Link>
+            ) : null}
           </Card>
         </div>
       )}
@@ -590,6 +712,7 @@ function isBacktestPreset(value: unknown): value is BacktestPreset {
   return (
     typeof preset.dateRange === 'string' &&
     typeof preset.exchangeId === 'string' &&
+    isBacktestExecutionSettings(preset.executionSettings) &&
     typeof preset.fees === 'number' &&
     typeof preset.id === 'string' &&
     typeof preset.initialCapital === 'number' &&
@@ -598,6 +721,28 @@ function isBacktestPreset(value: unknown): value is BacktestPreset {
     typeof preset.strategyId === 'string' &&
     typeof preset.symbol === 'string' &&
     typeof preset.timeframe === 'string'
+  );
+}
+
+function isBacktestExecutionSettings(value: unknown): value is BacktestExecutionSettings {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const settings = value as Partial<BacktestExecutionSettings>;
+
+  return (
+    (settings.directionMode === 'both' || settings.directionMode === 'long-only' || settings.directionMode === 'short-only') &&
+    (settings.marketType === 'perpetual' || settings.marketType === 'spot') &&
+    typeof settings.leverage === 'number' &&
+    typeof settings.positionCapPct === 'number' &&
+    typeof settings.riskPerTradePct === 'number' &&
+    typeof settings.stopLossAtr === 'number' &&
+    typeof settings.stopLossEnabled === 'boolean' &&
+    typeof settings.takeProfitEnabled === 'boolean' &&
+    typeof settings.takeProfitR === 'number' &&
+    typeof settings.trailingStopAtr === 'number' &&
+    typeof settings.trailingStopEnabled === 'boolean'
   );
 }
 
@@ -649,6 +794,14 @@ function BacktestNumberField({ label, onChange, suffix, value }: { label: string
         <small>{suffix}</small>
       </div>
     </label>
+  );
+}
+
+function BacktestToggle({ checked, label, onChange }: { checked: boolean; label: string; onChange: (value: boolean) => void }) {
+  return (
+    <button aria-pressed={checked} className={`backtest-toggle${checked ? ' is-on' : ''}`} onClick={() => onChange(!checked)} type="button">
+      <span>{label}</span>
+    </button>
   );
 }
 
@@ -779,6 +932,10 @@ function TradeDetailPanel({ symbol, trade }: { symbol: string; trade: BacktestTr
         <SummaryMetric label="PnL" tone={trade.pnl >= 0 ? 'positive' : 'negative'} value={formatUsd(trade.pnl)} />
         <SummaryMetric label="R Multiple" tone={trade.rMultiple >= 0 ? 'positive' : 'negative'} value={`${trade.rMultiple.toFixed(2)}R`} />
         <SummaryMetric label="Size" value={trade.size.toFixed(4)} />
+        <SummaryMetric label="Leverage" value={`${trade.leverage ?? 1}x`} />
+        <SummaryMetric label="Margin" value={formatUsd(trade.margin ?? trade.entry * trade.size)} />
+        <SummaryMetric label="Stop" value={trade.stop ? formatUsd(trade.stop) : 'Disabled'} />
+        <SummaryMetric label="Take Profit" value={trade.takeProfit ? formatUsd(trade.takeProfit) : 'Disabled'} />
         <SummaryMetric label="Fees" value={formatUsd(trade.fee)} />
         <SummaryMetric label="Entry Time" value={formatTradeDateTime(trade.entryTime)} />
         <SummaryMetric label="Exit Time" value={formatTradeDateTime(trade.exitTime)} />
@@ -850,6 +1007,7 @@ function isTrustedBacktestReport(report: BacktestReport) {
     Boolean(report.dataWindow?.firstCandleAt) &&
     Boolean(report.dataWindow?.lastCandleAt) &&
     Number.isFinite(report.candleCount) &&
+    isBacktestExecutionSettings(report.executionSettings) &&
     Array.isArray(report.equityCurve) &&
     report.equityCurve.length > 0 &&
     Array.isArray(report.buyHoldCurve) &&
@@ -863,6 +1021,49 @@ function isTrustedBacktestReport(report: BacktestReport) {
 
 function isTrustedBacktestEngine(engine: BacktestReport['engine']) {
   return engine === 'jimmy-pine-v5-candle-engine' || engine === 'thoon-concept-candle-engine';
+}
+
+function assessBacktestPaperReadiness(report: BacktestReport, settings: AgentSettings) {
+  const profitable = report.netProfit > 0 && report.profitFactor > 1;
+  const winrateRulePassed = profitable && (report.winRate >= 80 || report.winRate < 50);
+  const enoughTrades = report.totalTrades >= settings.limits.minTrades;
+  const drawdownOk = Math.abs(report.drawdown) <= settings.limits.maxDrawdownCandidate;
+  const profitFactorOk = report.profitFactor >= settings.limits.minProfitFactor;
+  const evidenceScore =
+    (report.source === 'calculated' ? 4 : 0) +
+    (report.marketDataSource === 'binance-live' || Boolean(report.marketDataSource?.endsWith('-public-rest')) ? 4 : 0) +
+    (report.dataWindow?.candleChecksum ? 4 : 0) +
+    (report.executionSettings ? 4 : 0) +
+    (Array.isArray(report.equityCurve) && report.equityCurve.length > 0 ? 4 : 0);
+  const profitScore = profitable ? Math.min(25, 8 + report.profitFactor * 7 + Math.max(0, Math.min(8, report.netProfit / 10))) : 0;
+  const winrateScore = winrateRulePassed ? 20 : profitable ? 7 : 0;
+  const drawdownScore = Math.max(0, 20 - (Math.abs(report.drawdown) / Math.max(settings.limits.maxDrawdownCandidate, 1)) * 20);
+  const sampleScore = Math.min(15, (report.totalTrades / Math.max(settings.limits.minTrades, 1)) * 15);
+  let score = Math.round(evidenceScore + profitScore + winrateScore + drawdownScore + sampleScore);
+
+  if (!profitable) {
+    score = Math.min(score, 49);
+  } else if (!winrateRulePassed) {
+    score = Math.min(score, 69);
+  } else if (!enoughTrades || !drawdownOk || !profitFactorOk || evidenceScore < 20) {
+    score = Math.min(score, 79);
+  }
+
+  const eligible = profitable && winrateRulePassed && enoughTrades && drawdownOk && profitFactorOk && evidenceScore >= 20;
+  const label = eligible ? 'paper_test' : profitable ? 'watch' : 'do_not_use';
+
+  return {
+    eligible,
+    evidenceScore,
+    label,
+    reason: eligible ? 'Worth paper validation, not live automation.' : profitable ? 'Promising, but at least one paper-test gate is still blocked.' : 'Not worth paper testing from current evidence.',
+    score: Math.max(0, Math.min(100, score)),
+    tone: eligible ? ('positive' as const) : profitable ? ('warning' as const) : ('negative' as const),
+    usagePlan: eligible
+      ? `Use only ${report.market ?? 'tested market'} ${report.timeframe ?? 'tested timeframe'} with ${report.executionSettings?.marketType ?? 'market'} execution and ${report.executionSettings?.riskPerTradePct ?? 0}% risk per trade.`
+      : 'Continue backtesting or let the agent create a stronger variant.',
+    winrateRulePassed,
+  };
 }
 
 function formatTradeDate(value: string) {
@@ -903,6 +1104,103 @@ function formatExitReason(value: BacktestTrade['exitReason']) {
     .split('-')
     .map((part) => titleCase(part))
     .join(' ');
+}
+
+function defaultBacktestExecutionSettings(strategy?: Strategy): BacktestExecutionSettings {
+  return {
+    directionMode: 'both',
+    leverage: 3,
+    marketType: 'perpetual',
+    positionCapPct: 100,
+    riskPerTradePct: clampBacktestNumber(strategy?.riskPerTrade ?? 1, 0.01, 10, 1),
+    stopLossAtr: clampBacktestNumber(firstNumber(strategy?.riskSettings?.stopLoss), 0.1, 20, 1.5),
+    stopLossEnabled: strategy?.riskSettings?.stopRequired ?? true,
+    takeProfitEnabled: true,
+    takeProfitR: clampBacktestNumber(strategy?.riskSettings?.rrTarget ?? 2, 0.1, 20, 2),
+    trailingStopAtr: clampBacktestNumber(trailingAtrDefault(strategy?.riskSettings?.takeProfit), 0.1, 20, 2),
+    trailingStopEnabled: strategy?.riskSettings?.trailingStop ?? true,
+  };
+}
+
+function buildBacktestBotDraftHref(report: BacktestReport) {
+  const params = new URLSearchParams({
+    reportId: report.id,
+    strategyId: report.strategyId,
+  });
+
+  if (report.market) {
+    params.set('pair', report.market);
+  }
+
+  if (report.timeframe) {
+    params.set('timeframe', report.timeframe);
+  }
+
+  return `/bots/new?${params.toString()}`;
+}
+
+function buildBotDraftHrefFromSelection(strategyId: string, symbol: string, timeframe: Timeframe) {
+  const params = new URLSearchParams({
+    strategyId,
+    pair: symbol,
+    timeframe,
+  });
+
+  return `/bots/new?${params.toString()}`;
+}
+
+function normalizeBacktestTimeframe(value: string | undefined): Timeframe | undefined {
+  return timeframes.includes(value as Timeframe) ? (value as Timeframe) : undefined;
+}
+
+function sameReportInputCosts(report: BacktestReport, initialCapital: number, fees: number, slippage: number) {
+  return sameBacktestNumber(report.initialCapital ?? 10000, initialCapital) && sameBacktestNumber(report.feesPct ?? 0.06, fees) && sameBacktestNumber(report.slippagePct ?? 0.02, slippage);
+}
+
+function sameBacktestNumber(left: number, right: number) {
+  return Math.abs(left - right) < 0.0001;
+}
+
+function sameExecutionSettings(left: BacktestExecutionSettings | undefined, right: BacktestExecutionSettings) {
+  if (!left) {
+    return false;
+  }
+
+  return (
+    left.directionMode === right.directionMode &&
+    left.marketType === right.marketType &&
+    left.stopLossEnabled === right.stopLossEnabled &&
+    left.takeProfitEnabled === right.takeProfitEnabled &&
+    left.trailingStopEnabled === right.trailingStopEnabled &&
+    Math.abs(left.leverage - right.leverage) < 0.0001 &&
+    Math.abs(left.positionCapPct - right.positionCapPct) < 0.0001 &&
+    Math.abs(left.riskPerTradePct - right.riskPerTradePct) < 0.0001 &&
+    Math.abs(left.stopLossAtr - right.stopLossAtr) < 0.0001 &&
+    Math.abs(left.takeProfitR - right.takeProfitR) < 0.0001 &&
+    Math.abs(left.trailingStopAtr - right.trailingStopAtr) < 0.0001
+  );
+}
+
+function firstNumber(value: string | undefined) {
+  const parsed = Number(value?.match(/(\d+(?:\.\d+)?)/)?.[1]);
+
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function trailingAtrDefault(value: string | undefined) {
+  const explicitAtr =
+    value?.match(/(?:trail(?:ing)?(?:\s+stop)?\s*)?(\d+(?:\.\d+)?)\s*x?\s*atr/i)?.[1] ??
+    value?.match(/atr\s*(\d+(?:\.\d+)?)x/i)?.[1] ??
+    value?.match(/trail(?:ing)?(?:\s+stop)?\s*(\d+(?:\.\d+)?)\s*x/i)?.[1];
+  const parsed = explicitAtr ? Number(explicitAtr) : undefined;
+
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function clampBacktestNumber(value: number | undefined, min: number, max: number, fallback: number) {
+  const nextValue = typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+
+  return Math.min(max, Math.max(min, nextValue));
 }
 
 function slugFileName(value: string) {

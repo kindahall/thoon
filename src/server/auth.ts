@@ -90,7 +90,7 @@ export function parseSessionCookieValue(value?: string): SessionPayload | undefi
 
   const [payload, signature] = value.split('.');
 
-  if (!payload || !signature || signSessionPayload(payload) !== signature) {
+  if (!payload || !signature || !constantTimeStringEqual(signSessionPayload(payload), signature)) {
     return undefined;
   }
 
@@ -179,13 +179,23 @@ export function getAuthProductionStatus() {
   return {
     hasAdminPasswordHash: Boolean(env.thoonAdminPasswordHash),
     hasProductionEncryptionKey: hasProductionEncryptionKey(env.encryptionKey),
-    hasProductionSessionSecret: env.authSessionSecret.length >= 32 && env.authSessionSecret !== 'dev-local-session-secret-change-before-prod',
+    hasProductionSessionSecret:
+      env.authSessionSecret.length >= 32 &&
+      env.authSessionSecret !== 'dev-local-session-secret-change-before-prod' &&
+      env.authSessionSecret !== 'replace-with-a-long-random-session-secret',
     mode: env.authMode,
   };
 }
 
 function signSessionPayload(payload: string) {
   return createHmac('sha256', getThoonServerEnv().authSessionSecret).update(payload).digest('base64url');
+}
+
+function constantTimeStringEqual(left: string, right: string) {
+  const leftValue = Buffer.from(left);
+  const rightValue = Buffer.from(right);
+
+  return leftValue.length === rightValue.length && timingSafeEqual(leftValue, rightValue);
 }
 
 function isStoredSessionActive(payload: SessionPayload) {

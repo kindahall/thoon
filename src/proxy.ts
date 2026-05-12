@@ -5,7 +5,7 @@ const thoonSessionCookieName = 'thoon_session';
 const defaultSessionSecret = 'dev-local-session-secret-change-before-prod';
 
 export async function proxy(request: NextRequest) {
-  if (process.env.THOON_AUTH_MODE !== 'local-required') {
+  if (!isAuthRequiredAtEdge()) {
     return NextResponse.next();
   }
 
@@ -15,9 +15,13 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
+  if (isAuthorizedCronRequest(request)) {
+    return NextResponse.next();
+  }
+
   const hasValidSession = await verifySessionCookie(request.cookies.get(thoonSessionCookieName)?.value);
 
-  if (hasValidSession) {
+  if (hasValidSession && (await verifyStoredSession(request))) {
     return NextResponse.next();
   }
 
@@ -38,6 +42,50 @@ export const config = {
 
 function isPublicPath(pathname: string) {
   return pathname === '/login' || pathname.startsWith('/api/auth') || pathname.startsWith('/_next') || pathname === '/favicon.ico' || pathname === '/thoon-mark.svg';
+}
+
+function isAuthorizedCronRequest(request: NextRequest) {
+  return (
+    isAgentCronPath(request.nextUrl.pathname) &&
+    Boolean(process.env.THOON_CRON_SECRET) &&
+    request.headers.get('authorization') === `Bearer ${process.env.THOON_CRON_SECRET}`
+  );
+}
+
+function isAgentCronPath(pathname: string) {
+  return pathname === '/api/agent/cron' || pathname === '/api/agent/progress';
+}
+
+function isAuthRequiredAtEdge() {
+  if (process.env.THOON_AUTH_MODE === 'local-required') {
+    return true;
+  }
+
+  if (process.env.THOON_AUTH_MODE === 'local-disabled') {
+    return false;
+  }
+
+  return process.env.NODE_ENV === 'production';
+}
+
+async function verifyStoredSession(request: NextRequest) {
+  try {
+    const url = request.nextUrl.clone();
+    url.pathname = '/api/auth/session';
+    url.search = '';
+
+    const response = await fetch(url, {
+      cache: 'no-store',
+      headers: {
+        cookie: request.headers.get('cookie') ?? '',
+        'x-thoon-proxy-session-check': '1',
+      },
+    });
+
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 async function verifySessionCookie(value?: string) {

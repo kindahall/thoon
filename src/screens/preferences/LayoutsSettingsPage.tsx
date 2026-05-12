@@ -5,31 +5,14 @@ import { useMemo, useState } from 'react';
 
 import { PreferencesSectionNav } from '../../components/preferences/PreferencesSectionNav';
 import { Badge, Button, Card, EmptyState, HelpPopover } from '../../components/ui';
+import { patchJson } from '../../services/api-client';
+import type { UserPreferences, WorkspaceLayoutKind, WorkspaceLayoutSettings } from '../../types/trading';
 import { cn } from '../../utils/classNames';
 
-type WorkspaceLayoutKind = 'single' | 'multi' | 'bot' | 'backtest' | 'journal' | 'custom';
-type SidebarBehavior = 'expanded' | 'compact' | 'auto';
-type PanelDocking = 'right' | 'bottom' | 'floating';
-
-type WorkspaceVisibility = {
-  alertsPanel: boolean;
-  bottomPanel: boolean;
-  newsFeed: boolean;
-  orderPanel: boolean;
-  primaryChart: boolean;
-  rightPanel: boolean;
-  watchlist: boolean;
-};
-
-type SavedWorkspaceLayout = {
-  default?: boolean;
-  id: string;
-  kind: WorkspaceLayoutKind;
-  name: string;
-  panels: string;
-  settings: WorkspaceVisibility;
-  updatedAt: string;
-};
+type SidebarBehavior = WorkspaceLayoutSettings['sidebarBehavior'];
+type PanelDocking = WorkspaceLayoutSettings['panelDocking'];
+type WorkspaceVisibility = WorkspaceLayoutSettings['layouts'][number]['settings'];
+type SavedWorkspaceLayout = WorkspaceLayoutSettings['layouts'][number];
 
 const baseLayouts: SavedWorkspaceLayout[] = [
   {
@@ -93,13 +76,34 @@ const visibilityControls: Array<{ key: keyof WorkspaceVisibility; label: string 
   { key: 'newsFeed', label: 'News Feed' },
 ];
 
-export function LayoutsSettingsPage() {
-  const [layouts, setLayouts] = useState(baseLayouts);
-  const [activeLayoutId, setActiveLayoutId] = useState(baseLayouts[0].id);
-  const [selectedLayoutId, setSelectedLayoutId] = useState(baseLayouts[0].id);
-  const [defaultLayoutId, setDefaultLayoutId] = useState(baseLayouts[0].id);
-  const [sidebarBehavior, setSidebarBehavior] = useState<SidebarBehavior>('expanded');
-  const [panelDocking, setPanelDocking] = useState<PanelDocking>('right');
+function normalizeWorkspaceLayoutSettings(settings: UserPreferences['workspaceLayouts']): WorkspaceLayoutSettings {
+  const layouts = settings?.layouts?.length ? settings.layouts : baseLayouts;
+  const firstLayoutId = layouts[0]?.id ?? 'single-chart';
+  const requestedActiveLayoutId = settings?.activeLayoutId;
+  const requestedDefaultLayoutId = settings?.defaultLayoutId;
+
+  return {
+    activeLayoutId: requestedActiveLayoutId && layouts.some((layout) => layout.id === requestedActiveLayoutId) ? requestedActiveLayoutId : firstLayoutId,
+    defaultLayoutId: requestedDefaultLayoutId && layouts.some((layout) => layout.id === requestedDefaultLayoutId) ? requestedDefaultLayoutId : firstLayoutId,
+    layouts,
+    panelDocking: settings?.panelDocking ?? 'right',
+    sidebarBehavior: settings?.sidebarBehavior ?? 'expanded',
+    updatedAt: settings?.updatedAt ?? new Date(0).toISOString(),
+  };
+}
+
+type LayoutsSettingsPageProps = {
+  preferences: UserPreferences;
+};
+
+export function LayoutsSettingsPage({ preferences }: LayoutsSettingsPageProps) {
+  const initialSettings = normalizeWorkspaceLayoutSettings(preferences.workspaceLayouts);
+  const [layouts, setLayouts] = useState(initialSettings.layouts);
+  const [activeLayoutId, setActiveLayoutId] = useState(initialSettings.activeLayoutId);
+  const [selectedLayoutId, setSelectedLayoutId] = useState(initialSettings.activeLayoutId);
+  const [defaultLayoutId, setDefaultLayoutId] = useState(initialSettings.defaultLayoutId);
+  const [sidebarBehavior, setSidebarBehavior] = useState<SidebarBehavior>(initialSettings.sidebarBehavior);
+  const [panelDocking, setPanelDocking] = useState<PanelDocking>(initialSettings.panelDocking);
   const [saveStatus, setSaveStatus] = useState('Ready');
   const selectedLayout = layouts.find((layout) => layout.id === selectedLayoutId) ?? layouts[0];
   const activeLayout = layouts.find((layout) => layout.id === activeLayoutId) ?? selectedLayout;
@@ -108,10 +112,19 @@ export function LayoutsSettingsPage() {
   const visibleCount = useMemo(() => Object.values(visibility).filter(Boolean).length, [visibility]);
 
   function applyLayout(layout: SavedWorkspaceLayout) {
+    const nextSettings = layout.settings;
+
     setActiveLayoutId(layout.id);
     setSelectedLayoutId(layout.id);
-    setVisibility(layout.settings);
-    setSaveStatus(`Applied ${layout.name}`);
+    setVisibility(nextSettings);
+    void persistLayouts({
+      activeLayoutId: layout.id,
+      defaultLayoutId,
+      layouts,
+      panelDocking,
+      sidebarBehavior,
+      updatedAt: new Date().toISOString(),
+    }, `Applied ${layout.name}`);
   }
 
   function duplicateLayout(layout: SavedWorkspaceLayout) {
@@ -123,9 +136,18 @@ export function LayoutsSettingsPage() {
       updatedAt: 'Now',
     };
 
-    setLayouts((current) => [nextLayout, ...current]);
+    const nextLayouts = [nextLayout, ...layouts];
+
+    setLayouts(nextLayouts);
     setSelectedLayoutId(nextLayout.id);
-    setSaveStatus('Duplicated');
+    void persistLayouts({
+      activeLayoutId,
+      defaultLayoutId,
+      layouts: nextLayouts,
+      panelDocking,
+      sidebarBehavior,
+      updatedAt: new Date().toISOString(),
+    }, 'Duplicated');
   }
 
   function deleteLayout(layoutId: string) {
@@ -133,16 +155,36 @@ export function LayoutsSettingsPage() {
       return;
     }
 
-    setLayouts((current) => current.filter((layout) => layout.id !== layoutId));
-    setSelectedLayoutId(activeLayoutId);
-    setSaveStatus('Deleted');
+    const nextLayouts = layouts.filter((layout) => layout.id !== layoutId);
+    const nextActiveLayoutId = activeLayoutId === layoutId ? nextLayouts[0].id : activeLayoutId;
+    const nextDefaultLayoutId = defaultLayoutId === layoutId ? nextLayouts[0].id : defaultLayoutId;
+
+    setLayouts(nextLayouts);
+    setActiveLayoutId(nextActiveLayoutId);
+    setDefaultLayoutId(nextDefaultLayoutId);
+    setSelectedLayoutId(nextActiveLayoutId);
+    void persistLayouts({
+      activeLayoutId: nextActiveLayoutId,
+      defaultLayoutId: nextDefaultLayoutId,
+      layouts: nextLayouts,
+      panelDocking,
+      sidebarBehavior,
+      updatedAt: new Date().toISOString(),
+    }, 'Deleted');
   }
 
   function saveCurrentLayout() {
-    setLayouts((current) =>
-      current.map((layout) => (layout.id === activeLayoutId ? { ...layout, settings: visibility, updatedAt: 'Now' } : layout)),
-    );
-    setSaveStatus('Saved');
+    const nextLayouts = layouts.map((layout) => (layout.id === activeLayoutId ? { ...layout, settings: visibility, updatedAt: new Date().toISOString() } : layout));
+
+    setLayouts(nextLayouts);
+    void persistLayouts({
+      activeLayoutId,
+      defaultLayoutId,
+      layouts: nextLayouts,
+      panelDocking,
+      sidebarBehavior,
+      updatedAt: new Date().toISOString(),
+    }, 'Saved');
   }
 
   function resetLayout() {
@@ -152,6 +194,60 @@ export function LayoutsSettingsPage() {
 
   function toggleVisibility(key: keyof WorkspaceVisibility) {
     setVisibility((current) => ({ ...current, [key]: !current[key] }));
+  }
+
+  function updateDefaultLayout(nextDefaultLayoutId: string) {
+    setDefaultLayoutId(nextDefaultLayoutId);
+    void persistLayouts({
+      activeLayoutId,
+      defaultLayoutId: nextDefaultLayoutId,
+      layouts,
+      panelDocking,
+      sidebarBehavior,
+      updatedAt: new Date().toISOString(),
+    }, 'Default saved');
+  }
+
+  function updateSidebarBehavior(nextSidebarBehavior: SidebarBehavior) {
+    setSidebarBehavior(nextSidebarBehavior);
+    void persistLayouts({
+      activeLayoutId,
+      defaultLayoutId,
+      layouts,
+      panelDocking,
+      sidebarBehavior: nextSidebarBehavior,
+      updatedAt: new Date().toISOString(),
+    }, 'Sidebar saved');
+  }
+
+  function updatePanelDocking(nextPanelDocking: PanelDocking) {
+    setPanelDocking(nextPanelDocking);
+    void persistLayouts({
+      activeLayoutId,
+      defaultLayoutId,
+      layouts,
+      panelDocking: nextPanelDocking,
+      sidebarBehavior,
+      updatedAt: new Date().toISOString(),
+    }, 'Docking saved');
+  }
+
+  async function persistLayouts(settings: WorkspaceLayoutSettings, successStatus: string) {
+    setSaveStatus('Saving');
+
+    try {
+      const updatedPreferences = await patchJson<UserPreferences>('/api/preferences', { workspaceLayouts: settings });
+      const persistedSettings = normalizeWorkspaceLayoutSettings(updatedPreferences.workspaceLayouts);
+
+      setLayouts(persistedSettings.layouts);
+      setActiveLayoutId(persistedSettings.activeLayoutId);
+      setDefaultLayoutId(persistedSettings.defaultLayoutId);
+      setSidebarBehavior(persistedSettings.sidebarBehavior);
+      setPanelDocking(persistedSettings.panelDocking);
+      setSaveStatus(successStatus);
+    } catch (error) {
+      setSaveStatus(error instanceof Error ? error.message : 'Save failed');
+    }
   }
 
   return (
@@ -168,7 +264,7 @@ export function LayoutsSettingsPage() {
           <Button icon={<Save size={15} />} onClick={saveCurrentLayout} size="sm" variant="primary">
             Save Current
           </Button>
-          <HelpPopover items={['Apply changes the preview immediately.', 'Saved layouts stay local until a shared layout store is enabled.']} title="Layouts" />
+          <HelpPopover items={['Apply changes the preview immediately.', 'Saved layouts are persisted in the Thoon local data store.']} title="Layouts" />
         </div>
       </div>
 
@@ -233,7 +329,7 @@ export function LayoutsSettingsPage() {
                 <div className="workspace-control-grid">
                   <label className="workspace-select-control">
                     <span>Set Default Workspace</span>
-                    <select value={defaultLayoutId} onChange={(event) => setDefaultLayoutId(event.target.value)}>
+                    <select value={defaultLayoutId} onChange={(event) => updateDefaultLayout(event.target.value)}>
                       {layouts.map((layout) => (
                         <option key={layout.id} value={layout.id}>
                           {layout.name}
@@ -249,7 +345,7 @@ export function LayoutsSettingsPage() {
                   </div>
                   <label className="workspace-select-control">
                     <span>Sidebar Behavior</span>
-                    <select value={sidebarBehavior} onChange={(event) => setSidebarBehavior(event.target.value as SidebarBehavior)}>
+                    <select value={sidebarBehavior} onChange={(event) => updateSidebarBehavior(event.target.value as SidebarBehavior)}>
                       <option value="expanded">Expanded</option>
                       <option value="compact">Compact</option>
                       <option value="auto">Auto Hide</option>
@@ -257,7 +353,7 @@ export function LayoutsSettingsPage() {
                   </label>
                   <label className="workspace-select-control">
                     <span>Panel Docking</span>
-                    <select value={panelDocking} onChange={(event) => setPanelDocking(event.target.value as PanelDocking)}>
+                    <select value={panelDocking} onChange={(event) => updatePanelDocking(event.target.value as PanelDocking)}>
                       <option value="right">Smart Docking</option>
                       <option value="bottom">Bottom Dock</option>
                       <option value="floating">Floating</option>

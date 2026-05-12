@@ -26,7 +26,7 @@ const tradingErrorDefinitions: Record<TradingErrorCode, TradingErrorDefinition> 
   'api-disconnected': {
     code: 'api-disconnected',
     correctiveAction: 'Reconnect the exchange or switch to paper mode.',
-    href: '/preferences/exchange-api',
+    href: '/exchanges',
     primaryActionLabel: 'Reconnect API',
     reason: 'The selected exchange is not connected for trading.',
     secondaryActionLabel: 'Use Paper',
@@ -71,7 +71,7 @@ const tradingErrorDefinitions: Record<TradingErrorCode, TradingErrorDefinition> 
   'exchange-unavailable': {
     code: 'exchange-unavailable',
     correctiveAction: 'Wait for exchange recovery or use another venue.',
-    href: '/preferences/exchange-api',
+    href: '/exchanges',
     primaryActionLabel: 'Check Exchange',
     reason: 'The venue is temporarily unavailable.',
     secondaryActionLabel: 'Cancel',
@@ -89,7 +89,7 @@ const tradingErrorDefinitions: Record<TradingErrorCode, TradingErrorDefinition> 
   'invalid-api-permissions': {
     code: 'invalid-api-permissions',
     correctiveAction: 'Enable required read/trade permissions without withdrawals.',
-    href: '/preferences/exchange-api',
+    href: '/exchanges',
     primaryActionLabel: 'Fix Permissions',
     reason: 'The API key does not allow the requested action.',
     secondaryActionLabel: 'Cancel',
@@ -98,7 +98,7 @@ const tradingErrorDefinitions: Record<TradingErrorCode, TradingErrorDefinition> 
   'ip-not-whitelisted': {
     code: 'ip-not-whitelisted',
     correctiveAction: 'Add the current server IP to the exchange whitelist.',
-    href: '/preferences/exchange-api',
+    href: '/exchanges',
     primaryActionLabel: 'Update IP',
     reason: 'The exchange rejected the request from this IP.',
     secondaryActionLabel: 'Cancel',

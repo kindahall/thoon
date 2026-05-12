@@ -16,13 +16,13 @@ export const strategies: Strategy[] = [
         { label: 'RSI', value: '14 oversold 30 / overbought 70' },
         { label: 'ATR exits', value: 'SL 1.5x / trail 2.0x' },
         { label: 'Recovery', value: 'DD/DU 10% -> 5%' },
-        { label: 'Codex adaptation', value: 'Tune only inputs per symbol/timeframe; never replace jimmy logic.' },
+        { label: 'Thoonix adaptation', value: 'Tune only inputs per symbol/timeframe; never replace jimmy logic.' },
       ],
       protectedCore: true,
       sourceCode: jimmyPineSource,
       sourceId: JIMMY_SOURCE_ID,
       summary:
-        'Protected Pine v5 core strategy: TRIX, Donchian, RSI, ATR exits, drawdown long recovery and drawup short recovery. Codex may adapt parameters by crypto and timeframe, while other named strategies remain separate records.',
+        'Protected Pine v5 core strategy: TRIX, Donchian, RSI, ATR exits, drawdown long recovery and drawup short recovery. Thoonix may adapt parameters by crypto and timeframe, while other named strategies remain separate records.',
     },
     entryConditions: [
       { connector: 'IF', field: 'TRIX Long', id: 'jimmy-entry-long-trix', operator: 'crosses-above', value: 'TRIX crosses signal while close > MA 200' },
@@ -64,7 +64,7 @@ export const strategies: Strategy[] = [
     },
     setupSnapshot: {
       notes:
-        'jimmy is the protected core strategy in Thoon. Codex can create named strategy records and variants, but the original Pine source stays protected.',
+        'jimmy is the protected core strategy in Thoon. Thoonix can create named strategy records and variants, but the original Pine source stays protected.',
     },
     status: 'active',
     timeframe: '1h',

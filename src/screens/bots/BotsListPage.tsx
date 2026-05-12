@@ -79,9 +79,9 @@ export function BotsListPage({ alerts, bots, strategies }: BotsListPageProps) {
           <p>Deploy, monitor, and manage your trading bots.</p>
         </div>
         <div className="workspace-header__right">
-          <Link className="bot-create-link" href="/bots/new">
+          <Link className="bot-create-link" href="/backtest">
             <Plus size={15} />
-            Create Bot
+            Backtest avant bot
           </Link>
           <HelpPopover items={['Pause and stop persist through the API.', 'Live bots require confirmation before launch.']} title="Bots" />
         </div>
@@ -98,9 +98,9 @@ export function BotsListPage({ alerts, bots, strategies }: BotsListPageProps) {
         <Card className="bots-table-card">
           {bots.length === 0 ? (
             <EmptyState
-              actionHref="/bots/new"
-              actionLabel="Create Bot"
-              description="Build a paper bot from a saved strategy."
+              actionHref="/backtest"
+              actionLabel="Backtest avant bot"
+              description="Build a paper bot from a verified backtest report."
               icon={<BotIcon size={20} />}
               secondaryActionHref="/strategies"
               secondaryActionLabel="Browse Strategies"
@@ -173,9 +173,9 @@ export function BotsListPage({ alerts, bots, strategies }: BotsListPageProps) {
                   })
                 ) : (
                   <EmptyState
-                    actionHref="/bots/new"
-                    actionLabel="Create Bot"
-                    description="Adjust search or create a new paper bot."
+                    actionHref="/backtest"
+                    actionLabel="Backtest avant bot"
+                    description="Adjust search or create a paper bot from a verified report."
                     icon={<Search size={20} />}
                     title="No match"
                   />

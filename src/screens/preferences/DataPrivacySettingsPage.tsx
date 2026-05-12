@@ -244,9 +244,9 @@ function privacyActionTitle(action: PrivacyAction) {
 function privacyActionCopy(action: PrivacyAction) {
   switch (action) {
     case 'export-data':
-      return 'A real backend would prepare an encrypted export archive.';
+      return 'The local backend will prepare a JSON export of account and activity data.';
     case 'download-report':
-      return 'A real backend would generate the selected privacy report.';
+      return 'The local backend will generate the selected privacy report.';
     case 'delete-account':
       return 'This action must be confirmed before permanently deleting account data.';
     default:

@@ -7,12 +7,14 @@ export const dynamic = 'force-dynamic';
 type BacktestRouteProps = {
   searchParams: Promise<{
     pair?: string;
+    reportId?: string;
     strategyId?: string;
+    timeframe?: string;
   }>;
 };
 
 export default async function BacktestRoute({ searchParams }: BacktestRouteProps) {
-  const { pair, strategyId } = await searchParams;
+  const { pair, reportId, strategyId, timeframe } = await searchParams;
   const marketPairs = await listMarketPairs();
 
   return (
@@ -24,7 +26,9 @@ export default async function BacktestRoute({ searchParams }: BacktestRouteProps
       agentVersions={listStrategyVersions()}
       exchangeConnections={listExchangeConnections()}
       initialPair={pair}
+      initialReportId={reportId}
       initialStrategyId={strategyId}
+      initialTimeframe={timeframe}
       marketPairs={marketPairs}
       reports={listBacktestReports()}
       strategies={listStrategies()}

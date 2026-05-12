@@ -28,6 +28,23 @@ type BinanceKline = [
   string,
 ];
 
+type BinanceFuturesExchangeInfo = {
+  symbols?: Array<{
+    contractType?: string;
+    onboardDate?: number;
+    quoteAsset?: string;
+    status?: string;
+    symbol: string;
+  }>;
+};
+
+type BinanceMarketType = 'futures' | 'perpetual' | 'spot';
+
+type BinanceCandleOptions = {
+  marketType?: BinanceMarketType;
+  strict?: boolean;
+};
+
 const timeframeIntervals: Record<Timeframe, string> = {
   '1M': '1M',
   '1d': '1d',
@@ -43,6 +60,8 @@ const timeframeIntervals: Record<Timeframe, string> = {
 };
 
 const maxBinanceKlinePageSize = 1000;
+const livePairLimit = 100;
+const minimumAgentListingAgeMs = 45 * 24 * 60 * 60 * 1000;
 
 const symbolAliases: Record<string, string> = {
   'RNDR/USDT': 'RENDERUSDT',
@@ -64,18 +83,23 @@ export async function getBinanceMarketDataSnapshot(seedPairs: MarketPair[], seed
   }
 
   try {
-    const tickers = await fetchBinanceJson<BinanceTicker[]>('/api/v3/ticker/24hr');
+    const [tickers, exchangeInfo] = await Promise.all([
+      fetchBinanceJson<BinanceTicker[]>('/fapi/v1/ticker/24hr', {}, 'perpetual'),
+      fetchBinanceJson<BinanceFuturesExchangeInfo>('/fapi/v1/exchangeInfo', {}, 'perpetual'),
+    ]);
+    const tradableFuturesSymbols = buildTradableFuturesSymbolSet(exchangeInfo);
     const tickerMap = new Map(tickers.map((ticker) => [ticker.symbol, ticker]));
-    const enrichedPairs = await enrichPairsWithBinance(seedPairs, tickerMap);
+    const livePairs = buildLivePairsWithBinance(seedPairs, tickers, tradableFuturesSymbols);
+    const enrichedPairs = await enrichPairsWithBinance(livePairs, tickerMap);
     const overview = buildOverview(seedOverview, enrichedPairs);
     const warnings = seedPairs
-      .filter((pair) => !tickerMap.has(toBinanceSymbol(pair.symbol)))
-      .map((pair) => `${pair.symbol} not available from Binance public spot ticker.`);
+      .filter((pair) => !tradableFuturesSymbols.has(toBinanceSymbol(pair.symbol)))
+      .map((pair) => `${pair.symbol} is not an active Binance USDT perpetual with enough listing history for the agent matrix.`);
     const snapshot: MarketDataSnapshot = {
       overview,
       pairs: enrichedPairs,
       status: {
-        baseUrl: env.binanceMarketBaseUrl,
+        baseUrl: env.binanceFuturesMarketBaseUrl,
         live: true,
         pairCount: enrichedPairs.filter((pair) => pair.exchange === 'Binance').length,
         provider: 'binance',
@@ -95,9 +119,10 @@ export async function getBinanceMarketDataSnapshot(seedPairs: MarketPair[], seed
   }
 }
 
-export async function getBinanceMarketCandles(seedPairs: MarketPair[], symbol: string, timeframe: Timeframe, requestedLimit?: number, options: { strict?: boolean } = {}): Promise<Candle[]> {
+export async function getBinanceMarketCandles(seedPairs: MarketPair[], symbol: string, timeframe: Timeframe, requestedLimit?: number, options: BinanceCandleOptions = {}): Promise<Candle[]> {
   const env = getThoonServerEnv();
-  const pair = seedPairs.find((item) => item.symbol === symbol);
+  const pair = seedPairs.find((item) => item.symbol === symbol) ?? createLivePairShell(symbol);
+  const marketType = normalizeBinanceMarketType(options.marketType);
 
   if (!pair) {
     return [];
@@ -112,10 +137,10 @@ export async function getBinanceMarketCandles(seedPairs: MarketPair[], symbol: s
   }
 
   if (options.strict) {
-    return fetchCandles(pair, toBinanceSymbol(pair.symbol), timeframe, requestedLimit, { strict: true });
+    return fetchCandles(pair, toBinanceSymbol(pair.symbol), timeframe, requestedLimit, { marketType, strict: true });
   }
 
-  return fetchCandles(pair, toBinanceSymbol(pair.symbol), timeframe, requestedLimit).catch(() => deriveFallbackCandles(pair.candles, timeframe));
+  return fetchCandles(pair, toBinanceSymbol(pair.symbol), timeframe, requestedLimit, { marketType }).catch(() => deriveFallbackCandles(pair.candles, timeframe));
 }
 
 async function enrichPairsWithBinance(seedPairs: MarketPair[], tickerMap: Map<string, BinanceTicker>) {
@@ -153,7 +178,114 @@ async function enrichPairsWithBinance(seedPairs: MarketPair[], tickerMap: Map<st
   return pairResults.map((result, index) => (result.status === 'fulfilled' ? result.value : seedPairs[index]));
 }
 
-async function fetchCandles(pair: MarketPair, binanceSymbol: string, timeframe: Timeframe, requestedLimit?: number, options: { strict?: boolean } = {}): Promise<Candle[]> {
+function buildLivePairsWithBinance(seedPairs: MarketPair[], tickers: BinanceTicker[], tradableFuturesSymbols: Set<string>) {
+  const seedBySymbol = new Map(seedPairs.map((pair) => [pair.symbol, pair]));
+  const pairs = tickers
+    .filter((ticker) => tradableFuturesSymbols.has(ticker.symbol) && isUsdtCryptoTicker(ticker))
+    .sort((left, right) => asMarketNumber(right.quoteVolume, 0) - asMarketNumber(left.quoteVolume, 0))
+    .slice(0, livePairLimit)
+    .map((ticker) => {
+      const symbol = fromBinanceSymbol(ticker.symbol);
+      const seedPair = seedBySymbol.get(symbol);
+
+      if (seedPair) {
+        return seedPair;
+      }
+
+      return createLivePairShell(symbol, ticker);
+    });
+
+  return pairs.filter((pair): pair is MarketPair => Boolean(pair));
+}
+
+function buildTradableFuturesSymbolSet(exchangeInfo: BinanceFuturesExchangeInfo) {
+  const now = Date.now();
+
+  return new Set(
+    (exchangeInfo.symbols ?? [])
+      .filter((symbol) => symbol.quoteAsset === 'USDT')
+      .filter((symbol) => symbol.status === 'TRADING')
+      .filter((symbol) => !symbol.contractType || symbol.contractType === 'PERPETUAL')
+      .filter((symbol) => !symbol.onboardDate || now - symbol.onboardDate >= minimumAgentListingAgeMs)
+      .map((symbol) => symbol.symbol),
+  );
+}
+
+function isUsdtCryptoTicker(ticker: BinanceTicker) {
+  if (!ticker.symbol.endsWith('USDT')) {
+    return false;
+  }
+
+  const base = ticker.symbol.slice(0, -4);
+  const excludedBases = new Set(['BUSD', 'DAI', 'EUR', 'FDUSD', 'TUSD', 'USDC', 'USDE', 'USDP']);
+  const leveragedSuffixes = ['BEAR', 'BULL', 'DOWN', 'UP'];
+
+  return (
+    !excludedBases.has(base) &&
+    !leveragedSuffixes.some((suffix) => base.endsWith(suffix)) &&
+    asMarketNumber(ticker.lastPrice, 0) > 0 &&
+    asMarketNumber(ticker.quoteVolume, 0) > 0
+  );
+}
+
+function createLivePairShell(symbol: string, ticker?: BinanceTicker): MarketPair | undefined {
+  const [base, quote = 'USDT'] = symbol.split('/');
+
+  if (!base || quote !== 'USDT') {
+    return undefined;
+  }
+
+  const lastPrice = ticker ? asMarketNumber(ticker.lastPrice, 0) : 0;
+  const stopLoss = lastPrice ? roundMarketValue(lastPrice * 0.98) : 0;
+  const takeProfit = lastPrice ? roundMarketValue(lastPrice * 1.04) : 0;
+
+  return {
+    base,
+    candles: [],
+    category: categoryForBase(base),
+    change24h: ticker ? asMarketNumber(ticker.priceChangePercent, 0) : 0,
+    draft: {
+      direction: 'long',
+      entry: lastPrice,
+      riskPercent: 1,
+      size: 0,
+      stopLoss,
+      takeProfit,
+    },
+    exchange: 'Binance',
+    id: slug(symbol),
+    lastPrice,
+    marketCap: 0,
+    name: base,
+    quote,
+    status: 'paper',
+    symbol,
+    timeframe: '15m',
+    volume24h: ticker ? asMarketNumber(ticker.quoteVolume, 0) : 0,
+  };
+}
+
+function categoryForBase(base: string): MarketPair['category'] {
+  if (['AAVE', 'CAKE', 'CRV', 'ENA', 'LINK', 'UNI'].includes(base)) {
+    return 'defi';
+  }
+
+  if (['ADA', 'AVAX', 'BNB', 'ETH', 'NEAR', 'SOL', 'SUI', 'TRX', 'XRP'].includes(base)) {
+    return 'layer-1';
+  }
+
+  if (['BONK', 'DOGE', 'FLOKI', 'PEPE', 'SHIB', 'WIF'].includes(base)) {
+    return 'meme';
+  }
+
+  if (['AI', 'FET', 'ICP', 'INJ', 'NEAR', 'RENDER', 'TAO', 'WLD'].includes(base)) {
+    return 'ai';
+  }
+
+  return 'trending';
+}
+
+async function fetchCandles(pair: MarketPair, binanceSymbol: string, timeframe: Timeframe, requestedLimit?: number, options: BinanceCandleOptions = {}): Promise<Candle[]> {
   const { marketKlineLimit } = getThoonServerEnv();
   const interval = timeframeIntervals[timeframe] ?? '15m';
   const limit = Math.max(1, Math.floor(requestedLimit ?? marketKlineLimit));
@@ -173,7 +305,7 @@ async function fetchCandles(pair: MarketPair, binanceSymbol: string, timeframe: 
       params.endTime = String(endTime);
     }
 
-    const page = await fetchBinanceJson<BinanceKline[]>('/api/v3/klines', params);
+    const page = await fetchBinanceJson<BinanceKline[]>(binanceKlinePath(options.marketType), params, options.marketType);
 
     if (!page.length) {
       break;
@@ -200,9 +332,10 @@ async function fetchCandles(pair: MarketPair, binanceSymbol: string, timeframe: 
   return timeframe === '1y' ? aggregateCandles(candles, 12) : candles;
 }
 
-async function fetchBinanceJson<T>(path: string, params: Record<string, string> = {}): Promise<T> {
-  const { binanceMarketBaseUrl } = getThoonServerEnv();
-  const url = new URL(path, binanceMarketBaseUrl);
+async function fetchBinanceJson<T>(path: string, params: Record<string, string> = {}, marketType: BinanceMarketType = 'spot'): Promise<T> {
+  const { binanceFuturesMarketBaseUrl, binanceMarketBaseUrl } = getThoonServerEnv();
+  const baseUrl = normalizeBinanceMarketType(marketType) === 'spot' ? binanceMarketBaseUrl : binanceFuturesMarketBaseUrl;
+  const url = new URL(path, baseUrl);
 
   for (const [key, value] of Object.entries(params)) {
     url.searchParams.set(key, value);
@@ -219,6 +352,14 @@ async function fetchBinanceJson<T>(path: string, params: Record<string, string> 
   }
 
   return (await response.json()) as T;
+}
+
+function binanceKlinePath(marketType: BinanceMarketType | undefined) {
+  return normalizeBinanceMarketType(marketType) === 'spot' ? '/api/v3/klines' : '/fapi/v1/klines';
+}
+
+function normalizeBinanceMarketType(marketType: BinanceMarketType | undefined): BinanceMarketType {
+  return marketType === 'perpetual' || marketType === 'futures' ? 'perpetual' : 'spot';
 }
 
 function buildOverview(seedOverview: MarketOverview, pairs: MarketPair[]): MarketOverview {
@@ -254,6 +395,16 @@ function localSnapshot(seedPairs: MarketPair[], seedOverview: MarketOverview, ba
 
 function toBinanceSymbol(symbol: string) {
   return symbolAliases[symbol] ?? symbol.replace('/', '').toUpperCase();
+}
+
+function fromBinanceSymbol(symbol: string) {
+  const alias = Object.entries(symbolAliases).find(([, binanceSymbol]) => binanceSymbol === symbol);
+
+  if (alias) {
+    return alias[0];
+  }
+
+  return `${symbol.slice(0, -4)}/USDT`;
 }
 
 function asMarketNumber(value: string, fallback: number) {
@@ -351,4 +502,8 @@ function roundMarketValue(value: number) {
   }
 
   return Math.round(value * 100000) / 100000;
+}
+
+function slug(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'market';
 }

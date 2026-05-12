@@ -121,7 +121,10 @@ function getPool() {
 
   pool ??= new Pool({
     connectionString: env.databaseUrl,
+    connectionTimeoutMillis: 5000,
+    idleTimeoutMillis: 10000,
     max: 3,
+    ssl: env.nodeEnv === 'production' && !env.databaseUrl.includes('sslmode=disable') ? { rejectUnauthorized: true } : undefined,
   });
 
   return pool;

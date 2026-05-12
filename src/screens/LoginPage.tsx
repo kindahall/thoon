@@ -31,7 +31,7 @@ export function LoginPage() {
       return;
     }
 
-    router.replace(searchParams.get('next') || '/charts');
+    router.replace(safeNextPath(searchParams.get('next')));
     router.refresh();
   }
 
@@ -60,4 +60,22 @@ export function LoginPage() {
       </form>
     </section>
   );
+}
+
+function safeNextPath(value: string | null) {
+  if (!value || !value.startsWith('/') || value.startsWith('//')) {
+    return '/charts';
+  }
+
+  try {
+    const parsed = new URL(value, window.location.origin);
+
+    if (parsed.origin !== window.location.origin) {
+      return '/charts';
+    }
+
+    return `${parsed.pathname}${parsed.search}${parsed.hash}` || '/charts';
+  } catch {
+    return '/charts';
+  }
 }

@@ -21,10 +21,12 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { PreferencesSectionNav } from '../../components/preferences/PreferencesSectionNav';
 import { Badge, Button, Card, HelpPopover } from '../../components/ui';
 import { patchJson, postJson } from '../../services/api-client';
-import type { Alert } from '../../types/trading';
+import type { Alert, UserPreferences, UserProfile } from '../../types/trading';
 
 type NotificationsSettingsPageProps = {
   alerts: Alert[];
+  preferences: UserPreferences;
+  profile: UserProfile;
 };
 
 type NotificationToggleKey =
@@ -39,14 +41,8 @@ type NotificationToggleKey =
   | 'security'
   | 'quietHours';
 
-const recentNotifications = [
-  { category: 'Trade', detail: 'Buy 0.125 BTC/USDT at 67,280.50', icon: <Bell size={16} />, title: 'Order Filled', time: '2m ago' },
-  { category: 'Strategy', detail: 'Momentum Breakout on ETH/USDT', icon: <TrendingUp size={16} />, title: 'Strategy Signal', time: '15m ago' },
-  { category: 'Bot', detail: 'Grid Bot started on BTC/USDT', icon: <Bot size={16} />, title: 'Bot Started', time: '32m ago' },
-  { category: 'Security', detail: 'Chrome on macOS · Paris, FR', icon: <ShieldCheck size={16} />, title: 'New Login Detected', time: '1h ago' },
-];
-
-export function NotificationsSettingsPage({ alerts }: NotificationsSettingsPageProps) {
+export function NotificationsSettingsPage({ alerts, preferences, profile }: NotificationsSettingsPageProps) {
+  const savedNotificationSettings = preferences.notificationSettings as Partial<Record<NotificationToggleKey, boolean>> | undefined;
   const [enabled, setEnabled] = useState<Record<NotificationToggleKey, boolean>>({
     app: true,
     bot: true,
@@ -58,12 +54,14 @@ export function NotificationsSettingsPage({ alerts }: NotificationsSettingsPageP
     strategy: true,
     tradeExecution: true,
     webhook: true,
+    ...savedNotificationSettings,
   });
-  const [digest, setDigest] = useState<'off' | 'daily' | 'weekly'>('daily');
+  const [digest, setDigest] = useState<'off' | 'daily' | 'weekly'>(isNotificationDigest(preferences.notificationDigest) ? preferences.notificationDigest : 'daily');
   const [lastTest, setLastTest] = useState<string | null>(null);
   const [showAllRecent, setShowAllRecent] = useState(false);
   const [saveStatus, setSaveStatus] = useState('Ready');
   const activeAlerts = useMemo(() => alerts.filter((alert) => alert.status === 'active').length, [alerts]);
+  const recentNotifications = useMemo(() => buildRecentNotifications(alerts, profile.timezone), [alerts, profile.timezone]);
   const visibleNotifications = showAllRecent ? recentNotifications : recentNotifications.slice(0, 3);
 
   function toggle(key: NotificationToggleKey) {
@@ -122,7 +120,7 @@ export function NotificationsSettingsPage({ alerts }: NotificationsSettingsPageP
 
           <div className="notifications-grid">
             <NotificationCard detail="In-app alerts and platform updates." icon={<Bell size={20} />} label="App Notifications" onToggle={() => toggle('app')} status="Enabled" enabled={enabled.app} />
-            <NotificationCard detail="artisaul@example.invalid" icon={<Mail size={20} />} label="Email Notifications" onToggle={() => toggle('email')} status="Enabled" enabled={enabled.email} />
+            <NotificationCard detail={profile.email} icon={<Mail size={20} />} label="Email Notifications" onToggle={() => toggle('email')} status="Enabled" enabled={enabled.email} />
             <NotificationCard detail="Desktop + Mobile" icon={<Smartphone size={20} />} label="Push Notifications" onToggle={() => toggle('push')} status="Enabled" enabled={enabled.push} />
             <NotificationCard detail="Play a sound for important alerts." icon={<Volume2 size={20} />} label="Sound Alerts" onToggle={() => toggle('sound')} status="Enabled" enabled={enabled.sound}>
               <select className="notification-select" defaultValue="chime">
@@ -174,7 +172,7 @@ export function NotificationsSettingsPage({ alerts }: NotificationsSettingsPageP
                 </label>
                 <label>
                   Timezone
-                  <input readOnly value="Europe/Paris" />
+                  <input readOnly value={profile.timezone} />
                 </label>
               </div>
             </Card>
@@ -261,4 +259,44 @@ function NotificationCard({ children, detail, enabled, icon, label, onToggle, st
 
 function digestLabel(value: 'off' | 'daily' | 'weekly') {
   return value === 'off' ? 'Off' : value === 'daily' ? 'Daily' : 'Weekly';
+}
+
+function isNotificationDigest(value: unknown): value is 'daily' | 'off' | 'weekly' {
+  return value === 'daily' || value === 'off' || value === 'weekly';
+}
+
+function buildRecentNotifications(alerts: Alert[], timezone: string) {
+  const activeAlerts = alerts.filter((alert) => alert.status === 'active').slice(0, 4);
+
+  if (!activeAlerts.length) {
+    return [
+      { category: 'System', detail: `No active alert in ${timezone}`, icon: <ShieldCheck size={16} />, title: 'Notification queue ready', time: 'Now' },
+    ];
+  }
+
+  return activeAlerts.map((alert) => ({
+    category: alert.type,
+    detail: `${alert.symbol} ${alert.condition} ${alert.value}`,
+    icon: alert.type === 'bot' ? <Bot size={16} /> : alert.type === 'strategy' ? <TrendingUp size={16} /> : <Bell size={16} />,
+    title: `${titleCase(alert.type)} alert`,
+    time: alert.lastTriggeredAt ? formatRelativeTime(alert.lastTriggeredAt) : 'Armed',
+  }));
+}
+
+function formatRelativeTime(value: string) {
+  const elapsedMinutes = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 60000));
+
+  if (elapsedMinutes < 1) {
+    return 'Now';
+  }
+
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes}m ago`;
+  }
+
+  return `${Math.round(elapsedMinutes / 60)}h ago`;
+}
+
+function titleCase(value: string) {
+  return value.slice(0, 1).toUpperCase() + value.slice(1).replace(/[-_]/g, ' ');
 }

@@ -36,7 +36,7 @@ export function WorkspacePage({ actionHref, actionLabel = 'New', eyebrow, metric
         )}
       </div>
 
-      <div className="workspace-placeholder-grid">
+      <div className="workspace-summary-grid">
         {metrics.map((metric) => (
           <Card className="workspace-metric" key={metric.label}>
             <span>{metric.label}</span>
@@ -45,8 +45,8 @@ export function WorkspacePage({ actionHref, actionLabel = 'New', eyebrow, metric
         ))}
       </div>
 
-      <Card className="workspace-placeholder-table">
-        <div className="workspace-placeholder-table__header">
+      <Card className="workspace-resource-table">
+        <div className="workspace-resource-table__header">
           <span>Name</span>
           <span>Status</span>
           <span>Action</span>
@@ -95,11 +95,11 @@ function WorkspaceTableRow({ row }: { row: WorkspaceRow }) {
 
   if (row.href) {
     return (
-      <Link className="workspace-placeholder-table__row" href={row.href}>
+      <Link className="workspace-resource-table__row" href={row.href}>
         {content}
       </Link>
     );
   }
 
-  return <div className="workspace-placeholder-table__row">{content}</div>;
+  return <div className="workspace-resource-table__row">{content}</div>;
 }

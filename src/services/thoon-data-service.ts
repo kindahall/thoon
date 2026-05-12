@@ -2,7 +2,11 @@ import type { MetricTone, PreferenceSectionKey, WorkspaceRow, WorkspaceSummary, 
 import { formatCompact, formatCompactUsd, formatPercent, formatUsd } from '../utils/format';
 import { readThoonDb } from '../server/thoon-db';
 import { getStrategyAgentAiStatus } from '../server/strategy-agent-ai';
+import { getKronosIntegrationProfile } from '../server/kronos-integration';
+import { getKronosLearningProfile } from '../server/kronos-learning';
+import { getTradingViewMcpProfile } from '../server/tradingview-mcp-integration';
 import { canonicalStrategyId, findVisibleStrategyRecord, visibleStrategyRecords } from '../utils/strategy-catalog';
+import { buildEndorsedStrategies } from '../utils/strategy-endorsement';
 
 export function getWorkspaceSummary(key: WorkspaceSummaryKey): WorkspaceSummary {
   const {
@@ -210,6 +214,10 @@ export function listJournalTrades() {
   return readThoonDb().journalTradeRecords;
 }
 
+export function listPaperTestSessions() {
+  return readThoonDb().paperTestSessionRecords;
+}
+
 export function listAlerts() {
   return readThoonDb().alertRecords;
 }
@@ -236,6 +244,10 @@ export function listAuditLogs() {
 
 export function listExchangeConnections() {
   return readThoonDb().exchangeRecords;
+}
+
+export function listWalletConnections() {
+  return readThoonDb().walletRecords;
 }
 
 export function getRiskRules() {
@@ -270,12 +282,44 @@ export function listBacktestReports() {
   return readThoonDb().backtestReportRecords.filter((report) => report.source === 'calculated');
 }
 
+export function listEndorsedStrategies() {
+  const db = readThoonDb();
+
+  return buildEndorsedStrategies({
+    backtests: db.backtestReportRecords.filter((report) => report.source === 'calculated'),
+    paperSessions: db.paperTestSessionRecords,
+    settings: db.agentSettingsRecord,
+    strategies: visibleStrategyRecords(db.strategyRecords, db.strategyResearchRecords),
+  });
+}
+
 export function getAgentSettings() {
   return readThoonDb().agentSettingsRecord;
 }
 
 export function getAgentAiStatus() {
   return getStrategyAgentAiStatus();
+}
+
+export function listAgentChatMessages() {
+  return readThoonDb().agentChatRecords;
+}
+
+export function getKronosProfile() {
+  return getKronosIntegrationProfile();
+}
+
+export function getKronosLearningState() {
+  const records = readThoonDb().kronosForecastRecords;
+
+  return {
+    profile: getKronosLearningProfile(records),
+    records,
+  };
+}
+
+export function getTradingViewMcpIntegrationProfile() {
+  return getTradingViewMcpProfile();
 }
 
 export function listStrategyVersions(strategyId?: string) {
@@ -405,7 +449,7 @@ export function getCreateBotSummary(): WorkspaceSummary {
     ],
     rows: [
       { href: '/strategies', primary: 'Strategy', secondary: 'Choose source rules', status: 'required' },
-      { href: '/preferences/exchange-api', primary: 'Exchange', secondary: 'Paper first', status: 'safe', tone: 'positive' },
+      { href: '/exchanges', primary: 'Exchange', secondary: 'Paper first', status: 'safe', tone: 'positive' },
       { href: '/preferences/risk-rules', primary: 'Risk Engine', secondary: 'Stop-loss required', status: 'locked', tone: 'positive' },
     ],
     title: 'Create Bot',
@@ -462,7 +506,7 @@ function buildPreferenceRows(): WorkspaceRow[] {
     { href: '/preferences/trading-defaults', primary: 'Trading Defaults', secondary: `${userPreferencesRecord.defaultLeverage}x leverage`, status: `${userPreferencesRecord.defaultRiskPerTrade}%` },
     { href: '/preferences/security', primary: 'Security', secondary: 'Confirm critical actions', status: 'locked', tone: 'positive' },
     { href: '/preferences/notifications', primary: 'Notifications', secondary: `${alertRecords.length} alert rules`, status: 'on' },
-    { href: '/preferences/exchange-api', primary: 'Exchange & API', secondary: `${apiKeyRecords.length} masked keys`, status: 'review' },
+    { href: '/exchanges', primary: 'Exchanges', secondary: `${apiKeyRecords.length} masked keys · CEX/DEX`, status: 'open' },
     { href: '/preferences/billing', primary: 'Billing', secondary: 'Private plan', status: 'active' },
     { href: '/preferences/data-privacy', primary: 'Data & Privacy', secondary: 'Local JSON DB', status: 'clean', tone: 'positive' },
     { href: '/preferences/risk-rules', primary: 'Risk Rules', secondary: 'Stop-loss required', status: 'locked', tone: 'positive' },
@@ -477,9 +521,7 @@ function buildPreferenceRows(): WorkspaceRow[] {
 function preferenceSectionConfig(): Record<PreferenceSectionKey, Pick<WorkspaceSummary, 'metrics' | 'rows' | 'title'>> {
   const {
     alertRecords,
-    apiKeyRecords,
     auditLogRecords,
-    exchangeRecords,
     riskRulesRecord,
     tradeLimitsRecord,
     userPreferencesRecord,
@@ -566,21 +608,6 @@ function preferenceSectionConfig(): Record<PreferenceSectionKey, Pick<WorkspaceS
     })),
     title: 'Notifications',
   },
-  'exchange-api': {
-    metrics: [
-      { label: 'Connected', tone: 'positive', value: String(exchangeRecords.filter((exchange) => exchange.status === 'connected').length) },
-      { label: 'Keys', value: String(apiKeyRecords.length) },
-      { label: 'Withdrawals', tone: 'positive', value: 'Off' },
-    ],
-    rows: apiKeyRecords.map((keyRecord) => ({
-      href: '/preferences/audit-logs',
-      primary: keyRecord.label,
-      secondary: keyRecord.maskedKey,
-      status: keyRecord.status,
-      tone: keyRecord.status === 'active' ? 'positive' : 'warning',
-    })),
-    title: 'Exchange & API',
-  },
   billing: {
     metrics: [
       { label: 'Plan', value: 'Private' },
@@ -589,15 +616,15 @@ function preferenceSectionConfig(): Record<PreferenceSectionKey, Pick<WorkspaceS
     ],
     rows: [
       { primary: 'Subscription', secondary: 'Private app workspace', status: 'active' },
-      { primary: 'Billing Cycle', secondary: 'Not connected in frontend', status: 'mock' },
-      { primary: 'Invoices', secondary: 'No backend in this goal', status: 'none' },
+      { primary: 'Billing Cycle', secondary: 'Stored in Thoon data', status: 'saved' },
+      { primary: 'Receipts', secondary: 'Generated as local records', status: 'ready' },
     ],
     title: 'Billing',
   },
   'data-privacy': {
     metrics: [
       { label: 'Exports', value: 'Manual' },
-      { label: 'Storage', value: 'Mock' },
+      { label: 'Storage', value: 'Local DB' },
       { label: 'Secrets', tone: 'positive', value: 'Hidden' },
     ],
     rows: [

@@ -43,7 +43,6 @@ export type PreferenceSectionKey =
   | 'trading-defaults'
   | 'security'
   | 'notifications'
-  | 'exchange-api'
   | 'billing'
   | 'data-privacy'
   | 'risk-rules'
@@ -307,8 +306,11 @@ export type AgentRun = {
 
 export type AgentReport = {
   backtestSummary?: StrategyVersion['backtestSummary'];
+  botDecision?: 'bot_candidate' | 'do_not_use' | 'paper_test' | 'watch';
+  botScore?: number;
   createdAt: string;
   details: string[];
+  evidenceScore?: number;
   id: string;
   marketsTested: string[];
   nextAction: string;
@@ -320,6 +322,7 @@ export type AgentReport = {
   strategyId: string;
   summary: string[];
   timeframesTested: Timeframe[];
+  usagePlan?: string[];
   versionId?: string;
   weaknesses: string[];
   strengths: string[];
@@ -354,6 +357,49 @@ export type AgentQueueTask = {
   status: 'blocked' | 'completed' | 'failed' | 'queued' | 'running' | 'waiting_for_confirmation';
   strategyId?: string;
   versionId?: string;
+};
+
+export type AgentChatMessage = {
+  content: string;
+  createdAt: string;
+  id: string;
+  role: 'assistant' | 'system' | 'user';
+  status: 'completed' | 'failed' | 'running';
+};
+
+export type KronosForecastDirection = 'down' | 'range' | 'up';
+
+export type KronosForecastRecord = {
+  anchorClose: number;
+  anchorTime: number;
+  confidence: number;
+  createdAt: string;
+  errorPct?: number;
+  hit?: boolean;
+  horizonCandles: number;
+  id: string;
+  market: string;
+  modelName: string;
+  predictedDirection: KronosForecastDirection;
+  predictedReturnPct: number;
+  realizedAt?: string;
+  realizedClose?: number;
+  realizedDirection?: KronosForecastDirection;
+  realizedReturnPct?: number;
+  source: 'heuristic-proxy' | 'kronos-worker';
+  status: 'evaluated' | 'pending';
+  strategyId?: string;
+  timeframe: Timeframe;
+  weightAtCreation: number;
+};
+
+export type KronosLearningProfile = {
+  accuracy: number;
+  confidenceWeight: number;
+  evaluated: number;
+  lastEvaluatedAt?: string;
+  pending: number;
+  sampleQuality: 'cold_start' | 'learning' | 'stable';
 };
 
 export type AgentSettings = {
@@ -419,15 +465,34 @@ export type BacktestTrade = {
   entry: number;
   entryTime: string;
   exit: number;
-  exitReason: 'ma-cross' | 'opposite-signal' | 'session-end' | 'stop-loss' | 'take-profit' | 'trailing-stop';
+  exitReason: 'liquidation' | 'ma-cross' | 'opposite-signal' | 'session-end' | 'stop-loss' | 'take-profit' | 'trailing-stop';
   exitTime: string;
   fee: number;
   id: string;
+  leverage?: number;
+  margin?: number;
+  notional?: number;
   pnl: number;
   rMultiple: number;
   side: 'long' | 'short';
   size: number;
+  stop?: number;
+  takeProfit?: number;
   status: 'loss' | 'win';
+};
+
+export type BacktestExecutionSettings = {
+  directionMode: 'both' | 'long-only' | 'short-only';
+  leverage: number;
+  marketType: 'perpetual' | 'spot';
+  positionCapPct: number;
+  riskPerTradePct: number;
+  stopLossAtr: number;
+  stopLossEnabled: boolean;
+  takeProfitEnabled: boolean;
+  takeProfitR: number;
+  trailingStopAtr: number;
+  trailingStopEnabled: boolean;
 };
 
 export type BacktestReport = {
@@ -444,6 +509,7 @@ export type BacktestReport = {
   engine?: 'jimmy-pine-v5-candle-engine' | 'thoon-concept-candle-engine';
   equityCurve?: number[];
   executionModel?: string;
+  executionSettings?: BacktestExecutionSettings;
   exchangeId?: string;
   exchangeName?: string;
   feesPct?: number;
@@ -487,6 +553,17 @@ export type Bot = {
   name: string;
   pnl: number;
   riskPerTrade: number;
+  sourceBacktestPeriod?: string;
+  sourceBacktestReportId?: string;
+  sourceCandleChecksum?: string;
+  sourceExchangeId?: string;
+  sourceExchangeName?: string;
+  sourceExecutionSettings?: BacktestExecutionSettings;
+  sourceFeesPct?: number;
+  sourceInitialCapital?: number;
+  sourceMarketDataSource?: string;
+  sourceSlippagePct?: number;
+  sourceTimeframe?: Timeframe;
   status: 'running' | 'paused' | 'stopped' | 'draft';
   strategyId: string;
   symbol: string;
@@ -514,12 +591,53 @@ export type JournalTrade = {
   tag: string;
 };
 
-export type ExchangeConnection = {
+export type PaperTestSession = {
+  blockers: string[];
+  botDecision: 'bot_candidate' | 'paper_test';
+  botScore: number;
+  candleChecksum: string;
+  createdAt: string;
+  dataSource: string;
   id: string;
+  market: string;
+  notes: string[];
+  pnl: number;
+  reportId: string;
+  rMultiple: number;
+  status: 'blocked' | 'completed' | 'prepared' | 'running';
+  strategyId: string;
+  timeframe: Timeframe;
+  tradesRecorded: number;
+  updatedAt: string;
+  usagePlan: string[];
+};
+
+export type ExchangeConnection = {
+  connectorType?: 'api-key' | 'aggregator' | 'wallet';
+  feeTier?: string;
+  id: string;
+  idealFor?: string;
+  marketType?: 'aggregator' | 'perpetual' | 'spot' | 'stable-swap' | 'swap';
   name: string;
+  networks?: string[];
   permissions: Array<'read' | 'trade'>;
+  routingNote?: string;
   status: 'connected' | 'disconnected' | 'available';
+  venueType?: 'cex' | 'dex';
+  walletRequired?: boolean;
   withdrawalsEnabled: false;
+};
+
+export type WalletConnection = {
+  address?: string;
+  chain: 'cosmos' | 'evm' | 'multi' | 'solana';
+  connector: 'external-wallet' | 'internal-vault' | 'walletconnect';
+  createdAt: string;
+  id: string;
+  label: string;
+  networks: string[];
+  preferredExchangeId?: string;
+  status: 'available' | 'connected' | 'disconnected';
 };
 
 export type ApiKeyRecord = {
@@ -560,6 +678,63 @@ export type TradeLimits = {
   maxTotalExposure: number;
 };
 
+export type BillingPlanId = 'free' | 'pro' | 'elite';
+
+export type BillingSettings = {
+  billingPeriod: 'monthly' | 'yearly';
+  localReceipts: Array<{
+    amount: number;
+    createdAt: string;
+    id: string;
+    planId: BillingPlanId;
+    status: 'generated' | 'voided';
+  }>;
+  nextRenewalAt?: string;
+  planId: BillingPlanId;
+  status: 'active' | 'cancelled';
+  updatedAt: string;
+};
+
+export type WorkspaceLayoutKind = 'single' | 'multi' | 'bot' | 'backtest' | 'journal' | 'custom';
+
+export type WorkspaceLayoutSettings = {
+  activeLayoutId: string;
+  defaultLayoutId: string;
+  layouts: Array<{
+    default?: boolean;
+    id: string;
+    kind: WorkspaceLayoutKind;
+    name: string;
+    panels: string;
+    settings: {
+      alertsPanel: boolean;
+      bottomPanel: boolean;
+      newsFeed: boolean;
+      orderPanel: boolean;
+      primaryChart: boolean;
+      rightPanel: boolean;
+      watchlist: boolean;
+    };
+    updatedAt: string;
+  }>;
+  panelDocking: 'right' | 'bottom' | 'floating';
+  sidebarBehavior: 'expanded' | 'compact' | 'auto';
+  updatedAt: string;
+};
+
+export type KeyboardShortcutSettings = {
+  enabled: boolean;
+  shortcuts: Array<{
+    action: string;
+    category: 'Navigation' | 'Chart' | 'Trade Markers' | 'Orders' | 'Bots' | 'Backtest';
+    id: string;
+    key: string;
+    safety?: 'confirm';
+    scope: string;
+  }>;
+  updatedAt: string;
+};
+
 export type AuditEvent = {
   action: string;
   actor: 'user' | 'system' | 'bot';
@@ -587,25 +762,38 @@ export type UserProfile = {
 };
 
 export type UserPreferences = {
-  accent: 'blue' | 'green' | 'violet';
+  accent: 'blue' | 'cyan' | 'green' | 'pink' | 'red' | 'violet' | 'yellow';
+  advancedSettings?: Record<string, unknown>;
+  analyticsConsent?: boolean;
+  animations?: unknown;
+  billingSettings?: BillingSettings;
   breakEvenAutomation: boolean;
   breakEvenRule: 'off' | 'move-to-be-at-1r' | 'move-to-be-at-tp1';
   categoryFilters: MarketCategory[];
+  chartPreset?: unknown;
   defaultAccount: string;
   defaultExchange: string;
   defaultLeverage: number;
   defaultRiskPerTrade: number;
   defaultSlippage: number;
   density: 'compact' | 'comfortable';
+  fontSize?: unknown;
+  keyboardShortcuts?: KeyboardShortcutSettings;
   multiTpBehavior: 'single-target' | 'partial-take-profits' | 'equal-ladder';
+  notificationDigest?: unknown;
+  notificationSettings?: unknown;
   orderType: 'market' | 'limit' | 'stop';
+  personalizedExperience?: boolean;
   positionSizingMethod: 'risk-percent' | 'fixed-usdt' | 'fixed-size';
   preferredMarketType: 'spot' | 'perpetual' | 'futures';
   quickPreset: 'scalping' | 'day-trading' | 'swing-trading' | 'position-trading' | 'custom';
+  reduceMotion?: unknown;
+  sidebarBehavior?: unknown;
   stopLossMode: 'sl-market' | 'sl-limit';
   takeProfitMode: 'tp-limit' | 'tp-market' | 'scale-out';
   theme: 'dark' | 'light' | 'system';
   trailingStopActivationAtr: number;
   trailingStopEnabled: boolean;
   trailingStopTrailAtr: number;
+  workspaceLayouts?: WorkspaceLayoutSettings;
 };

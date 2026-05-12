@@ -6,7 +6,6 @@ import { AppearanceSettingsPage } from '../../../screens/preferences/AppearanceS
 import { AuditLogsSettingsPage } from '../../../screens/preferences/AuditLogsSettingsPage';
 import { BillingSettingsPage } from '../../../screens/preferences/BillingSettingsPage';
 import { DataPrivacySettingsPage } from '../../../screens/preferences/DataPrivacySettingsPage';
-import { ExchangeApiSettingsPage } from '../../../screens/preferences/ExchangeApiSettingsPage';
 import { KeyboardShortcutsSettingsPage } from '../../../screens/preferences/KeyboardShortcutsSettingsPage';
 import { LayoutsSettingsPage } from '../../../screens/preferences/LayoutsSettingsPage';
 import { NotificationsSettingsPage } from '../../../screens/preferences/NotificationsSettingsPage';
@@ -15,6 +14,7 @@ import { RiskRulesSettingsPage } from '../../../screens/preferences/RiskRulesSet
 import { SecuritySettingsPage } from '../../../screens/preferences/SecuritySettingsPage';
 import { TradeLimitsSettingsPage } from '../../../screens/preferences/TradeLimitsSettingsPage';
 import { TradingDefaultsSettingsPage } from '../../../screens/preferences/TradingDefaultsSettingsPage';
+import { ExchangeHubPage } from '../../../screens/ExchangeHubPage';
 import { WorkspacePage } from '../../../screens/WorkspacePage';
 import {
   getPreferenceSectionSummary,
@@ -28,6 +28,7 @@ import {
   listAlerts,
   listAuditLogs,
   listExchangeConnections,
+  listWalletConnections,
 } from '../../../services/thoon-data-service';
 import type { AuditEvent, PreferenceSectionKey } from '../../../types/trading';
 
@@ -40,7 +41,6 @@ const preferenceSectionKeys: PreferenceSectionKey[] = [
   'trading-defaults',
   'security',
   'notifications',
-  'exchange-api',
   'billing',
   'data-privacy',
   'risk-rules',
@@ -68,6 +68,10 @@ export default async function PreferenceSectionRoute({ params, searchParams }: P
   const { section } = await params;
   const query = await searchParams;
 
+  if (section === 'exchange-api') {
+    return <ExchangeHubPage apiKeys={listApiKeys()} exchanges={listExchangeConnections()} wallets={listWalletConnections()} />;
+  }
+
   if (!isPreferenceSectionKey(section)) {
     notFound();
   }
@@ -81,7 +85,7 @@ export default async function PreferenceSectionRoute({ params, searchParams }: P
   }
 
   if (section === 'appearance') {
-    return <AppearanceSettingsPage />;
+    return <AppearanceSettingsPage preferences={getUserPreferences()} />;
   }
 
   if (section === 'trading-defaults') {
@@ -93,15 +97,11 @@ export default async function PreferenceSectionRoute({ params, searchParams }: P
   }
 
   if (section === 'notifications') {
-    return <NotificationsSettingsPage alerts={listAlerts()} />;
-  }
-
-  if (section === 'exchange-api') {
-    return <ExchangeApiSettingsPage apiKeys={listApiKeys()} auditLogs={listAuditLogs()} exchanges={listExchangeConnections()} />;
+    return <NotificationsSettingsPage alerts={listAlerts()} preferences={getUserPreferences()} profile={getUserProfile()} />;
   }
 
   if (section === 'billing') {
-    return <BillingSettingsPage />;
+    return <BillingSettingsPage preferences={getUserPreferences()} />;
   }
 
   if (section === 'data-privacy') {
@@ -121,11 +121,11 @@ export default async function PreferenceSectionRoute({ params, searchParams }: P
   }
 
   if (section === 'layouts') {
-    return <LayoutsSettingsPage />;
+    return <LayoutsSettingsPage preferences={getUserPreferences()} />;
   }
 
   if (section === 'keyboard-shortcuts') {
-    return <KeyboardShortcutsSettingsPage />;
+    return <KeyboardShortcutsSettingsPage preferences={getUserPreferences()} />;
   }
 
   if (section === 'advanced') {

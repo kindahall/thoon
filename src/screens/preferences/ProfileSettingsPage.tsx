@@ -102,7 +102,7 @@ export function ProfileSettingsPage({ profile }: ProfileSettingsPageProps) {
             <ProfileShortcutCard href="/preferences/trading-defaults" icon={<SlidersHorizontal size={18} />} title="Trading Defaults" rows={[['Risk', 'Trading defaults'], ['Leverage', 'Trading defaults'], ['Order Type', 'Trading defaults']]} />
             <ProfileShortcutCard href="/preferences/security" icon={<ShieldCheck size={18} />} title="Security" rows={[['Password', 'Security page'], ['2FA', 'Security page'], ['Sessions', 'Audit logs']]} />
             <ProfileShortcutCard href="/preferences/notifications" icon={<Bell size={18} />} title="Notifications" rows={[['App', 'Notification rules'], ['Email', 'Notification rules'], ['Webhook', 'Notification rules']]} />
-            <ProfileShortcutCard href="/preferences/exchange-api" icon={<WalletCards size={18} />} title="Exchange & API" rows={[['Connections', 'Manage'], ['API keys', 'Manage'], ['Scopes', 'Manage']]} />
+            <ProfileShortcutCard href="/exchanges" icon={<WalletCards size={18} />} title="Exchange Hub" rows={[['CEX / DEX', 'Manage'], ['Wallets', 'Connect'], ['API keys', 'Manage']]} />
             <ProfileShortcutCard href="/preferences/billing" icon={<CreditCard size={18} />} title="Billing & Plan" rows={[['Plan', 'Private'], ['Currency', profileDraft.mainCurrency], ['Billing', 'Manage']]} />
             <ProfileShortcutCard className="profile-settings-card--wide" href="/preferences/data-privacy" icon={<Database size={18} />} title="Data & Privacy" rows={[['Storage', 'Local JSON DB'], ['Exports', 'Available'], ['Secrets', 'Masked']]} />
           </div>

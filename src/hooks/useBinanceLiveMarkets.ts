@@ -32,22 +32,36 @@ type LiveMarketState = {
   pairs: MarketPair[];
 };
 
-const binanceStreamBaseUrl = 'wss://data-stream.binance.vision/stream?streams=';
+type BinanceLiveMarketOptions = {
+  exchangeId?: string;
+  marketType?: 'futures' | 'perpetual' | 'spot';
+};
+
+type MarketSnapshotPayload = {
+  pairs?: MarketPair[];
+  status?: MarketDataStatus;
+};
+
+const binanceFuturesStreamBaseUrl = 'wss://fstream.binance.com/stream?streams=';
+const binanceSpotStreamBaseUrl = 'wss://stream.binance.com:9443/stream?streams=';
 const liveCommitDelayMs = 200;
+const restTickerRefreshMs = 10_000;
 const symbolAliases: Record<string, string> = {
   'RNDR/USDT': 'RENDERUSDT',
 };
 
-export function useBinanceLiveMarkets(initialPairs: MarketPair[], initialStatus?: MarketDataStatus) {
+export function useBinanceLiveMarkets(initialPairs: MarketPair[], initialStatus?: MarketDataStatus, options: BinanceLiveMarketOptions = {}) {
   const [state, setState] = useState<LiveMarketState>({ connected: Boolean(initialStatus?.live), pairs: initialPairs });
   const latestPairsRef = useRef(initialPairs);
   const commitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastEventAtRef = useRef<number | undefined>(undefined);
   const mountedRef = useRef(false);
+  const exchangeId = options.exchangeId ?? 'binance';
+  const marketType = options.marketType === 'spot' ? 'spot' : 'perpetual';
   const pairSeedKey = useMemo(() => buildPairSeedKey(initialPairs), [initialPairs]);
   const streamSymbolsKey = useMemo(() => buildStreamSymbolsKey(initialPairs), [initialPairs]);
   const symbolMap = useMemo(() => buildSymbolMap(initialPairs), [streamSymbolsKey]);
-  const streamUrl = useMemo(() => buildStreamUrl(initialPairs), [streamSymbolsKey]);
+  const streamUrl = useMemo(() => buildStreamUrl(initialPairs, exchangeId, marketType), [exchangeId, marketType, streamSymbolsKey]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -135,6 +149,61 @@ export function useBinanceLiveMarkets(initialPairs: MarketPair[], initialStatus?
     };
   }, [streamUrl, symbolMap]);
 
+  useEffect(() => {
+    if (exchangeId !== 'binance' || marketType === 'spot' || typeof window === 'undefined') {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function refreshFromRestSnapshot() {
+      try {
+        const response = await fetch('/api/markets', { cache: 'no-store' });
+
+        if (!response.ok) {
+          return;
+        }
+
+        const snapshot = (await response.json()) as MarketSnapshotPayload;
+
+        if (cancelled || !Array.isArray(snapshot.pairs)) {
+          return;
+        }
+
+        const pairMap = new Map(snapshot.pairs.map((pair) => [pair.symbol, pair]));
+        let hasChanged = false;
+        latestPairsRef.current = latestPairsRef.current.map((pair) => {
+          const livePair = pairMap.get(pair.symbol);
+
+          if (!livePair) {
+            return pair;
+          }
+
+          const nextPair = mergeLiveSnapshotPair(pair, livePair);
+          hasChanged ||= nextPair !== pair;
+
+          return nextPair;
+        });
+
+        if (hasChanged) {
+          const updatedAtMs = snapshot.status?.updatedAt ? Date.parse(snapshot.status.updatedAt) : Date.now();
+
+          scheduleCommit(Number.isFinite(updatedAtMs) ? updatedAtMs : Date.now());
+        }
+      } catch {
+        // WebSocket remains the primary path; REST polling is only a freshness fallback.
+      }
+    }
+
+    void refreshFromRestSnapshot();
+    const interval = window.setInterval(refreshFromRestSnapshot, restTickerRefreshMs);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [exchangeId, marketType, streamSymbolsKey]);
+
   function scheduleCommit(lastEventAt: number) {
     lastEventAtRef.current = lastEventAt;
 
@@ -169,14 +238,19 @@ export function useBinanceLiveMarkets(initialPairs: MarketPair[], initialStatus?
   return state;
 }
 
-function buildStreamUrl(pairs: MarketPair[]) {
+function buildStreamUrl(pairs: MarketPair[], exchangeId: string, marketType: 'perpetual' | 'spot') {
+  if (exchangeId !== 'binance') {
+    return '';
+  }
+
   const streams = pairs.flatMap((pair) => {
     const symbol = toBinanceSymbol(pair.symbol).toLowerCase();
 
     return [`${symbol}@trade`, `${symbol}@ticker`];
   });
+  const baseUrl = marketType === 'spot' ? binanceSpotStreamBaseUrl : binanceFuturesStreamBaseUrl;
 
-  return streams.length ? `${binanceStreamBaseUrl}${streams.join('/')}` : '';
+  return streams.length ? `${baseUrl}${streams.join('/')}` : '';
 }
 
 function buildSymbolMap(pairs: MarketPair[]) {
@@ -234,6 +308,22 @@ function applyLivePrice(pair: MarketPair, lastPrice: number, change24h?: number,
     lastPrice,
     marketCap,
     volume24h: nextVolume24h,
+  };
+}
+
+function mergeLiveSnapshotPair(pair: MarketPair, livePair: MarketPair): MarketPair {
+  if (pair.lastPrice === livePair.lastPrice && pair.change24h === livePair.change24h && pair.volume24h === livePair.volume24h && pair.marketCap === livePair.marketCap && pair.exchange === livePair.exchange) {
+    return pair;
+  }
+
+  return {
+    ...pair,
+    change24h: livePair.change24h,
+    exchange: livePair.exchange,
+    lastPrice: livePair.lastPrice,
+    marketCap: livePair.marketCap,
+    volume24h: livePair.volume24h,
+    draft: livePair.draft,
   };
 }
 

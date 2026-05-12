@@ -1,5 +1,6 @@
 type RequestOptions = {
   method?: 'DELETE' | 'GET' | 'PATCH' | 'POST';
+  signal?: AbortSignal;
 };
 
 type ApiErrorPayload = {
@@ -25,6 +26,7 @@ export async function apiJson<T>(path: string, body?: unknown, options: RequestO
     cache: 'no-store',
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     method: options.method ?? (body === undefined ? 'GET' : 'POST'),
+    signal: options.signal,
   });
 
   const payload = (await response.json().catch(() => null)) as ApiErrorPayload | T | null;

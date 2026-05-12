@@ -4,6 +4,11 @@ import { getBybitMarketCandles } from './bybit-market-data';
 
 type ExchangeId = 'bitget' | 'bybit' | 'coinbase-advanced' | 'kraken' | 'kucoin' | 'okx';
 
+type PublicRestCandleOptions = {
+  marketType?: 'futures' | 'perpetual' | 'spot';
+  strict?: boolean;
+};
+
 type OkxCandlesResponse = {
   code: string;
   data?: string[][];
@@ -103,7 +108,7 @@ export function hasPublicRestMarketData(exchangeId: string | undefined) {
   return exchangeId ? publicExchangeIds.has(exchangeId) : false;
 }
 
-export async function getPublicRestMarketCandles(seedPairs: MarketPair[], symbol: string, timeframe: Timeframe, exchangeId: string, requestedLimit?: number, options: { strict?: boolean } = {}): Promise<Candle[]> {
+export async function getPublicRestMarketCandles(seedPairs: MarketPair[], symbol: string, timeframe: Timeframe, exchangeId: string, requestedLimit?: number, options: PublicRestCandleOptions = {}): Promise<Candle[]> {
   const pair = seedPairs.find((item) => item.symbol === symbol);
 
   if (!pair || !hasPublicRestMarketData(exchangeId)) {
@@ -138,11 +143,11 @@ export async function getPublicRestMarketCandles(seedPairs: MarketPair[], symbol
   }
 }
 
-async function getOkxMarketCandles(pair: MarketPair, timeframe: Timeframe, requestedLimit?: number, options: { strict?: boolean } = {}) {
+async function getOkxMarketCandles(pair: MarketPair, timeframe: Timeframe, requestedLimit?: number, options: PublicRestCandleOptions = {}) {
   const { marketKlineLimit, okxMarketBaseUrl } = getThoonServerEnv();
   const response = await fetchExchangeJson<OkxCandlesResponse>(okxMarketBaseUrl, '/api/v5/market/candles', {
     bar: okxIntervals[timeframe],
-    instId: toDashedSymbol(pair.symbol, { 'RNDR/USDT': 'RENDER-USDT' }),
+    instId: okxInstrumentId(pair.symbol, options.marketType),
     limit: String(Math.max(1, Math.floor(requestedLimit ?? marketKlineLimit))),
   });
 
@@ -155,14 +160,20 @@ async function getOkxMarketCandles(pair: MarketPair, timeframe: Timeframe, reque
   return timeframe === '1y' ? aggregateCandles(candles, 12) : candles;
 }
 
-async function getBitgetMarketCandles(pair: MarketPair, timeframe: Timeframe, requestedLimit?: number, options: { strict?: boolean } = {}) {
+async function getBitgetMarketCandles(pair: MarketPair, timeframe: Timeframe, requestedLimit?: number, options: PublicRestCandleOptions = {}) {
   const { bitgetMarketBaseUrl, marketKlineLimit } = getThoonServerEnv();
   const limit = Math.max(1, Math.floor(requestedLimit ?? marketKlineLimit));
-  const response = await fetchExchangeJson<BitgetCandlesResponse>(bitgetMarketBaseUrl, '/api/v2/spot/market/candles', {
-    granularity: bitgetIntervals[timeframe],
-    limit: String(timeframe === '2h' ? limit * 2 : limit),
-    symbol: toCompactSymbol(pair.symbol, { 'RNDR/USDT': 'RENDERUSDT' }),
-  });
+  const perpetual = options.marketType !== 'spot';
+  const response = await fetchExchangeJson<BitgetCandlesResponse>(
+    bitgetMarketBaseUrl,
+    perpetual ? '/api/v2/mix/market/candles' : '/api/v2/spot/market/candles',
+    {
+      granularity: bitgetIntervals[timeframe],
+      limit: String(timeframe === '2h' ? limit * 2 : limit),
+      ...(perpetual ? { productType: 'USDT-FUTURES' } : {}),
+      symbol: toCompactSymbol(pair.symbol, { 'RNDR/USDT': 'RENDERUSDT' }),
+    },
+  );
 
   if (response.code !== '00000' || !response.data) {
     throw new Error(`Bitget candles failed: ${response.msg || response.code}`);
@@ -177,7 +188,11 @@ async function getBitgetMarketCandles(pair: MarketPair, timeframe: Timeframe, re
   return timeframe === '1y' ? aggregateCandles(candles, 12) : candles;
 }
 
-async function getKrakenMarketCandles(pair: MarketPair, timeframe: Timeframe, options: { strict?: boolean } = {}) {
+async function getKrakenMarketCandles(pair: MarketPair, timeframe: Timeframe, options: PublicRestCandleOptions = {}) {
+  if (options.marketType !== 'spot') {
+    throw new Error('Kraken perpetual candles are not wired to a public REST provider in Thoon yet.');
+  }
+
   const { krakenMarketBaseUrl } = getThoonServerEnv();
   const response = await fetchExchangeJson<KrakenOhlcResponse>(krakenMarketBaseUrl, '/0/public/OHLC', {
     interval: String(krakenIntervals[timeframe]),
@@ -218,7 +233,11 @@ async function getKrakenMarketCandles(pair: MarketPair, timeframe: Timeframe, op
   return candles;
 }
 
-async function getKucoinMarketCandles(pair: MarketPair, timeframe: Timeframe, options: { strict?: boolean } = {}) {
+async function getKucoinMarketCandles(pair: MarketPair, timeframe: Timeframe, options: PublicRestCandleOptions = {}) {
+  if (options.marketType !== 'spot') {
+    throw new Error('KuCoin perpetual candles are not wired to a public REST provider in Thoon yet.');
+  }
+
   const { kucoinMarketBaseUrl } = getThoonServerEnv();
   const response = await fetchExchangeJson<KucoinCandlesResponse>(kucoinMarketBaseUrl, '/api/v1/market/candles', {
     symbol: toDashedSymbol(pair.symbol),
@@ -234,7 +253,11 @@ async function getKucoinMarketCandles(pair: MarketPair, timeframe: Timeframe, op
   return timeframe === '1y' ? aggregateCandles(candles, 12) : candles;
 }
 
-async function getCoinbaseMarketCandles(pair: MarketPair, timeframe: Timeframe, options: { strict?: boolean } = {}) {
+async function getCoinbaseMarketCandles(pair: MarketPair, timeframe: Timeframe, options: PublicRestCandleOptions = {}) {
+  if (options.marketType !== 'spot') {
+    throw new Error('Coinbase perpetual candles are not wired to a public REST provider in Thoon yet.');
+  }
+
   const { coinbaseAdvancedMarketBaseUrl } = getThoonServerEnv();
   const productIds = coinbaseProductCandidates(pair.symbol);
   let lastError: unknown;
@@ -310,6 +333,12 @@ function toCompactSymbol(symbol: string, aliases: Record<string, string> = {}) {
 
 function toDashedSymbol(symbol: string, aliases: Record<string, string> = {}) {
   return aliases[symbol] ?? symbol.replace('/', '-').toUpperCase();
+}
+
+function okxInstrumentId(symbol: string, marketType: PublicRestCandleOptions['marketType']) {
+  const spotSymbol = toDashedSymbol(symbol, { 'RNDR/USDT': 'RENDER-USDT' });
+
+  return marketType === 'spot' ? spotSymbol : `${spotSymbol}-SWAP`;
 }
 
 function toKrakenPair(symbol: string) {

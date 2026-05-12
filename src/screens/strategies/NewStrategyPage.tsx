@@ -1,6 +1,6 @@
 'use client';
 
-import { Bot, Braces, Plus, Save, ShieldCheck, TestTube2 } from 'lucide-react';
+import { Braces, Plus, Save, ShieldCheck, TestTube2 } from 'lucide-react';
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
 
@@ -150,11 +150,11 @@ export function NewStrategyPage({ initialPair, initialStrategy, marketPairs, ris
             </span>
             <span>Backtest</span>
           </Link>
-          <Link className="ui-button ui-button--primary ui-button--sm" href={`/bots/new?pair=${encodeURIComponent(market)}`}>
+          <Link className="ui-button ui-button--primary ui-button--sm" href={`/backtest?pair=${encodeURIComponent(market)}`}>
             <span className="ui-button__icon">
-              <Bot size={15} />
+              <TestTube2 size={15} />
             </span>
-            <span>Create Bot</span>
+            <span>Backtest avant bot</span>
           </Link>
           <HelpPopover items={['Conditions can be reused for backtests and bots.', 'Stop-loss remains required by risk rules.']} title="Create Strategy" />
         </div>
@@ -256,11 +256,11 @@ export function NewStrategyPage({ initialPair, initialStrategy, marketPairs, ris
               </span>
               <span>Backtest</span>
             </Link>
-            <Link className="ui-button ui-button--primary ui-button--md" href={`/bots/new?pair=${encodeURIComponent(market)}`}>
+            <Link className="ui-button ui-button--primary ui-button--md" href={`/backtest?pair=${encodeURIComponent(market)}`}>
               <span className="ui-button__icon">
-                <Bot size={15} />
+                <TestTube2 size={15} />
               </span>
-              <span>Create Bot</span>
+              <span>Backtest avant bot</span>
             </Link>
           </div>
         </Card>

@@ -127,13 +127,18 @@ export function BotDetailPage({ agentReports, agentRuns, agentSettings, agentSug
           <DetailMeta label="Exchange" value={bot.exchange} />
           <DetailMeta label="Strategy" value={strategy?.name ?? bot.strategyId} />
           <DetailMeta label="Market / Pair" value={bot.symbol} />
+          <DetailMeta label="Source Report" tone={bot.sourceBacktestReportId ? 'positive' : 'warning'} value={bot.sourceBacktestReportId ?? 'not linked'} />
+          <DetailMeta label="Source TF" value={bot.sourceTimeframe ?? strategy?.timeframe ?? '-'} />
+          <DetailMeta label="Source Period" value={bot.sourceBacktestPeriod ?? '-'} />
+          <DetailMeta label="Source Exchange" value={bot.sourceExchangeName ?? bot.sourceExchangeId ?? '-'} />
+          <DetailMeta label="Checksum" tone={bot.sourceCandleChecksum ? 'positive' : 'warning'} value={bot.sourceCandleChecksum?.slice(0, 12) ?? 'missing'} />
           <DetailMeta label="API" tone={apiStatus.includes('enabled') || apiStatus.includes('safe') ? 'positive' : 'warning'} value={apiStatus} />
         </div>
       </Card>
 
       <div className="bot-detail-actions-bar">
         <Link href={`/charts?pair=${encodeURIComponent(bot.symbol)}`}>Open on Chart</Link>
-        <Link href={`/backtest?strategyId=${encodeURIComponent(bot.strategyId)}`}>Open Backtest</Link>
+        <Link href={`/backtest?strategyId=${encodeURIComponent(bot.strategyId)}&pair=${encodeURIComponent(bot.symbol)}${bot.sourceTimeframe ? `&timeframe=${encodeURIComponent(bot.sourceTimeframe)}` : ''}${bot.sourceBacktestReportId ? `&reportId=${encodeURIComponent(bot.sourceBacktestReportId)}` : ''}`}>Open Backtest</Link>
         <Link href={`/bots/${bot.id}/logs`}>Open Logs</Link>
         <button onClick={exportLogs} type="button">
           <Download size={15} />

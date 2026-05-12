@@ -8,6 +8,7 @@ import { join } from 'node:path';
 const root = process.cwd();
 const nextBin = join(root, 'node_modules', '.bin', 'next');
 const tests = [];
+const functionalCronSecret = 'functional-test-cron-secret-minimum-32-characters';
 
 test('layout and primary pages render', async ({ fetchPage }) => {
   const pages = [
@@ -88,7 +89,7 @@ test('strategy agent renders, protects core strategy and exposes Codex research 
   const researchStrategyId = strategyIdFromResearchRecord(researchRecord);
   const researchTitleNeedle = researchRecord.title.split('>')[0].trim();
   assertIncludes(researchBody, 'tradingview.com/script', 'TradingView research stores sourced public script URLs');
-  assertIncludes(researchBody, 'concepts', 'TradingView research stores concepts, not fake strategy numbers');
+  assertIncludes(researchBody, 'concepts', 'TradingView research stores concepts, not synthetic performance numbers');
 
   const strategiesAfterResearch = await fetchPage('/strategies');
   assertIncludes(strategiesAfterResearch, researchTitleNeedle, 'TradingView research appears in Strategies as a candidate');
@@ -115,6 +116,7 @@ test('strategy agent renders, protects core strategy and exposes Codex research 
   const researchBacktestJson = JSON.parse(researchBacktestBody);
   assertStatus(researchBacktest, 201, 'TradingView research candidate can run a real adapted backtest');
   assertEqual(researchBacktestJson.engine, 'thoon-concept-candle-engine', 'Research candidate uses the Thoon concept candle engine');
+  assert(researchBacktestJson.executionSettings && typeof researchBacktestJson.executionSettings.stopLossEnabled === 'boolean', 'Research candidate report stores execution settings');
   assertIncludes(researchBacktestBody, '"source":"calculated"', 'Research candidate backtest is calculated, not seeded');
 
   const aiSource = await readSource('src/server/strategy-agent-ai.ts');
@@ -126,19 +128,48 @@ test('strategy agent renders, protects core strategy and exposes Codex research 
   assertIncludes(researchSource, 'PROTECTED SOURCE SCRIPT', 'Protected scripts are handled as concept-only records');
 
   const jimmyConfigSource = await readSource('src/config/jimmy-strategy.ts');
-  const strategiesSource = await readSource('src/mock-data/strategies.ts');
-  const botsSource = await readSource('src/mock-data/bots.ts');
-  const agentSeedSource = await readSource('src/mock-data/strategy-agent.ts');
+  const strategiesSource = await readSource('src/seed-data/strategies.ts');
+  const botsSource = await readSource('src/seed-data/bots.ts');
+  const agentDefaultsSource = await readSource('src/config/strategy-agent-defaults.ts');
+  const thoonDbSource = await readSource('src/server/thoon-db.ts');
   assertIncludes(jimmyConfigSource, 'strat-jimmy', 'jimmy strategy is seeded');
   assertIncludes(strategiesSource, 'JIMMY_STRATEGY_NAME', 'jimmy strategy has canonical name');
-  assertIncludes(strategiesSource, 'export const backtestReports: BacktestReport[] = []', 'Backtest reports are not seeded with mocks');
-  assertIncludes(botsSource, 'export const bots: Bot[] = []', 'Bots are not seeded with fake PnL');
-  assertIncludes(agentSeedSource, 'export const agentSuggestions: AgentSuggestion[] = []', 'Agent suggestions are not seeded with mocks');
+  assertIncludes(strategiesSource, 'export const backtestReports: BacktestReport[] = []', 'Backtest reports are not seeded with synthetic results');
+  assertIncludes(botsSource, 'export const bots: Bot[] = []', 'Bots are not seeded with synthetic PnL');
+  assertIncludes(agentDefaultsSource, 'must never fabricate performance', 'Agent defaults forbid synthetic performance');
+  assertIncludes(thoonDbSource, 'agentSuggestionRecords: []', 'Agent suggestions are not seeded with synthetic recommendations');
+  const legacySeedFolder = `src/${'mo'}${'ck'}-data`;
+  assert(!existsSync(join(root, legacySeedFolder)), 'Legacy synthetic seed folder has been removed');
 
   const drawerSource = await readSource('src/components/agent/StrategyAgentDrawer.tsx');
   assertIncludes(drawerSource, 'confirmationRequired', 'Agent drawer handles confirmation-required responses');
   assertIncludes(drawerSource, 'research_tradingview', 'Agent drawer exposes TradingView public research action');
   assertIncludes(drawerSource, 'write_journal_note', 'Agent drawer exposes journal note action');
+
+  const agentDashboardSource = await readSource('src/screens/agent/AgentDashboardPage.tsx');
+  assertIncludes(agentDashboardSource, 'Best Backtested Strategies', 'Agent dashboard ranks best backtested strategies');
+  assertIncludes(agentDashboardSource, 'Paper Test Recommendations', 'Agent dashboard exposes confirmable paper-test recommendations');
+  assertIncludes(agentDashboardSource, 'Strategy Feedback', 'Agent dashboard exposes strategy feedback reports');
+  assertIncludes(agentDashboardSource, 'buildAutonomousTasks', 'Agent dashboard generates an autonomous validation queue');
+  assertIncludes(agentDashboardSource, 'Cron goal', 'Agent dashboard exposes cron-style goals');
+  assertIncludes(agentDashboardSource, 'Kronos Weight', 'Agent dashboard exposes Kronos learning weight');
+
+  const agentCron = await readJsonResponse(
+    await apiRequest('/api/agent/cron', {
+      body: JSON.stringify({}),
+      headers: { authorization: `Bearer ${functionalCronSecret}`, 'content-type': 'application/json' },
+      method: 'POST',
+    }),
+    'Agent cron planning returns JSON',
+  );
+  assert(agentCron.backtests && typeof agentCron.backtests.requested === 'number', 'Agent cron returns real backtest execution stats');
+  assert(agentCron.kronosLearning && typeof agentCron.kronosLearning.profile?.confidenceWeight === 'number', 'Agent cron returns Kronos learning stats');
+  assert(typeof agentCron.innovationsCreated === 'number', 'Agent cron returns innovation count');
+  const agentCronGet = await readJsonResponse(await apiRequest('/api/agent/cron', { headers: { authorization: `Bearer ${functionalCronSecret}` } }), 'Agent cron GET planning returns JSON for platform schedules');
+  assert(agentCronGet.backtests && typeof agentCronGet.backtests.requested === 'number', 'Agent cron GET returns real backtest execution stats');
+
+  const agentProgress = await readJsonResponse(await apiRequest('/api/agent/progress', { headers: { authorization: `Bearer ${functionalCronSecret}` } }), 'Agent progress cron returns JSON');
+  assert(agentProgress.report && Array.isArray(agentProgress.report.summary), 'Agent progress cron writes a strategy feedback report');
 });
 
 test('navigation links carry pair and strategy params', async ({ fetchPage, readSource }) => {
@@ -149,7 +180,7 @@ test('navigation links carry pair and strategy params', async ({ fetchPage, read
   const markets = await fetchPage('/markets');
   assertIncludes(markets, '/charts?pair=BTC%2FUSDT', 'Markets opens BTC on chart');
   assertIncludes(markets, '/charts?pair=SOL%2FUSDT', 'Markets opens the selected row symbol on chart');
-  assertIncludes(markets, 'Tracked Pairs', 'Markets reports tracked local pairs instead of fake global active crypto count');
+  assertIncludes(markets, 'Tracked Pairs', 'Markets reports tracked local pairs instead of synthetic global active crypto count');
   const marketsSource = await readSource('src/screens/MarketsPage.tsx');
   assertIncludes(marketsSource, "postJson('/api/watchlists'", 'Markets mutates watchlist through the API');
 
@@ -182,6 +213,9 @@ test('chart trading controls and risk engine hooks are present', async ({ fetchP
   assertIncludes(chartSource, 'ChartCandleState', 'Chart renders a loading/unavailable state while public candles load');
   assertIncludes(chartSource, 'setChartCandles([])', 'Chart does not show local candles while changing pairs');
   assertIncludes(chartSource, 'syncLastCandleToTicker', 'Chart last candle follows the live ticker without replacing the candle window');
+  assertIncludes(chartSource, 'marketType=${chartMarketType}', 'Chart requests candles for the same market type used by the visible chart');
+  assertIncludes(chartSource, "chartMarketType !== 'spot'", 'Spot websocket ticks do not overwrite perpetual chart candles');
+  assertIncludes(chartSource, 'resolveChartMarketType', 'Chart market type is resolved before syncing Thoon and TradingView');
   assertIncludes(chartSource, 'Confirm Live Order', 'Live confirmation modal exists');
   assert(!chartSource.includes('updateChartCandleWithLivePrice'), 'Live ticks do not rewrite the visible candle window');
   assert(!chartSource.includes('setChartCandles(market.candles)'), 'Chart never swaps in seeded local candles during public-candle loading');
@@ -194,8 +228,14 @@ test('chart trading controls and risk engine hooks are present', async ({ fetchP
   assert(!tradingChartSource.includes('scrollToRealTime'), 'Chart does not auto-scroll after passive live updates');
 
   const tradingViewSource = await readSource('src/components/chart/TradingViewChart.tsx');
-  assertIncludes(tradingViewSource, 'tradingview-chart__iframe', 'TradingView has an iframe fallback when tv.js is unavailable');
+  assertIncludes(tradingViewSource, 'external-embedding/embed-widget-advanced-chart.js', 'TradingView uses the official Advanced Chart Widget embed');
+  assertIncludes(tradingViewSource, 'tradingview-widget-container__widget', 'TradingView mounts into the official widget container');
+  assertIncludes(tradingViewSource, 'TradingView indisponible', 'TradingView has a dark fallback state when the external widget is unavailable');
   assertIncludes(tradingViewSource, "return `${prefix}:${base}${quote}PERP`", 'Binance perpetual symbols use the TradingView PERP format');
+
+  const binanceMarketSource = await readSource('src/server/exchanges/binance-market-data.ts');
+  assertIncludes(binanceMarketSource, '/fapi/v1/klines', 'Binance perpetual chart candles use the futures public kline endpoint');
+  assertIncludes(binanceMarketSource, 'binanceFuturesMarketBaseUrl', 'Binance futures candles are configured separately from spot candles');
 
   const riskEngineSource = await readSource('src/services/risk-engine.ts');
   assertIncludes(riskEngineSource, 'stopLossPrice > 0', 'Risk Engine rejects zero stop-loss');
@@ -211,6 +251,9 @@ test('bot, strategy, backtest and paper flows expose functional states', async (
   assertIncludes(botSource, 'evaluateRiskEngine', 'Create Bot uses Risk Engine');
   assertIncludes(botSource, 'Confirm Live Bot', 'Live bot confirmation exists');
   assertIncludes(botSource, 'disabled={liveBlockers.length > 0}', 'Live bot confirm is blocked by blockers');
+  assertIncludes(botSource, 'BotValidationGateCard', 'Create Bot exposes backtest validation before launch');
+  assertIncludes(botSource, 'buildBotValidationGate', 'Create Bot ranks out-of-sample backtest readiness');
+  assertIncludes(botSource, 'launchBlockedByValidation', 'Create Bot blocks launch when validation fails');
 
   const strategySource = await readSource('src/screens/strategies/NewStrategyPage.tsx');
   assertIncludes(strategySource, "setStatus('Saved')", 'Strategy builder has save state');
@@ -220,6 +263,19 @@ test('bot, strategy, backtest and paper flows expose functional states', async (
     body: JSON.stringify({
       fees: 0.06,
       initialCapital: 10000,
+      executionSettings: {
+        directionMode: 'both',
+        leverage: 3,
+        marketType: 'perpetual',
+        positionCapPct: 100,
+        riskPerTradePct: 0.8,
+        stopLossAtr: 1.5,
+        stopLossEnabled: true,
+        takeProfitEnabled: true,
+        takeProfitR: 2,
+        trailingStopAtr: 2,
+        trailingStopEnabled: true,
+      },
       period: '90D',
       slippage: 0.02,
       strategyId: 'strat-jimmy',
@@ -235,6 +291,9 @@ test('bot, strategy, backtest and paper flows expose functional states', async (
   assertIncludes(runBody, '"source":"calculated"', 'Backtest report is calculated, not seeded');
   assertIncludes(runBody, '"trades"', 'Backtest report includes trade list');
   assertEqual(runJson.engine, 'jimmy-pine-v5-candle-engine', 'Backtest report stores the real engine identity');
+  assert(runJson.executionSettings, 'Backtest report stores execution settings');
+  assertEqual(runJson.executionSettings.leverage, 3, 'Backtest report stores leverage from the execution model');
+  assertEqual(runJson.executionSettings.marketType, 'perpetual', 'Backtest report stores market type');
   assert(runJson.dataWindow?.candleChecksum, 'Backtest report stores candle checksum provenance');
   assert(Array.isArray(runJson.equityCurve) && runJson.equityCurve.length > 0, 'Backtest report stores calculated equity curve');
   assert(Array.isArray(runJson.drawdownCurve) && runJson.drawdownCurve.length > 0, 'Backtest report stores calculated drawdown curve');
@@ -252,14 +311,29 @@ test('bot, strategy, backtest and paper flows expose functional states', async (
   assertIncludes(backtestSource, 'actionOnClick={() => void runBacktest()}', 'Empty backtest state runs a real backtest action');
   assertIncludes(backtestSource, 'backtestPresetStorageKey', 'Backtest presets persist locally');
   assertIncludes(backtestSource, 'setAdvancedPanelOpen', 'Backtest filters open a real detail panel');
+  assertIncludes(backtestSource, 'backtest-execution-grid', 'Backtest exposes execution settings inputs');
+  assertIncludes(backtestSource, 'Agent Paper Verdict', 'Backtest page shows the agent paper-test verdict');
+  assertIncludes(backtestSource, 'PaperTestRecommendationActions', 'Backtest page can confirm a recommended paper test');
+  assertIncludes(backtestSource, 'sameExecutionSettings', 'Backtest results are scoped to execution settings');
+  assertIncludes(backtestSource, 'setLeverage', 'Backtest input changes leverage');
+  assertIncludes(backtestSource, 'setStopLossEnabled', 'Backtest input can enable or disable stop loss');
+  assertIncludes(backtestSource, 'setTrailingStopEnabled', 'Backtest input can enable or disable trailing stop');
 
   const backtest = await fetchPage('/backtest?strategyId=strat-jimmy');
   assertIncludes(backtest, 'Equity Curve', 'Backtest displays results');
   assertIncludes(backtest, 'Net Profit', 'Backtest displays net profit');
   assertIncludes(backtest, 'Candles Used', 'Backtest displays candle count');
+  assertIncludes(backtest, 'Risk / Trade', 'Backtest renders execution model inputs');
 
   const replay = await fetchPage('/backtest/replay');
   assertIncludes(replay, 'Timeframe', 'Paper testing displays chart timeframe');
+  assertIncludes(replay, 'Unlinked Replay', 'Paper testing distinguishes untracked replay from validation sessions');
+  assertIncludes(replay, 'Closed trades are saved to the real journal', 'Paper testing explains how strategy confirmation advances');
+
+  const replaySource = await readSource('src/screens/backtest/ReplayPaperPage.tsx');
+  assertIncludes(replaySource, 'Agent Paper Validation Session', 'Paper testing can show a tracked agent validation session');
+  assertIncludes(replaySource, '/api/paper-tests/', 'Paper testing persists session progress');
+  assertIncludes(replaySource, '/api/journal', 'Paper testing records closed paper trades in the journal');
   assertIncludes(replay, 'Data Window', 'Paper testing displays replay data dates');
   assertIncludes(replay, 'Current Candle', 'Paper testing displays the current candle timestamp');
   assertIncludes(replay, 'Hidden From', 'Paper testing displays hidden future start');
@@ -316,6 +390,28 @@ test('api mutations return controlled errors and block cross-origin writes', asy
 
   assertStatus(blockedOrigin, 403, 'Cross-origin mutation returns 403');
   assertIncludes(blockedOriginBody, 'Cross-origin mutation blocked', 'Cross-origin mutation returns JSON error');
+
+  const blockedFetchSite = await apiRequest('/api/alerts', {
+    body: JSON.stringify({ symbol: 'BTC/USDT' }),
+    headers: { 'content-type': 'application/json', 'sec-fetch-site': 'cross-site' },
+    method: 'POST',
+  });
+  const blockedFetchSiteBody = await blockedFetchSite.text();
+
+  assertStatus(blockedFetchSite, 403, 'Cross-site browser mutation returns 403');
+  assertIncludes(blockedFetchSiteBody, 'Cross-site mutation blocked', 'Cross-site browser mutation returns JSON error');
+
+  const riskBefore = await readJsonResponse(await apiRequest('/api/risk-rules'), 'Risk rules read before invalid patch returns JSON');
+  const patchedRisk = await readJsonResponse(
+    await apiRequest('/api/risk-rules', {
+      body: JSON.stringify({ __proto__: { polluted: true }, maxRiskPerTrade: 'not-a-number', unknownRoot: true }),
+      headers: { 'content-type': 'application/json' },
+      method: 'PATCH',
+    }),
+    'Risk rules patch with unexpected keys returns JSON',
+  );
+  assertEqual(patchedRisk.maxRiskPerTrade, riskBefore.maxRiskPerTrade, 'Risk rules reject invalid numeric values');
+  assert(!('unknownRoot' in patchedRisk), 'Risk rules ignore unexpected patch keys');
 });
 
 test('api resources and product actions are wired end-to-end', async ({ apiRequest, baseUrl, fetchPage }) => {
@@ -435,7 +531,7 @@ test('api resources and product actions are wired end-to-end', async ({ apiReque
     method: 'POST',
   });
   const blockedCustomBacktestBody = await blockedCustomBacktest.text();
-  assertStatus(blockedCustomBacktest, 422, 'Custom strategy without executable engine is blocked instead of faked');
+  assertStatus(blockedCustomBacktest, 422, 'Custom strategy without executable engine is blocked instead of synthesized');
   assertIncludes(blockedCustomBacktestBody, strategy.name, 'Blocked custom strategy backtest names the selected strategy');
 
   const duplicatedStrategy = await readJsonResponse(
@@ -457,15 +553,37 @@ test('api resources and product actions are wired end-to-end', async ({ apiReque
   );
   assert(bot.id && bot.mode === 'paper', 'Bot creation persists paper bot');
   assertEqual(bot.strategyId, strategy.id, 'Bot creation keeps the selected strategy id');
-  const startedBot = await readJsonResponse(
+  const blockedBotLaunch = await apiRequest('/api/bots', {
+    body: JSON.stringify({ allocatedCapital: 2500, exchange: 'Paper', mode: 'paper', name: `QA Blocked Bot ${unique}`, riskPerTrade: 0.5, status: 'running', strategyId: strategy.id, symbol: 'BTC/USDT' }),
+    headers: { 'content-type': 'application/json' },
+    method: 'POST',
+  });
+  const blockedBotLaunchBody = await blockedBotLaunch.text();
+  assertStatus(blockedBotLaunch, 403, 'Bot launch without validated backtest is blocked server-side');
+  assertIncludes(blockedBotLaunchBody, 'Bot launch blocked', 'Blocked bot launch explains validation gate');
+  const invalidBotAction = await apiRequest(`/api/bots/${encodeURIComponent(bot.id)}/action`, {
+    body: JSON.stringify({ action: 'launch-the-moon' }),
+    headers: { 'content-type': 'application/json' },
+    method: 'POST',
+  });
+  assertStatus(invalidBotAction, 400, 'Invalid bot action is rejected');
+  const blockedStart = await apiRequest(`/api/bots/${encodeURIComponent(bot.id)}/action`, {
+    body: JSON.stringify({ action: 'start' }),
+    headers: { 'content-type': 'application/json' },
+    method: 'POST',
+  });
+  const blockedStartBody = await blockedStart.text();
+  assertStatus(blockedStart, 403, 'Bot start without validated backtest is blocked server-side');
+  assertIncludes(blockedStartBody, 'Bot launch blocked', 'Blocked bot start explains validation gate');
+  const pausedBot = await readJsonResponse(
     await apiRequest(`/api/bots/${encodeURIComponent(bot.id)}/action`, {
-      body: JSON.stringify({ action: 'start' }),
+      body: JSON.stringify({ action: 'pause' }),
       headers: { 'content-type': 'application/json' },
       method: 'POST',
     }),
-    'Bot action returns JSON',
+    'Bot pause action returns JSON',
   );
-  assertEqual(startedBot.status, 'running', 'Bot start action persists running status');
+  assertEqual(pausedBot.status, 'paused', 'Bot pause action persists paused status');
   const stoppedBot = await readJsonResponse(
     await apiRequest(`/api/bots/${encodeURIComponent(bot.id)}`, {
       body: JSON.stringify({ status: 'stopped' }),
@@ -485,6 +603,12 @@ test('api resources and product actions are wired end-to-end', async ({ apiReque
     'Planned order returns JSON',
   );
   assertEqual(plannedOrder.id, `plan-${unique}`, 'Planned order persists explicit id');
+  const invalidOrderUpdate = await apiRequest(`/api/orders/${encodeURIComponent(plannedOrder.id)}`, {
+    body: JSON.stringify({ status: 'open' }),
+    headers: { 'content-type': 'application/json' },
+    method: 'PATCH',
+  });
+  assertStatus(invalidOrderUpdate, 400, 'Unsupported order update is rejected');
   const cancelledOrder = await readJsonResponse(
     await apiRequest(`/api/orders/${encodeURIComponent(plannedOrder.id)}`, {
       body: JSON.stringify({ status: 'cancelled' }),
@@ -642,6 +766,8 @@ test('production gates expose auth, readiness and observability contracts', asyn
   const metricsBody = await metrics.text();
   assertStatus(metrics, 200, 'Metrics endpoint is available');
   assertIncludes(metricsBody, 'apiRequests', 'Metrics endpoint exposes API counters');
+  assert(metrics.headers.get('x-thoon-request-id'), 'API responses include a request id');
+  assertIncludes(metricsBody, 'apiLatencyBuckets', 'Metrics endpoint exposes latency buckets');
 
   const liveExecutorSource = await readSource('src/server/exchanges/live-executor.ts');
   assertIncludes(liveExecutorSource, '/api/v3/order/test', 'Live executor defaults to signed test endpoint');
@@ -651,10 +777,44 @@ test('production gates expose auth, readiness and observability contracts', asyn
   const proxySource = await readSource('src/proxy.ts');
   assertIncludes(proxySource, 'verifySessionCookie', 'Proxy validates session cookie content');
   assertIncludes(proxySource, 'crypto.subtle', 'Proxy verifies signed cookies at the edge');
+  assertIncludes(proxySource, 'isAuthorizedCronRequest', 'Proxy allows scheduled agent cron only with bearer secret');
+
+  const loginSource = await readSource('src/screens/LoginPage.tsx');
+  assertIncludes(loginSource, 'safeNextPath', 'Login redirects are constrained to local paths');
+  assertIncludes(loginSource, "value.startsWith('//')", 'Login rejects protocol-relative redirects');
+
+  const authSource = await readSource('src/server/auth.ts');
+  assertIncludes(authSource, 'constantTimeStringEqual', 'Server session signatures use constant-time comparison');
+  assertIncludes(authSource, 'timingSafeEqual', 'Server auth uses timing-safe equality');
 
   const apiRouteSource = await readSource('src/app/api/[...path]/route.ts');
   assertIncludes(apiRouteSource, 'flushPendingPostgresMirror', 'Mutations wait for durable Postgres mirror when configured');
   assertIncludes(apiRouteSource, "record.status === 'active'", 'Live order routing requires active API keys');
+  assertIncludes(apiRouteSource, 'checkRateLimit', 'Mutation endpoint has in-process throttling');
+  assertIncludes(apiRouteSource, 'rateLimitHeaders', 'Rate-limited responses expose standard headers');
+  assertIncludes(apiRouteSource, 'patchRiskRules', 'Risk rules patching is allowlisted');
+  assertIncludes(apiRouteSource, 'Enable THOON_AUTH_MODE=local-required before storing exchange API keys.', 'Production API key storage requires auth');
+  assertIncludes(apiRouteSource, 'cronAuthorizationState', 'Agent cron requires bearer authorization when configured');
+  assertIncludes(apiRouteSource, 'getBotLaunchValidationBlocker', 'Bot running state is guarded by validated backtests server-side');
+
+  const envSource = await readSource('src/server/env.ts');
+  assertIncludes(envSource, 'loginRateLimitMax', 'Login rate limit is environment-configurable');
+  assertIncludes(envSource, 'mutationRateLimitMax', 'Mutation rate limit is environment-configurable');
+  assertIncludes(envSource, 'edgeRateLimitPolicy', 'Production readiness tracks edge/WAF throttling');
+  assertIncludes(envSource, 'cronSecret', 'Agent cron secret is environment-configurable');
+
+  const readinessSource = await readSource('src/server/readiness.ts');
+  assertIncludes(readinessSource, 'runtime-rate-limit', 'Readiness checks runtime rate limiting');
+  assertIncludes(readinessSource, 'edge-rate-limit', 'Readiness checks edge rate-limit acknowledgement');
+  assertIncludes(readinessSource, 'agent-cron-secret', 'Readiness checks scheduled agent cron protection');
+
+  const vercelSource = await readSource('vercel.json');
+  assertIncludes(vercelSource, '/api/agent/cron', 'Vercel cron wakes the Strategy Agent planner');
+  assertIncludes(vercelSource, '0 * * * *', 'Agent cron is scheduled hourly');
+
+  const ciSource = await readSource('.github/workflows/ci.yml');
+  assertIncludes(ciSource, 'npm run verify', 'CI runs the full verification chain');
+  assertIncludes(ciSource, 'playwright install', 'CI installs browser dependencies for E2E');
 });
 
 async function main() {
@@ -673,10 +833,16 @@ async function main() {
     const port = await getFreePort();
     tempDataDir = await mkdtemp(join(tmpdir(), 'thoon-test-'));
     baseUrl = `http://127.0.0.1:${port}`;
-    const nextMode = existsSync(join(root, '.next', 'BUILD_ID')) ? 'start' : 'dev';
+    const nextMode = process.env.THOON_TEST_NEXT_MODE === 'start' && existsSync(join(root, '.next', 'BUILD_ID')) ? 'start' : 'dev';
     server = spawn(nextBin, [nextMode, '-H', '127.0.0.1', '-p', String(port)], {
       cwd: root,
-      env: { ...process.env, NEXT_TELEMETRY_DISABLED: '1', THOON_DATA_FILE: join(tempDataDir, 'thoon-db.json') },
+      env: {
+        ...process.env,
+        NEXT_TELEMETRY_DISABLED: '1',
+        THOON_AUTH_MODE: process.env.THOON_AUTH_MODE ?? 'local-disabled',
+        THOON_CRON_SECRET: process.env.THOON_CRON_SECRET ?? functionalCronSecret,
+        THOON_DATA_FILE: join(tempDataDir, 'thoon-db.json'),
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

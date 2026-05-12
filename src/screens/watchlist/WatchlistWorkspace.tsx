@@ -18,7 +18,6 @@ type WatchlistWorkspaceProps = {
   watchlists: Watchlist[];
 };
 
-const favoritesStorageKey = 'thoon.watchlist.favorites';
 type WatchlistTab = 'lists' | 'favorites' | 'tracked';
 type WatchlistFilter = 'spot' | 'perp' | 'favorites' | 'alerts';
 type WatchlistSort = 'default' | 'price' | 'volume';
@@ -32,7 +31,6 @@ export function WatchlistWorkspace({ alerts, initialAddPair, marketPairs, watchl
   const [sortMode, setSortMode] = useState<WatchlistSort>('default');
   const [actionStatus, setActionStatus] = useState('Ready');
   const [favoriteSymbols, setFavoriteSymbols] = useState(defaultFavorites);
-  const [favoritesLoaded, setFavoritesLoaded] = useState(false);
   const favoriteSet = useMemo(() => new Set(favoriteSymbols), [favoriteSymbols]);
   const watchedSymbols = useMemo(() => new Set(listRecords.flatMap((list) => list.pairSymbols)), [listRecords]);
   const watchedPairs = useMemo(() => liveMarketPairs.filter((pair) => watchedSymbols.has(pair.symbol)), [liveMarketPairs, watchedSymbols]);
@@ -78,77 +76,76 @@ export function WatchlistWorkspace({ alerts, initialAddPair, marketPairs, watchl
     });
   }, [activeFilter, activeTab, alerts, favoriteSet, liveMarketPairs, sortMode, watchedPairs]);
 
-  function createList() {
+  async function createList() {
     const nextIndex = listRecords.filter((list) => list.type === 'custom').length + 1;
-    const nextList: Watchlist = {
-      alertCount: 0,
-      id: `custom-${Date.now()}`,
-      name: `New List ${nextIndex}`,
-      pairSymbols: [],
-      type: 'custom',
-      updatedAt: new Date().toISOString(),
-    };
+    const name = `New List ${nextIndex}`;
 
-    setListRecords((currentLists) => [...currentLists, nextList]);
-    setActionStatus(`${nextList.name} created`);
+    setActionStatus('Creating list');
+
+    try {
+      const nextList = await postJson<Watchlist>('/api/watchlists', { action: 'create-list', name });
+      setListRecords((currentLists) => [...currentLists, nextList]);
+      setActionStatus(`${nextList.name} created`);
+    } catch (error) {
+      setActionStatus(error instanceof Error ? error.message : 'Create failed');
+    }
   }
 
   useEffect(() => {
-    const storedFavorites = window.localStorage.getItem(favoritesStorageKey);
-
-    if (storedFavorites) {
-      setFavoriteSymbols(JSON.parse(storedFavorites) as string[]);
-    }
-
-    setFavoritesLoaded(true);
-  }, []);
-
-  useEffect(() => {
-    if (!favoritesLoaded) {
+    if (!initialAddPair || !liveMarketPairs.some((pair) => pair.symbol === initialAddPair) || favoriteSymbols.includes(initialAddPair)) {
       return;
     }
 
-    window.localStorage.setItem(favoritesStorageKey, JSON.stringify(favoriteSymbols));
-  }, [favoriteSymbols, favoritesLoaded]);
+    let cancelled = false;
 
-  useEffect(() => {
-    if (!favoritesLoaded || !initialAddPair || !liveMarketPairs.some((pair) => pair.symbol === initialAddPair)) {
-      return;
+    async function addInitialPair() {
+      try {
+        const updatedList = await postJson<Watchlist>('/api/watchlists', { action: 'add-pair', listId: 'favorites', symbol: initialAddPair });
+
+        if (!cancelled) {
+          syncWatchlist(updatedList);
+          setActionStatus(`${initialAddPair} added`);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setActionStatus(error instanceof Error ? error.message : 'Add failed');
+        }
+      }
     }
 
-    setFavoriteSymbols((currentSymbols) => {
-      if (currentSymbols.includes(initialAddPair)) {
-        return currentSymbols;
+    void addInitialPair();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [favoriteSymbols, initialAddPair, liveMarketPairs]);
+
+  async function toggleFavorite(symbol: string) {
+    const action = favoriteSet.has(symbol) ? 'remove-pair' : 'add-pair';
+
+    setActionStatus(action === 'add-pair' ? 'Adding favorite' : 'Removing favorite');
+
+    try {
+      const updatedList = await postJson<Watchlist>('/api/watchlists', { action, listId: 'favorites', symbol });
+      syncWatchlist(updatedList);
+      setActionStatus(action === 'add-pair' ? `${symbol} added` : `${symbol} removed`);
+    } catch (error) {
+      setActionStatus(error instanceof Error ? error.message : 'Favorite update failed');
+    }
+  }
+
+  function syncWatchlist(updatedList: Watchlist) {
+    setListRecords((currentLists) => {
+      if (currentLists.some((list) => list.id === updatedList.id)) {
+        return currentLists.map((list) => (list.id === updatedList.id ? updatedList : list));
       }
 
-      const nextSymbols = [...currentSymbols, initialAddPair];
-      window.localStorage.setItem(favoritesStorageKey, JSON.stringify(nextSymbols));
-      void postJson('/api/watchlists', { action: 'add-pair', listId: 'favorites', symbol: initialAddPair });
-
-      return nextSymbols;
+      return [...currentLists, updatedList];
     });
-  }, [favoritesLoaded, initialAddPair, liveMarketPairs]);
 
-  function toggleFavorite(symbol: string) {
-    if (!favoritesLoaded) {
-      return;
+    if (updatedList.id === 'favorites') {
+      setFavoriteSymbols(updatedList.pairSymbols);
     }
-
-    setFavoriteSymbols((currentSymbols) => {
-      if (currentSymbols.includes(symbol)) {
-        const nextSymbols = currentSymbols.filter((item) => item !== symbol);
-        window.localStorage.setItem(favoritesStorageKey, JSON.stringify(nextSymbols));
-        void postJson('/api/watchlists', { action: 'remove-pair', listId: 'favorites', symbol });
-
-        return nextSymbols;
-      }
-
-      const nextSymbols = [...currentSymbols, symbol];
-      window.localStorage.setItem(favoritesStorageKey, JSON.stringify(nextSymbols));
-      void postJson('/api/watchlists', { action: 'add-pair', listId: 'favorites', symbol });
-
-      return nextSymbols;
-    });
   }
 
   return (
@@ -229,7 +226,6 @@ export function WatchlistWorkspace({ alerts, initialAddPair, marketPairs, watchl
                   <WatchlistRow
                     alertCount={alerts.filter((alert) => alert.symbol === pair.symbol && alert.status === 'active').length}
                     favorite={favoriteSet.has(pair.symbol)}
-                    favoritesLoaded={favoritesLoaded}
                     key={pair.symbol}
                     pair={pair}
                     toggleFavorite={toggleFavorite}
@@ -275,15 +271,13 @@ function WatchlistCard({ favoriteSymbols, list, onManage }: { favoriteSymbols: s
 function WatchlistRow({
   alertCount,
   favorite,
-  favoritesLoaded,
   pair,
   toggleFavorite,
 }: {
   alertCount: number;
   favorite: boolean;
-  favoritesLoaded: boolean;
   pair: MarketPair;
-  toggleFavorite: (symbol: string) => void;
+  toggleFavorite: (symbol: string) => Promise<void>;
 }) {
   const pairParam = encodeURIComponent(pair.symbol);
 
@@ -293,8 +287,7 @@ function WatchlistRow({
         <button
           aria-label={`${favorite ? 'Remove' : 'Add'} ${pair.symbol} favorite`}
           className="watchlist-favorite-button"
-          disabled={!favoritesLoaded}
-          onClick={() => toggleFavorite(pair.symbol)}
+          onClick={() => void toggleFavorite(pair.symbol)}
           type="button"
         >
           <Star className={favorite ? 'is-favorite' : undefined} size={15} />

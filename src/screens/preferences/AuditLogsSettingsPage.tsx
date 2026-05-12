@@ -252,7 +252,7 @@ function buildSummary(logs: AuditEvent[]) {
 function sourceHref(log: AuditEvent) {
   switch (log.eventType) {
     case 'api':
-      return '/preferences/exchange-api';
+      return '/exchanges';
     case 'risk':
       return '/preferences/risk-rules';
     case 'bot':

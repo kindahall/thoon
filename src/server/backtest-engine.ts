@@ -1,11 +1,12 @@
 import { JIMMY_SOURCE_ID, JIMMY_STRATEGY_ID } from '../config/jimmy-strategy';
 import type { Candle, Timeframe } from '../types/market';
-import type { BacktestReport, BacktestTrade, Strategy } from '../types/trading';
+import type { BacktestExecutionSettings, BacktestReport, BacktestTrade, Strategy } from '../types/trading';
 
 type RunBacktestInput = {
   candles: Candle[];
   exchangeId?: string;
   exchangeName?: string;
+  executionSettings?: BacktestExecutionSettings;
   feesPct: number;
   initialCapital: number;
   marketDataSource: BacktestReport['marketDataSource'];
@@ -20,11 +21,16 @@ type OpenTrade = {
   entry: number;
   entryIndex: number;
   entryTime: string;
+  leverage: number;
+  margin: number;
+  marketType: BacktestExecutionSettings['marketType'];
+  notional: number;
   riskAmount: number;
   side: 'long' | 'short';
   size: number;
-  stop: number;
-  trail: number;
+  stop?: number;
+  takeProfit?: number;
+  trail?: number;
 };
 
 type JimmyBacktestProfile = {
@@ -52,8 +58,10 @@ export function runBacktestFromCandles(input: RunBacktestInput): BacktestReport 
   const candles = selectPeriodCandles(input.candles, input.period, input.timeframe);
   const warnings: string[] = [];
   const profile = jimmyProfileFor(input.timeframe);
+  const executionSettings = normalizeExecutionSettings(input.executionSettings, input.strategy);
   const isJimmyBacktest = isJimmyStrategy(input.strategy);
   const isResearchAdaptation = Boolean(input.strategy.agentSource?.sourceId.startsWith('tradingview:'));
+  const isAgentInnovation = Boolean(input.strategy.agentSource?.sourceId.startsWith('agent-innovation:'));
 
   if (candles.length < 40) {
     warnings.push(`Only ${candles.length} candles available. Results need more history before promotion.`);
@@ -65,6 +73,18 @@ export function runBacktestFromCandles(input: RunBacktestInput): BacktestReport 
 
   if (isResearchAdaptation) {
     warnings.push('TradingView source is backtested as a Thoon concept adaptation from public metadata, not as the exact Pine script unless open code is later implemented.');
+  }
+
+  if (isAgentInnovation) {
+    warnings.push('Agent innovation candidate: rules were generated inside Thoon and are being tested from exchange candles. No profitability is assumed before this report.');
+  }
+
+  if (executionSettings.marketType === 'spot' && executionSettings.directionMode !== 'long-only') {
+    warnings.push('Spot market selected: short signals are ignored because spot backtests are long-only.');
+  }
+
+  if (!executionSettings.stopLossEnabled) {
+    warnings.push('Stop loss disabled: position sizing uses the notional cap and R multiples are less reliable.');
   }
 
   const closes = candles.map((candle) => candle.close);
@@ -97,7 +117,7 @@ export function runBacktestFromCandles(input: RunBacktestInput): BacktestReport 
     const atrValue = atrValues[index] ?? candle.close * 0.01;
 
     if (openTrade) {
-      const exit = evaluateExit(input.strategy, candles, index, openTrade, longMa[index], atrValue, slippageRate, profile);
+      const exit = evaluateExit(candles, index, openTrade, longMa[index], atrValue, slippageRate, executionSettings);
 
       if (exit) {
         const trade = closeTrade(input.strategy.id, candles, openTrade, index, exit.price, exit.reason, feeRate);
@@ -129,23 +149,21 @@ export function runBacktestFromCandles(input: RunBacktestInput): BacktestReport 
       drawdownEvent = signal.drawdownEvent;
       drawupEvent = signal.drawupEvent;
 
-      if (signal.side) {
+      if (signal.side && isSideAllowed(signal.side, executionSettings)) {
         const entry = signal.side === 'long' ? candle.close * (1 + slippageRate) : candle.close * (1 - slippageRate);
-        const stopDistance = Math.max(atrValue * profile.atrStopMultiplier, candle.close * 0.004);
-        const stop = signal.side === 'long' ? entry - stopDistance : entry + stopDistance;
-        const riskAmount = Math.max(5, equity * (Math.min(input.strategy.riskPerTrade, 2) / 100));
-        const size = riskAmount / Math.abs(entry - stop);
-
-        openTrade = {
+        const nextTrade = createOpenTrade({
+          atrValue,
+          candle,
           entry,
-          entryIndex: index,
-          entryTime: isoTime(candle.time),
-          riskAmount,
+          equity,
+          executionSettings,
+          index,
           side: signal.side,
-          size,
-          stop,
-          trail: signal.side === 'long' ? entry - atrValue * profile.atrTrailMultiplier : entry + atrValue * profile.atrTrailMultiplier,
-        };
+        });
+
+        if (nextTrade) {
+          openTrade = nextTrade;
+        }
       }
     }
 
@@ -171,8 +189,8 @@ export function runBacktestFromCandles(input: RunBacktestInput): BacktestReport 
           markPrice: roundMarketValue(lastCandle.close),
           side: openTrade.side,
           size: roundMarketValue(openTrade.size),
-          stop: roundMarketValue(openTrade.stop),
-          trail: roundMarketValue(openTrade.trail),
+          stop: roundMarketValue(openTrade.stop ?? 0),
+          trail: roundMarketValue(openTrade.trail ?? 0),
           unrealizedPnl: roundMoney(unrealizedPnl(openTrade, lastCandle.close)),
         }
       : undefined;
@@ -198,8 +216,9 @@ export function runBacktestFromCandles(input: RunBacktestInput): BacktestReport 
     engine: isJimmyBacktest ? 'jimmy-pine-v5-candle-engine' : 'thoon-concept-candle-engine',
     equityCurve: downsample(equityCurve.length ? equityCurve : [input.initialCapital], 80),
     executionModel: isJimmyBacktest
-      ? 'Signals are evaluated from exchange OHLCV candles; entries use candle close with configured slippage, exits use candle high/low against ATR stop, ATR trail, take-profit and MA cross.'
-      : 'Thoon concept adaptation: public research concepts are converted into explicit candle rules, then evaluated on exchange OHLCV with configured slippage, ATR risk, trailing stop and take-profit.',
+      ? 'Signals are evaluated from exchange OHLCV candles; entries use candle close with configured slippage, leverage-capped risk sizing, ATR stop, optional ATR trail, take-profit and MA cross exits.'
+      : 'Thoon concept adaptation: public research concepts are converted into explicit candle rules, then evaluated on exchange OHLCV with configured slippage, leverage-capped risk sizing, ATR stop, optional trailing stop and take-profit.',
+    executionSettings,
     exchangeId: input.exchangeId,
     exchangeName: input.exchangeName,
     feesPct: input.feesPct,
@@ -234,6 +253,99 @@ function buildBuyHoldCurve(candles: Candle[], initialCapital: number) {
   }
 
   return candles.map((candle) => roundMoney(initialCapital * (candle.close / firstClose)));
+}
+
+function normalizeExecutionSettings(settings: BacktestExecutionSettings | undefined, strategy: Strategy): BacktestExecutionSettings {
+  const riskSettings = strategy.riskSettings;
+
+  return {
+    directionMode: settings?.directionMode === 'long-only' || settings?.directionMode === 'short-only' ? settings.directionMode : 'both',
+    leverage: clampNumber(settings?.leverage, 1, 125, 1),
+    marketType: settings?.marketType === 'spot' ? 'spot' : 'perpetual',
+    positionCapPct: clampNumber(settings?.positionCapPct, 1, 100, 100),
+    riskPerTradePct: clampNumber(settings?.riskPerTradePct, 0.01, 10, Math.max(0.01, strategy.riskPerTrade || 1)),
+    stopLossAtr: clampNumber(settings?.stopLossAtr, 0.1, 20, Number(riskSettings?.stopLoss.match(/(\d+(?:\.\d+)?)x/i)?.[1]) || 1.5),
+    stopLossEnabled: settings?.stopLossEnabled ?? riskSettings?.stopRequired ?? true,
+    takeProfitEnabled: settings?.takeProfitEnabled ?? true,
+    takeProfitR: clampNumber(settings?.takeProfitR, 0.1, 20, riskSettings?.rrTarget ?? 2),
+    trailingStopAtr: clampNumber(settings?.trailingStopAtr, 0.1, 20, Number(riskSettings?.takeProfit.match(/(\d+(?:\.\d+)?)\s*ATR/i)?.[1]) || 2),
+    trailingStopEnabled: settings?.trailingStopEnabled ?? riskSettings?.trailingStop ?? true,
+  };
+}
+
+function createOpenTrade(input: {
+  atrValue: number;
+  candle: Candle;
+  entry: number;
+  equity: number;
+  executionSettings: BacktestExecutionSettings;
+  index: number;
+  side: 'long' | 'short';
+}): OpenTrade | undefined {
+  const riskUnit = Math.max(input.atrValue * input.executionSettings.stopLossAtr, input.candle.close * 0.001);
+  const desiredRiskAmount = Math.max(5, input.equity * (input.executionSettings.riskPerTradePct / 100));
+  const maxNotional = Math.max(0, input.equity * (input.executionSettings.positionCapPct / 100) * input.executionSettings.leverage);
+  const maxSize = maxNotional / input.entry;
+  const riskSize = input.executionSettings.stopLossEnabled ? desiredRiskAmount / riskUnit : maxSize;
+  const size = Math.min(riskSize, maxSize);
+
+  if (!Number.isFinite(size) || size <= 0) {
+    return undefined;
+  }
+
+  const notional = input.entry * size;
+  const margin = notional / input.executionSettings.leverage;
+
+  if (!Number.isFinite(margin) || margin > input.equity) {
+    return undefined;
+  }
+
+  const stop = input.executionSettings.stopLossEnabled ? (input.side === 'long' ? input.entry - riskUnit : input.entry + riskUnit) : undefined;
+  const takeProfit =
+    input.executionSettings.takeProfitEnabled && input.executionSettings.takeProfitR > 0
+      ? input.side === 'long'
+        ? input.entry + riskUnit * input.executionSettings.takeProfitR
+        : input.entry - riskUnit * input.executionSettings.takeProfitR
+      : undefined;
+  const trail =
+    input.executionSettings.trailingStopEnabled && input.executionSettings.trailingStopAtr > 0
+      ? input.side === 'long'
+        ? input.entry - input.atrValue * input.executionSettings.trailingStopAtr
+        : input.entry + input.atrValue * input.executionSettings.trailingStopAtr
+      : undefined;
+  const actualRiskAmount = input.executionSettings.stopLossEnabled ? Math.abs(input.entry - (stop ?? input.entry)) * size : desiredRiskAmount;
+
+  return {
+    entry: input.entry,
+    entryIndex: input.index,
+    entryTime: isoTime(input.candle.time),
+    leverage: input.executionSettings.leverage,
+    margin,
+    marketType: input.executionSettings.marketType,
+    notional,
+    riskAmount: Math.max(1, actualRiskAmount),
+    side: input.side,
+    size,
+    stop,
+    takeProfit,
+    trail,
+  };
+}
+
+function isSideAllowed(side: 'long' | 'short', executionSettings: BacktestExecutionSettings) {
+  if (executionSettings.marketType === 'spot' && side === 'short') {
+    return false;
+  }
+
+  if (executionSettings.directionMode === 'long-only') {
+    return side === 'long';
+  }
+
+  if (executionSettings.directionMode === 'short-only') {
+    return side === 'short';
+  }
+
+  return true;
 }
 
 function entrySignal(input: {
@@ -323,41 +435,50 @@ function entrySignal(input: {
   };
 }
 
-function evaluateExit(strategy: Strategy, candles: Candle[], index: number, trade: OpenTrade, longMaValue: number | undefined, atrValue: number, slippageRate: number, profile: JimmyBacktestProfile) {
+function evaluateExit(candles: Candle[], index: number, trade: OpenTrade, longMaValue: number | undefined, atrValue: number, slippageRate: number, executionSettings: BacktestExecutionSettings) {
   const candle = candles[index];
-  const takeProfitDistance = Math.abs(trade.entry - trade.stop) * (strategy.riskSettings?.rrTarget ?? 2);
-  const takeProfit = trade.side === 'long' ? trade.entry + takeProfitDistance : trade.entry - takeProfitDistance;
-  const nextTrail = trade.side === 'long' ? candle.close - atrValue * profile.atrTrailMultiplier : candle.close + atrValue * profile.atrTrailMultiplier;
+  const nextTrail = trade.side === 'long' ? candle.close - atrValue * executionSettings.trailingStopAtr : candle.close + atrValue * executionSettings.trailingStopAtr;
+  const liquidation = estimatedLiquidationPrice(trade);
 
-  trade.trail = trade.side === 'long' ? Math.max(trade.trail, nextTrail) : Math.min(trade.trail, nextTrail);
+  if (executionSettings.trailingStopEnabled && trade.trail !== undefined) {
+    trade.trail = trade.side === 'long' ? Math.max(trade.trail, nextTrail) : Math.min(trade.trail, nextTrail);
+  }
 
   if (trade.side === 'long') {
-    if (candle.low <= trade.stop) {
+    if (trade.stop !== undefined && candle.low <= trade.stop) {
       return { price: trade.stop * (1 - slippageRate), reason: 'stop-loss' as const };
     }
 
-    if (candle.low <= trade.trail && index > trade.entryIndex + 1) {
+    if (liquidation && candle.low <= liquidation) {
+      return { price: liquidation * (1 - slippageRate), reason: 'liquidation' as const };
+    }
+
+    if (trade.trail !== undefined && candle.low <= trade.trail && index > trade.entryIndex + 1) {
       return { price: trade.trail * (1 - slippageRate), reason: 'trailing-stop' as const };
     }
 
-    if (candle.high >= takeProfit) {
-      return { price: takeProfit * (1 - slippageRate), reason: 'take-profit' as const };
+    if (trade.takeProfit !== undefined && candle.high >= trade.takeProfit) {
+      return { price: trade.takeProfit * (1 - slippageRate), reason: 'take-profit' as const };
     }
 
     if (longMaValue && candle.close < longMaValue && index > trade.entryIndex + 2) {
       return { price: candle.close * (1 - slippageRate), reason: 'ma-cross' as const };
     }
   } else {
-    if (candle.high >= trade.stop) {
+    if (trade.stop !== undefined && candle.high >= trade.stop) {
       return { price: trade.stop * (1 + slippageRate), reason: 'stop-loss' as const };
     }
 
-    if (candle.high >= trade.trail && index > trade.entryIndex + 1) {
+    if (liquidation && candle.high >= liquidation) {
+      return { price: liquidation * (1 + slippageRate), reason: 'liquidation' as const };
+    }
+
+    if (trade.trail !== undefined && candle.high >= trade.trail && index > trade.entryIndex + 1) {
       return { price: trade.trail * (1 + slippageRate), reason: 'trailing-stop' as const };
     }
 
-    if (candle.low <= takeProfit) {
-      return { price: takeProfit * (1 + slippageRate), reason: 'take-profit' as const };
+    if (trade.takeProfit !== undefined && candle.low <= trade.takeProfit) {
+      return { price: trade.takeProfit * (1 + slippageRate), reason: 'take-profit' as const };
     }
 
     if (longMaValue && candle.close > longMaValue && index > trade.entryIndex + 2) {
@@ -381,16 +502,32 @@ function closeTrade(strategyId: string, candles: Candle[], trade: OpenTrade, exi
     exitTime: isoTime(candles[exitIndex].time),
     fee: roundMoney(fee),
     id: `bt-trade-${slug(strategyId)}-${trade.entryIndex}-${exitIndex}`,
+    leverage: trade.leverage,
+    margin: roundMoney(trade.margin),
+    notional: roundMoney(trade.notional),
     pnl,
     rMultiple: roundMoney(pnl / Math.max(trade.riskAmount, 1)),
     side: trade.side,
     size: roundMarketValue(trade.size),
+    stop: trade.stop === undefined ? undefined : roundMarketValue(trade.stop),
+    takeProfit: trade.takeProfit === undefined ? undefined : roundMarketValue(trade.takeProfit),
     status: pnl >= 0 ? 'win' : 'loss',
   };
 }
 
 function unrealizedPnl(trade: OpenTrade, price: number) {
   return trade.side === 'long' ? (price - trade.entry) * trade.size : (trade.entry - price) * trade.size;
+}
+
+function estimatedLiquidationPrice(trade: OpenTrade) {
+  if (trade.marketType === 'spot' || trade.leverage <= 1) {
+    return undefined;
+  }
+
+  const distance = trade.entry / trade.leverage;
+  const maintenanceBuffer = distance * 0.08;
+
+  return trade.side === 'long' ? trade.entry - distance + maintenanceBuffer : trade.entry + distance - maintenanceBuffer;
 }
 
 function selectPeriodCandles(candles: Candle[], period: string, timeframe: Timeframe) {
@@ -628,6 +765,12 @@ function roundMarketValue(value: number) {
   }
 
   return Math.round(value * 1000000) / 1000000;
+}
+
+function clampNumber(value: number | undefined, min: number, max: number, fallback: number) {
+  const nextValue = typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+
+  return Math.min(max, Math.max(min, nextValue));
 }
 
 function slug(value: string) {

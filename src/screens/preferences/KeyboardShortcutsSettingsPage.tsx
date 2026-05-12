@@ -5,6 +5,8 @@ import { useMemo, useState } from 'react';
 
 import { PreferencesSectionNav } from '../../components/preferences/PreferencesSectionNav';
 import { Badge, Button, Card, HelpPopover, Toggle } from '../../components/ui';
+import { patchJson } from '../../services/api-client';
+import type { KeyboardShortcutSettings, UserPreferences } from '../../types/trading';
 import { cn } from '../../utils/classNames';
 
 type ShortcutCategory = 'Navigation' | 'Chart' | 'Trade Markers' | 'Orders' | 'Bots' | 'Backtest';
@@ -41,9 +43,22 @@ const defaultShortcuts: ShortcutDefinition[] = [
   { action: 'Replay play/pause', category: 'Backtest', id: 'backtest-replay', key: 'Space', scope: 'Replay' },
 ];
 
-export function KeyboardShortcutsSettingsPage() {
-  const [enabled, setEnabled] = useState(true);
-  const [shortcuts, setShortcuts] = useState(defaultShortcuts);
+function normalizeShortcutSettings(settings: UserPreferences['keyboardShortcuts']): KeyboardShortcutSettings {
+  return {
+    enabled: settings?.enabled ?? true,
+    shortcuts: settings?.shortcuts?.length ? settings.shortcuts : defaultShortcuts,
+    updatedAt: settings?.updatedAt ?? new Date(0).toISOString(),
+  };
+}
+
+type KeyboardShortcutsSettingsPageProps = {
+  preferences: UserPreferences;
+};
+
+export function KeyboardShortcutsSettingsPage({ preferences }: KeyboardShortcutsSettingsPageProps) {
+  const initialSettings = normalizeShortcutSettings(preferences.keyboardShortcuts);
+  const [enabled, setEnabled] = useState(initialSettings.enabled);
+  const [shortcuts, setShortcuts] = useState(initialSettings.shortcuts);
   const [activeCategory, setActiveCategory] = useState<ShortcutCategory>('Navigation');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftKey, setDraftKey] = useState('');
@@ -82,24 +97,54 @@ export function KeyboardShortcutsSettingsPage() {
     setStatus('Ready');
   }
 
-  function saveShortcut(shortcutId: string) {
+  async function saveShortcut(shortcutId: string) {
     if (!draftKey.trim() || hasDraftConflict(shortcuts, shortcutId, draftKey)) {
       setStatus('Conflict');
       return;
     }
 
-    setShortcuts((current) => current.map((shortcut) => (shortcut.id === shortcutId ? { ...shortcut, key: draftKey.trim() } : shortcut)));
+    const nextShortcuts = shortcuts.map((shortcut) => (shortcut.id === shortcutId ? { ...shortcut, key: draftKey.trim() } : shortcut));
+
+    setShortcuts(nextShortcuts);
     setEditingId(null);
     setDraftKey('');
-    setStatus('Saved');
+    await persistShortcuts(enabled, nextShortcuts, 'Saved');
   }
 
-  function resetShortcuts() {
+  async function resetShortcuts() {
     setShortcuts(defaultShortcuts);
     setEditingId(null);
     setDraftKey('');
     setQuery('');
-    setStatus('Reset');
+    await persistShortcuts(enabled, defaultShortcuts, 'Reset');
+  }
+
+  async function toggleEnabled() {
+    const nextEnabled = !enabled;
+
+    setEnabled(nextEnabled);
+    await persistShortcuts(nextEnabled, shortcuts, nextEnabled ? 'Enabled' : 'Disabled');
+  }
+
+  async function persistShortcuts(nextEnabled: boolean, nextShortcuts: ShortcutDefinition[], successStatus: string) {
+    setStatus('Saving');
+
+    try {
+      const updatedPreferences = await patchJson<UserPreferences>('/api/preferences', {
+        keyboardShortcuts: {
+          enabled: nextEnabled,
+          shortcuts: nextShortcuts,
+          updatedAt: new Date().toISOString(),
+        },
+      });
+      const persistedSettings = normalizeShortcutSettings(updatedPreferences.keyboardShortcuts);
+
+      setEnabled(persistedSettings.enabled);
+      setShortcuts(persistedSettings.shortcuts);
+      setStatus(successStatus);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Save failed');
+    }
   }
 
   return (
@@ -110,13 +155,13 @@ export function KeyboardShortcutsSettingsPage() {
           <h1>Keyboard Shortcuts</h1>
         </div>
         <div className="workspace-header__right">
-          <Toggle checked={enabled} label="Enable shortcuts" onClick={() => setEnabled((current) => !current)} />
-          <Button icon={<RotateCcw size={15} />} onClick={resetShortcuts} size="sm" variant="ghost">
+          <Toggle checked={enabled} label="Enable shortcuts" onClick={() => void toggleEnabled()} />
+          <Button icon={<RotateCcw size={15} />} onClick={() => void resetShortcuts()} size="sm" variant="ghost">
             Reset Shortcuts
           </Button>
           <HelpPopover
             items={[
-              'Shortcuts are local settings in this step.',
+              'Shortcuts are persisted in the Thoon local data store.',
               'Live orders and live bots always keep confirmation.',
               'Resolve conflicts before saving a shortcut.',
             ]}
@@ -217,7 +262,7 @@ export function KeyboardShortcutsSettingsPage() {
                       <div className="shortcut-actions-cell">
                         {isEditing ? (
                           <>
-                            <button aria-label={`Save ${shortcut.action}`} disabled={isDraftInvalid} onClick={() => saveShortcut(shortcut.id)} title="Save" type="button">
+                            <button aria-label={`Save ${shortcut.action}`} disabled={isDraftInvalid} onClick={() => void saveShortcut(shortcut.id)} title="Save" type="button">
                               <Save size={14} />
                             </button>
                             <button aria-label={`Cancel ${shortcut.action}`} onClick={cancelEditing} title="Cancel" type="button">

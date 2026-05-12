@@ -1,5 +1,7 @@
 import type { NextConfig } from 'next';
 
+const scriptSrc = process.env.NODE_ENV === 'development' ? "'self' 'unsafe-inline' 'unsafe-eval' https://s3.tradingview.com" : "'self' 'unsafe-inline' https://s3.tradingview.com";
+
 const nextConfig: NextConfig = {
   async headers() {
     return [
@@ -12,7 +14,7 @@ const nextConfig: NextConfig = {
           {
             key: 'Content-Security-Policy',
             value:
-              "default-src 'self'; connect-src 'self' https://data-api.binance.vision https://api.bybit.com https://www.okx.com https://api.bitget.com https://api.kraken.com https://api.kucoin.com https://api.exchange.coinbase.com wss://data-stream.binance.vision; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; frame-src https://www.tradingview.com; frame-ancestors 'none';",
+              `default-src 'self'; base-uri 'self'; object-src 'none'; form-action 'self'; connect-src 'self' https://data-api.binance.vision https://api.bybit.com https://www.okx.com https://api.bitget.com https://api.kraken.com https://api.kucoin.com https://api.exchange.coinbase.com wss://data-stream.binance.vision wss://fstream.binance.com wss://stream.binance.com:9443; img-src 'self' data: blob: https://s3-symbol-logo.tradingview.com https://s3.tradingview.com; style-src 'self' 'unsafe-inline'; script-src ${scriptSrc}; frame-src https://www.tradingview.com https://s.tradingview.com https://www.tradingview-widget.com; frame-ancestors 'none';`,
           },
         ],
         source: '/:path*',

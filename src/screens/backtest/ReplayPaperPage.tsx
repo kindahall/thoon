@@ -1,14 +1,22 @@
 'use client';
 
-import { Download, Pause, Play, StepBack, StepForward, XCircle } from 'lucide-react';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { AlertTriangle, CheckCircle2, Download, Pause, Play, StepBack, StepForward, XCircle } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { Badge, Button, Card, HelpPopover } from '../../components/ui';
-import type { Candle, MarketPair } from '../../types/market';
+import { patchJson, postJson } from '../../services/api-client';
+import type { Candle, MarketPair, Timeframe } from '../../types/market';
+import type { BacktestReport, JournalTrade, PaperTestSession } from '../../types/trading';
 import { formatUsd } from '../../utils/format';
 
 type ReplayPaperPageProps = {
+  candleError?: string;
+  initialCandles?: Candle[];
   initialPair?: string;
+  initialReport?: BacktestReport;
+  initialSession?: PaperTestSession;
+  initialStrategyId?: string;
+  initialTimeframe?: Timeframe;
   marketPairs: MarketPair[];
 };
 
@@ -36,10 +44,19 @@ type PaperTradeLog = {
 const speeds = ['1x', '2x', '4x'];
 const timeRanges = ['30D', '90D', '180D'];
 
-export function ReplayPaperPage({ initialPair, marketPairs }: ReplayPaperPageProps) {
-  const firstPair = marketPairs.find((pair) => pair.symbol === initialPair) ?? marketPairs[0];
+export function ReplayPaperPage({ candleError, initialCandles = [], initialPair, initialReport, initialSession, initialStrategyId, initialTimeframe, marketPairs }: ReplayPaperPageProps) {
+  const basePair = marketPairs.find((pair) => pair.symbol === initialPair) ?? marketPairs[0];
+  const firstPair = basePair
+    ? {
+        ...basePair,
+        candles: initialCandles.length ? initialCandles : basePair.candles,
+        timeframe: initialTimeframe ?? basePair.timeframe,
+      }
+    : undefined;
+  const replayMarketPairs = firstPair ? [firstPair, ...marketPairs.filter((pair) => pair.symbol !== firstPair.symbol)] : marketPairs;
   const firstCursor = initialReplayCursor(firstPair?.candles.length ?? 0);
   const firstLogCandle = firstPair?.candles[firstCursor] ?? firstPair?.candles[0];
+  const startedSessionRef = useRef(false);
   const [symbol, setSymbol] = useState(firstPair?.symbol ?? 'BTC/USDT');
   const [timeRange, setTimeRange] = useState('30D');
   const [startingCapital, setStartingCapital] = useState(10000);
@@ -52,10 +69,13 @@ export function ReplayPaperPage({ initialPair, marketPairs }: ReplayPaperPagePro
   const [balance, setBalance] = useState(10000);
   const [position, setPosition] = useState<PaperPosition | null>(null);
   const [status, setStatus] = useState('Paper only');
+  const [sessionStatus, setSessionStatus] = useState<PaperTestSession['status']>(initialSession?.status ?? 'prepared');
+  const [sessionTradesRecorded, setSessionTradesRecorded] = useState(initialSession?.tradesRecorded ?? 0);
+  const [sessionPnl, setSessionPnl] = useState(initialSession?.pnl ?? 0);
   const [logs, setLogs] = useState<PaperTradeLog[]>(() => [
     {
       action: 'replay started',
-      details: 'Future candles hidden',
+      details: initialSession ? `Linked to ${initialSession.id}` : 'Future candles hidden',
       id: 'paper-log-start',
       pnl: 0,
       price: firstPair?.lastPrice ?? 0,
@@ -66,7 +86,7 @@ export function ReplayPaperPage({ initialPair, marketPairs }: ReplayPaperPagePro
     },
   ]);
 
-  const pair = marketPairs.find((item) => item.symbol === symbol) ?? firstPair;
+  const pair = replayMarketPairs.find((item) => item.symbol === symbol) ?? firstPair;
   const candles = pair?.candles ?? [];
   const safeCursor = Math.min(Math.max(cursor, 8), Math.max(candles.length - 1, 8));
   const currentCandle = candles[safeCursor] ?? candles[candles.length - 1];
@@ -79,6 +99,8 @@ export function ReplayPaperPage({ initialPair, marketPairs }: ReplayPaperPagePro
   const nextHiddenCandle = safeCursor < candles.length - 1 ? candles[safeCursor + 1] : undefined;
   const chartTimeframe = pair?.timeframe ?? '15m';
   const progressPct = candles.length > 1 ? Math.round((safeCursor / (candles.length - 1)) * 100) : 0;
+  const sessionLinked = Boolean(initialSession && initialReport);
+  const sessionTradeGoal = initialReport ? Math.max(initialReport.executionSettings?.marketType === 'perpetual' ? 10 : 6, 10) : 10;
 
   useEffect(() => {
     if (!isPlaying) {
@@ -100,8 +122,33 @@ export function ReplayPaperPage({ initialPair, marketPairs }: ReplayPaperPagePro
     return () => window.clearInterval(interval);
   }, [candles.length, isPlaying, speed]);
 
+  useEffect(() => {
+    if (!initialSession || startedSessionRef.current) {
+      return;
+    }
+
+    startedSessionRef.current = true;
+
+    if (initialSession.status !== 'prepared') {
+      return;
+    }
+
+    patchJson<PaperTestSession>(`/api/paper-tests/${encodeURIComponent(initialSession.id)}`, {
+      note: 'Replay paper test opened by user.',
+      status: 'running',
+    })
+      .then((session) => {
+        setSessionStatus(session.status);
+        setSessionTradesRecorded(session.tradesRecorded);
+        setSessionPnl(session.pnl);
+      })
+      .catch(() => {
+        setStatus('Session update failed');
+      });
+  }, [initialSession]);
+
   function changeSymbol(nextSymbol: string) {
-    const nextPair = marketPairs.find((item) => item.symbol === nextSymbol);
+    const nextPair = replayMarketPairs.find((item) => item.symbol === nextSymbol);
     const nextCursor = initialReplayCursor(nextPair?.candles.length ?? 0);
     const nextCandle = nextPair?.candles[nextCursor] ?? nextPair?.candles[0];
     setSymbol(nextSymbol);
@@ -154,24 +201,66 @@ export function ReplayPaperPage({ initialPair, marketPairs }: ReplayPaperPagePro
     });
   }
 
-  function closePaperTrade() {
+  async function closePaperTrade() {
     if (!position) {
       return;
     }
 
     const pnl = calculatePnl(position, currentPrice);
+    const rMultiple = calculateRMultiple(pnl, startingCapital, initialReport);
+    const closedSide = position.side;
+    const closedSize = position.size;
     setBalance((current) => current + pnl);
     setPosition(null);
     setStatus('Position closed');
     pushLog({
       action: 'position closed',
-      details: `${position.size} ${pair?.base ?? 'coin'} at cursor`,
+      details: `${closedSize} ${pair?.base ?? 'coin'} at cursor`,
       pnl,
       price: currentPrice,
-      side: position.side,
+      side: closedSide,
       status: 'closed',
       type: orderType,
     });
+
+    if (!initialSession) {
+      return;
+    }
+
+    try {
+      await postJson<JournalTrade>('/api/journal', {
+        lessons: 'Paper replay trade recorded from linked agent paper-test session.',
+        notes: `Paper session ${initialSession.id}; strategy ${initialStrategyId ?? initialSession.strategyId}; report ${initialSession.reportId}; checksum ${initialSession.candleChecksum}.`,
+        pnl,
+        rMultiple,
+        side: closedSide === 'Short' ? 'short' : 'long',
+        source: 'paper',
+        symbol,
+        tag: `paper-test:${initialSession.id}`,
+      });
+      const nextSession = await patchJson<PaperTestSession>(`/api/paper-tests/${encodeURIComponent(initialSession.id)}`, {
+        note: `Recorded ${closedSide.toLowerCase()} paper trade: ${formatUsd(pnl)} (${rMultiple.toFixed(2)}R).`,
+        pnlDelta: pnl,
+        rMultipleDelta: rMultiple,
+        status: 'running',
+        tradeDelta: 1,
+      });
+      setSessionStatus(nextSession.status);
+      setSessionTradesRecorded(nextSession.tradesRecorded);
+      setSessionPnl(nextSession.pnl);
+      setStatus('Paper trade saved');
+    } catch {
+      setStatus('Paper trade not saved');
+      pushLog({
+        action: 'journal save failed',
+        details: 'Closed trade could not be persisted; retry from History if needed',
+        pnl: 0,
+        price: currentPrice,
+        side: '-',
+        status: 'system',
+        type: '-',
+      });
+    }
   }
 
   function exportLog() {
@@ -212,11 +301,40 @@ export function ReplayPaperPage({ initialPair, marketPairs }: ReplayPaperPagePro
         </div>
       </div>
 
+      <Card className="paper-session-card">
+        <div className="paper-session-head">
+          <div>
+            <h2>{sessionLinked ? 'Agent Paper Validation Session' : initialReport ? 'Untracked Paper Replay' : 'Unlinked Replay'}</h2>
+            <span>{initialSession ? `${initialSession.market} ${initialSession.timeframe} · ${initialSession.botScore}/100 · ${initialSession.dataSource}` : initialReport ? 'Report loaded, but no paper-test session is tracking confirmation yet.' : 'This replay is not linked to an agent paper-test recommendation.'}</span>
+          </div>
+          <Badge tone={sessionLinked ? 'positive' : 'warning'}>{sessionLinked ? sessionStatus : 'manual'}</Badge>
+        </div>
+        {candleError ? (
+          <div className="paper-session-warning">
+            <AlertTriangle size={15} />
+            <span>{candleError}</span>
+          </div>
+        ) : null}
+        <div className="paper-session-grid">
+          <ReplayMeta label="Strategy" value={initialStrategyId ?? initialSession?.strategyId ?? '-'} />
+          <ReplayMeta label="Report" value={initialSession?.reportId.slice(0, 18) ?? initialReport?.id.slice(0, 18) ?? '-'} />
+          <ReplayMeta label="Checksum" value={initialSession?.candleChecksum.slice(0, 14) ?? initialReport?.dataWindow?.candleChecksum?.slice(0, 14) ?? '-'} />
+          <ReplayMeta label="Paper Trades" value={`${sessionTradesRecorded}/${sessionTradeGoal}`} />
+          <ReplayMeta label="Paper PnL" value={formatUsd(sessionPnl)} />
+        </div>
+        <div className="paper-session-steps">
+          <span><CheckCircle2 size={14} /> Step/Play the replay with future candles hidden.</span>
+          <span><CheckCircle2 size={14} /> Take only trades that match the strategy idea and exact report market/timeframe.</span>
+          <span><CheckCircle2 size={14} /> Closed trades are saved to the real journal.</span>
+          <span><CheckCircle2 size={14} /> The strategy is not confirmed until recorded paper trades support the backtest.</span>
+        </div>
+      </Card>
+
       <div className="replay-layout">
         <Card className="replay-chart-card">
           <div className="replay-toolbar">
             <ReplaySelect label="Market / Pair" onChange={changeSymbol} value={symbol}>
-              {marketPairs.map((item) => (
+              {replayMarketPairs.map((item) => (
                 <option key={item.symbol} value={item.symbol}>
                   {item.symbol}
                 </option>
@@ -314,7 +432,7 @@ export function ReplayPaperPage({ initialPair, marketPairs }: ReplayPaperPagePro
             <Button disabled={Boolean(position)} onClick={() => openPaperTrade('Short')} variant="secondary">
               Sell
             </Button>
-            <Button disabled={!position} icon={<XCircle size={15} />} onClick={closePaperTrade} variant="danger">
+            <Button disabled={!position} icon={<XCircle size={15} />} onClick={() => void closePaperTrade()} variant="danger">
               Close
             </Button>
           </div>
@@ -487,6 +605,13 @@ function calculatePnl(position: PaperPosition, currentPrice: number) {
   const direction = position.side === 'Long' ? 1 : -1;
 
   return (currentPrice - position.entry) * position.size * direction;
+}
+
+function calculateRMultiple(pnl: number, startingCapital: number, report?: BacktestReport) {
+  const riskPct = report?.executionSettings?.riskPerTradePct ?? 1;
+  const riskAmount = Math.max(1, startingCapital * (riskPct / 100));
+
+  return pnl / riskAmount;
 }
 
 function initialReplayCursor(candleCount: number) {

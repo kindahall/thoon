@@ -1,4 +1,4 @@
-import { defaultAgentSettings } from '../mock-data/strategy-agent';
+import { defaultAgentSettings } from '../config/strategy-agent-defaults';
 import type {
   AgentAction,
   AgentActionPolicy,
@@ -113,7 +113,7 @@ export function evaluateAgentAction(
     blockers.push('The protected original strategy version cannot be archived or replaced.');
   }
 
-  if (strategy && !settings.limits.allowedMarkets.includes(strategy.market)) {
+  if (strategy && settings.limits.allowedMarkets.length > 0 && !settings.limits.allowedMarkets.includes(strategy.market)) {
     blockers.push(`${strategy.market} is outside the Strategy Agent allowed market scope.`);
   }
 

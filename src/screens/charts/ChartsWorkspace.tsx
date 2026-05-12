@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Bell,
   Camera,
+  ChevronDown,
   ChevronsUpDown,
   CircleDot,
   FileText,
@@ -33,7 +34,7 @@ import { useBinanceLiveMarkets } from '../../hooks/useBinanceLiveMarkets';
 import { apiJson, postJson } from '../../services/api-client';
 import { buildRiskOrderInputFromDraft, evaluateRiskEngine, lossPercentFromPnl, type RiskEngineCheck } from '../../services/risk-engine';
 import { getTradingErrorDefinition } from '../../services/trading-error-service';
-import type { Candle, MarketPair, PositionDraft, Timeframe } from '../../types/market';
+import type { Candle, MarketCategory, MarketPair, PositionDraft, Timeframe } from '../../types/market';
 import type { AgentReport, AgentRun, AgentSettings, AgentSuggestion, Bot as TradingBot, ExchangeConnection, JournalTrade, Order, Position, RiskRules, StrategyVersion, TradeLimits, UserPreferences } from '../../types/trading';
 import { formatCompact, formatCompactUsd, formatPercent, formatUsd } from '../../utils/format';
 
@@ -58,6 +59,15 @@ type ChartsWorkspaceProps = {
 
 const chartTimeframes: Timeframe[] = ['1m', '5m', '15m', '30m', '1h', '2h', '4h', '1d', '1w', '1M', '1y'];
 const chartRanges = ['1D', '5D', '1M', '3M', '6M', 'YTD', '1Y', '5Y', 'All'] as const;
+const chartCandleRequestTimeoutMs = 12_000;
+const pairThemes: Array<{ key: MarketCategory; label: string }> = [
+  { key: 'all', label: 'Tous themes' },
+  { key: 'trending', label: 'Tendance' },
+  { key: 'layer-1', label: 'Layer 1' },
+  { key: 'defi', label: 'DeFi' },
+  { key: 'meme', label: 'Meme' },
+  { key: 'ai', label: 'AI' },
+];
 const activePairStorageKey = 'thoon.activePair';
 const chartEngineStorageKey = 'thoon.chartEngine';
 const markerDropDataType = 'application/x-thoon-marker';
@@ -111,6 +121,7 @@ type SavedChartSetup = {
 
 type ChartToolId = 'cursor' | 'line' | 'zone' | 'long' | 'short' | 'alert' | 'indicators' | 'replay';
 type ChartEngine = 'thoon' | 'tradingview';
+type ChartMarketType = 'perpetual' | 'spot';
 type ChartRange = (typeof chartRanges)[number];
 type NoteFormat = 'bold' | 'italic' | 'list';
 
@@ -138,10 +149,16 @@ export function ChartsWorkspace({
     exchangeConnections.find((exchangeConnection) => exchangeConnection.status === 'connected' && exchangeConnection.permissions.includes('trade'))?.id ??
     exchangeConnections[0]?.id ??
     'paper';
-  const { connected: isBinanceLive, lastEventAt, pairs: liveMarketPairs } = useBinanceLiveMarkets(marketPairs);
+  const [selectedExchangeId, setSelectedExchangeId] = useState(defaultExchangeId);
+  const selectedExchange = exchangeConnections.find((exchangeConnection) => exchangeConnection.id === selectedExchangeId) ?? exchangeConnections.find((exchangeConnection) => exchangeConnection.id === defaultExchangeId) ?? exchangeConnections[0];
+  const chartMarketType = resolveChartMarketType(selectedExchange?.id ?? selectedExchangeId, defaultPreferences.preferredMarketType);
+  const { connected: isBinanceLive, lastEventAt, pairs: liveMarketPairs } = useBinanceLiveMarkets(marketPairs, undefined, {
+    exchangeId: selectedExchange?.id ?? selectedExchangeId,
+    marketType: chartMarketType,
+  });
   const defaultSymbol = resolveInitialSymbol(liveMarketPairs, initialPair);
   const [selectedSymbol, setSelectedSymbol] = useState(defaultSymbol);
-  const [selectedExchangeId, setSelectedExchangeId] = useState(defaultExchangeId);
+  const [selectedPairTheme, setSelectedPairTheme] = useState<MarketCategory>('all');
   const [timeframe, setTimeframe] = useState<Timeframe>('15m');
   const market = useMemo(() => liveMarketPairs.find((pair) => pair.symbol === selectedSymbol) ?? liveMarketPairs[0], [liveMarketPairs, selectedSymbol]);
   const hasBinancePrices = market.exchange === 'Binance';
@@ -159,7 +176,7 @@ export function ChartsWorkspace({
   const [selectedRange, setSelectedRange] = useState<ChartRange>('1D');
   const [noteFormats, setNoteFormats] = useState<NoteFormat[]>([]);
   const [chartCandles, setChartCandles] = useState<Candle[]>([]);
-  const [chartCandleStatus, setChartCandleStatus] = useState<'loading' | 'live' | 'fallback'>('loading');
+  const [chartCandleStatus, setChartCandleStatus] = useState<'loading' | 'live' | 'fallback'>(() => (market.candles.length ? 'live' : 'loading'));
   const [candleRequestNonce, setCandleRequestNonce] = useState(0);
   const [isBreakEvenOn, setIsBreakEvenOn] = useState(defaultPreferences.breakEvenAutomation);
   const [isTrailingOn, setIsTrailingOn] = useState(defaultPreferences.trailingStopEnabled);
@@ -174,15 +191,16 @@ export function ChartsWorkspace({
   const setupReloadPairRef = useRef<string | null>(null);
   const previousMarketSymbolRef = useRef(market.symbol);
   const selectedMarkerDefinition = markerDefinitions.find((markerDefinition) => markerDefinition.type === selectedMarkerType);
-  const selectedExchange = exchangeConnections.find((exchangeConnection) => exchangeConnection.id === selectedExchangeId) ?? exchangeConnections.find((exchangeConnection) => exchangeConnection.id === defaultExchangeId) ?? exchangeConnections[0];
   const selectedExchangeCanTrade = Boolean(selectedExchange?.permissions.includes('trade'));
   const selectedExchangeHasPublicRest = hasPublicRestMarketData(selectedExchange?.id);
   const chartVenueName = selectedExchange?.name ?? 'Thoon';
+  const chartMarketLabel = chartMarketType === 'perpetual' ? 'perpetual' : 'spot';
   const marketStripPairs = useMemo(() => getMarketStripPairs(liveMarketPairs, selectedSymbol), [liveMarketPairs, selectedSymbol]);
+  const pairThemeGroups = useMemo(() => buildPairThemeGroups(liveMarketPairs, selectedPairTheme), [liveMarketPairs, selectedPairTheme]);
   const candles = chartCandles;
-  const hasChartCandles = candles.length > 0 && chartCandleStatus === 'live';
+  const hasChartCandles = candles.length > 0;
   const priceAnchor = market.lastPrice || market.draft.entry || 1;
-  const fallbackCandle = market.candles.at(-1) ?? { close: priceAnchor, high: priceAnchor, low: priceAnchor, open: priceAnchor, time: Date.now(), volume: 0 };
+  const fallbackCandle = liveFallbackCandle(market.candles.at(-1), priceAnchor);
   const hasPositionMarker = tradeMarkers.some((marker) => marker.type !== 'alert');
   const hasEntryMarker = hasMarkerType(tradeMarkers, 'entry') || hasMarkerType(tradeMarkers, 'buyLimit') || hasMarkerType(tradeMarkers, 'sellLimit');
   const hasStopLossMarker = hasMarkerType(tradeMarkers, 'stopLoss');
@@ -197,7 +215,7 @@ export function ChartsWorkspace({
   const lastCandle = candles[candles.length - 1] ?? fallbackCandle;
   const previousCandle = candles[candles.length - 2] ?? lastCandle;
   const visibleMarketPrice = lastCandle?.close ?? market.lastPrice;
-  const chartDataIdentity = `${selectedExchangeId}:${market.symbol}:${timeframe}`;
+  const chartDataIdentity = `${selectedExchangeId}:${chartMarketType}:${market.symbol}:${timeframe}`;
   const isTradingViewEngine = chartEngine === 'tradingview';
   const selectedMarketDataIsLive = selectedExchange?.id === 'binance' ? isBinanceLive : chartCandleStatus === 'live' && selectedExchangeHasPublicRest;
   const alertBuilderHref = `/alerts?pair=${encodeURIComponent(market.symbol)}`;
@@ -286,12 +304,32 @@ export function ChartsWorkspace({
   }, [chartEngine]);
 
   function chooseSymbol(nextSymbol: string) {
+    const nextPair = liveMarketPairs.find((pair) => pair.symbol === nextSymbol);
+
     if (nextSymbol !== selectedSymbol) {
       setChartCandleStatus('loading');
       setChartCandles([]);
     }
 
+    if (nextPair && selectedPairTheme !== 'all' && nextPair.category !== selectedPairTheme) {
+      setSelectedPairTheme(nextPair.category);
+    }
+
     setSelectedSymbol(nextSymbol);
+  }
+
+  function choosePairTheme(nextTheme: MarketCategory) {
+    setSelectedPairTheme(nextTheme);
+
+    if (nextTheme === 'all' || market.category === nextTheme) {
+      return;
+    }
+
+    const firstThemePair = sortThemePairs(liveMarketPairs.filter((pair) => pair.category === nextTheme))[0];
+
+    if (firstThemePair) {
+      chooseSymbol(firstThemePair.symbol);
+    }
   }
 
   useEffect(() => {
@@ -302,11 +340,16 @@ export function ChartsWorkspace({
 
   useEffect(() => {
     const controller = new AbortController();
-
+    let didCleanup = false;
+    const timeoutId = window.setTimeout(() => {
+      controller.abort();
+    }, chartCandleRequestTimeoutMs);
     setChartCandleStatus('loading');
     setChartCandles([]);
 
-    apiJson<Candle[]>(`/api/markets/candles?symbol=${encodeURIComponent(market.symbol)}&timeframe=${timeframe}&exchangeId=${encodeURIComponent(selectedExchangeId)}`)
+    apiJson<Candle[]>(`/api/markets/candles?symbol=${encodeURIComponent(market.symbol)}&timeframe=${timeframe}&exchangeId=${encodeURIComponent(selectedExchangeId)}&marketType=${chartMarketType}`, undefined, {
+      signal: controller.signal,
+    })
       .then((nextCandles) => {
         if (!controller.signal.aborted) {
           setChartCandles(nextCandles);
@@ -314,24 +357,45 @@ export function ChartsWorkspace({
         }
       })
       .catch(() => {
-        if (!controller.signal.aborted) {
+        if (!didCleanup) {
           setChartCandles([]);
           setChartCandleStatus('fallback');
         }
+      })
+      .finally(() => {
+        window.clearTimeout(timeoutId);
       });
 
     return () => {
+      didCleanup = true;
+      window.clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [candleRequestNonce, market.symbol, selectedExchangeId, timeframe]);
+  }, [candleRequestNonce, chartMarketType, market.symbol, selectedExchangeId, timeframe]);
 
   useEffect(() => {
-    if (selectedExchange?.id !== 'binance' || !isBinanceLive || chartCandleStatus !== 'live' || !Number.isFinite(market.lastPrice)) {
+    const isPerpetualChartMarket = chartMarketType !== 'spot';
+
+    if (selectedExchange?.id !== 'binance' || !isPerpetualChartMarket || !isBinanceLive || !Number.isFinite(market.lastPrice)) {
       return;
     }
 
-    setChartCandles((currentCandles) => syncLastCandleToTicker(currentCandles, market.lastPrice));
-  }, [chartCandleStatus, isBinanceLive, market.lastPrice, selectedExchange?.id]);
+    setChartCandles((currentCandles) => syncLastCandleToTicker(currentCandles, market.lastPrice, timeframe, lastEventAt));
+  }, [chartMarketType, isBinanceLive, lastEventAt, market.lastPrice, selectedExchange?.id, timeframe]);
+
+  useEffect(() => {
+    if (chartMarketType === 'spot' || selectedExchange?.id !== 'binance') {
+      return undefined;
+    }
+
+    const interval = window.setInterval(() => {
+      setCandleRequestNonce((currentNonce) => currentNonce + 1);
+    }, 30_000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [chartMarketType, market.symbol, selectedExchange?.id, timeframe]);
 
   useEffect(() => {
     if (hasChartSetup || !Number.isFinite(visibleMarketPrice)) {
@@ -684,7 +748,7 @@ export function ChartsWorkspace({
       await Promise.all(nextOrders.map((order) => postJson('/api/orders', order)));
       setSetupMessage(hasCompletePosition ? 'Bracket planned' : 'Entry planned');
     } catch {
-      setSetupMessage('Plan local only');
+      setSetupMessage('Plan not saved');
     }
   }
 
@@ -931,7 +995,7 @@ export function ChartsWorkspace({
           {selectedMarketDataIsLive ? `Prix live · ${selectedExchange?.name ?? 'Exchange'}` : chartCandleStatus === 'loading' ? 'Prix public · chargement' : 'Prix public indisponible'}
         </span>
         <label className="cockpit-chip cockpit-chip--primary cockpit-chip--select">
-          <span>{selectedExchange?.name ?? 'Exchange'} · {defaultPreferences.preferredMarketType}</span>
+          <span>{selectedExchange?.name ?? 'Exchange'} · {chartMarketLabel}</span>
           <select aria-label="Chart exchange" onChange={(event) => setSelectedExchangeId(event.target.value)} value={selectedExchange?.id ?? ''}>
             {exchangeConnections.map((exchangeConnection) => (
               <option key={exchangeConnection.id} value={exchangeConnection.id}>
@@ -941,7 +1005,7 @@ export function ChartsWorkspace({
           </select>
         </label>
         <span className={selectedExchange?.status === 'connected' ? 'cockpit-chip cockpit-chip--positive' : 'cockpit-chip cockpit-chip--warning'}>
-          {exchangeCapabilityLabel(selectedExchange, isBinanceLive, chartCandleStatus)}
+          {exchangeCapabilityLabel(selectedExchange, isBinanceLive, chartCandleStatus, chartMarketType)}
         </span>
         <span className="cockpit-chip cockpit-chip--positive">Live {market.symbol} · {formatUsd(visibleMarketPrice)}</span>
         <span className="cockpit-chip cockpit-chip--negative">Entrees suspendues</span>
@@ -949,14 +1013,19 @@ export function ChartsWorkspace({
       </div>
 
       <div className="charts-market-strip" aria-label="Market ticker">
-        {marketStripPairs.map((pair) => (
-          <button className={pair.symbol === market.symbol ? 'is-active' : undefined} key={pair.symbol} onClick={() => chooseSymbol(pair.symbol)} type="button">
-            <span className="charts-market-strip__coin">{pair.base.slice(0, 1)}</span>
-            <strong>{pair.symbol}</strong>
-            <span>{formatUsd(pair.lastPrice)}</span>
-            <em className={pair.change24h >= 0 ? 'positive' : 'negative'}>{formatPercent(pair.change24h)}</em>
-          </button>
-        ))}
+        {marketStripPairs.map((pair) => {
+          const isActivePair = pair.symbol === market.symbol;
+          const stripPrice = isActivePair ? visibleMarketPrice : pair.lastPrice;
+
+          return (
+            <button className={isActivePair ? 'is-active' : undefined} key={pair.symbol} onClick={() => chooseSymbol(pair.symbol)} type="button">
+              <span className="charts-market-strip__coin">{pair.base.slice(0, 1)}</span>
+              <strong>{pair.symbol}</strong>
+              <span>{formatUsd(stripPrice)}</span>
+              <em className={pair.change24h >= 0 ? 'positive' : 'negative'}>{formatPercent(pair.change24h)}</em>
+            </button>
+          );
+        })}
       </div>
 
       <div className="charts-terminal-grid">
@@ -964,18 +1033,36 @@ export function ChartsWorkspace({
           <div className="chart-panel__bar">
             <div className="chart-panel__bar-data">
               <select
+                aria-label="Pair theme"
+                className="chart-theme-select"
+                onChange={(event) => choosePairTheme(event.target.value as MarketCategory)}
+                value={selectedPairTheme}
+              >
+                {pairThemes
+                  .filter((theme) => theme.key === 'all' || theme.key === selectedPairTheme || countPairsByTheme(liveMarketPairs, theme.key) > 0)
+                  .map((theme) => (
+                    <option key={theme.key} value={theme.key}>
+                      {theme.label} · {countPairsByTheme(liveMarketPairs, theme.key)}
+                    </option>
+                  ))}
+              </select>
+              <select
                 aria-label="Market pair"
                 className="chart-pair-select"
                 onChange={(event) => chooseSymbol(event.target.value)}
                 value={market.symbol}
               >
-                {liveMarketPairs.map((pair) => (
-                  <option key={pair.symbol} value={pair.symbol}>
-                    {pair.symbol}
-                  </option>
+                {pairThemeGroups.map((group) => (
+                  <optgroup key={group.key} label={`${group.label} · ${group.pairs.length}`}>
+                    {group.pairs.map((pair) => (
+                      <option key={pair.symbol} value={pair.symbol}>
+                        {formatPairOption(pair)}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
-              <span className="chart-instrument-name">{market.symbol} · {timeframeLabel(timeframe)} · {chartVenueName}</span>
+              <span className="chart-instrument-name">{market.symbol} · {timeframeLabel(timeframe)} · {chartVenueName} · {chartMarketLabel}</span>
               {hasChartCandles ? (
                 <>
                   <span className="positive">O {formatUsd(candles[0].open)}</span>
@@ -999,13 +1086,7 @@ export function ChartsWorkspace({
                   TradingView
                 </button>
               </div>
-              <div className="chart-timeframes" aria-label="Timeframes">
-                {chartTimeframes.map((item) => (
-                  <button className={item === timeframe ? 'is-active' : undefined} key={item} onClick={() => setTimeframe(item)} type="button">
-                    {timeframeLabel(item)}
-                  </button>
-                ))}
-              </div>
+              <TimeframeMenu items={chartTimeframes} onChange={setTimeframe} value={timeframe} />
               <IconButton icon={<Settings2 size={17} />} label="Chart settings" onClick={handleChartSettings} />
               <IconButton icon={<Maximize2 size={17} />} label="Fullscreen" onClick={expandChart} />
               <IconButton icon={<Camera size={17} />} label="Screenshot" onClick={exportChartSnapshot} />
@@ -1034,13 +1115,13 @@ export function ChartsWorkspace({
 
             <div className={`chart-canvas${isTradingViewEngine ? ' chart-canvas--tradingview' : ''}`} aria-label={`${market.symbol} ${isTradingViewEngine ? 'TradingView' : 'candlestick'} chart`}>
               {isTradingViewEngine ? (
-                <TradingViewChart exchangeId={selectedExchange?.id ?? selectedExchangeId} marketType={defaultPreferences.preferredMarketType} symbol={market.symbol} timeframe={timeframe} />
+                <TradingViewChart exchangeId={selectedExchange?.id ?? selectedExchangeId} marketType={chartMarketType} symbol={market.symbol} timeframe={timeframe} />
               ) : (
                 <>
                   {hasChartCandles ? (
                     <>
                       <div className="chart-indicator-readout" aria-label="Chart indicators">
-                        <strong>{market.symbol} · {timeframeLabel(timeframe)} · {chartVenueName}</strong>
+                        <strong>{market.symbol} · {timeframeLabel(timeframe)} · {chartVenueName} · {chartMarketLabel}</strong>
                         <span>
                           O {formatUsd(lastCandle.open)} H {formatUsd(lastCandle.high)} L {formatUsd(lastCandle.low)} C {formatUsd(lastCandle.close)}
                           <b className={lastMove >= 0 ? 'positive' : 'negative'}>
@@ -1187,10 +1268,14 @@ export function ChartsWorkspace({
           <label className="trade-pair-control">
             <span>{market.symbol}</span>
             <select aria-label="Trade pair" onChange={(event) => chooseSymbol(event.target.value)} value={market.symbol}>
-              {liveMarketPairs.map((pair) => (
-                <option key={pair.symbol} value={pair.symbol}>
-                  {pair.symbol}
-                </option>
+              {pairThemeGroups.map((group) => (
+                <optgroup key={group.key} label={`${group.label} · ${group.pairs.length}`}>
+                  {group.pairs.map((pair) => (
+                    <option key={pair.symbol} value={pair.symbol}>
+                      {formatPairOption(pair)}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
             </select>
           </label>
@@ -1528,6 +1613,47 @@ function IndicatorControl({
   );
 }
 
+function TimeframeMenu({ items, onChange, value }: { items: Timeframe[]; onChange: (value: Timeframe) => void; value: Timeframe }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div
+      className={`chart-timeframe-menu${open ? ' is-open' : ''}`}
+      onBlur={(event) => {
+        const nextTarget = event.relatedTarget;
+
+        if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+          setOpen(false);
+        }
+      }}
+    >
+      <button aria-expanded={open} aria-haspopup="menu" className="chart-timeframe-menu__trigger" onClick={() => setOpen((current) => !current)} type="button">
+        <span>{timeframeLabel(value)}</span>
+        <ChevronDown size={14} />
+      </button>
+      {open ? (
+        <div className="chart-timeframe-menu__content" role="menu" aria-label="Timeframes">
+          {items.map((item) => (
+            <button
+              aria-checked={item === value}
+              className={item === value ? 'is-active' : undefined}
+              key={item}
+              onClick={() => {
+                onChange(item);
+                setOpen(false);
+              }}
+              role="menuitemradio"
+              type="button"
+            >
+              {timeframeLabel(item)}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function createMarker(type: TradeMarkerType, price: number, symbol: string): TradeMarker {
   const definition = markerDefinitions.find((item) => item.type === type) ?? markerDefinitions[0];
 
@@ -1614,7 +1740,7 @@ function syncDraftWithMarker(draft: PositionDraft, type: TradeMarkerType, price:
   }
 }
 
-function syncLastCandleToTicker(candles: Candle[], lastPrice: number) {
+function syncLastCandleToTicker(candles: Candle[], lastPrice: number, timeframe: Timeframe, eventTimeMs?: number) {
   if (!candles.length || !Number.isFinite(lastPrice)) {
     return candles;
   }
@@ -1622,6 +1748,21 @@ function syncLastCandleToTicker(candles: Candle[], lastPrice: number) {
   const lastIndex = candles.length - 1;
   const lastCandle = candles[lastIndex];
   const close = roundPrice(lastPrice);
+  const eventTimeSeconds = Math.floor((eventTimeMs ?? Date.now()) / 1000);
+  const currentCandleTime = timeframeBucketStart(eventTimeSeconds, timeframe);
+
+  if (currentCandleTime > lastCandle.time) {
+    const nextCandle = {
+      close,
+      high: Math.max(lastCandle.close, close),
+      low: Math.min(lastCandle.close, close),
+      open: lastCandle.close,
+      time: currentCandleTime,
+      volume: 0,
+    };
+
+    return [...candles, nextCandle].slice(-Math.max(candles.length, 120));
+  }
 
   if (Math.abs(lastCandle.close - close) < 0.000001) {
     return candles;
@@ -1639,6 +1780,55 @@ function syncLastCandleToTicker(candles: Candle[], lastPrice: number) {
       low: Math.min(candle.low, close),
     };
   });
+}
+
+function timeframeBucketStart(timestampSeconds: number, timeframe: Timeframe) {
+  const date = new Date(timestampSeconds * 1000);
+
+  if (timeframe === '1M') {
+    return Math.floor(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1) / 1000);
+  }
+
+  if (timeframe === '1y') {
+    return Math.floor(Date.UTC(date.getUTCFullYear(), 0, 1) / 1000);
+  }
+
+  if (timeframe === '1w') {
+    const weekSeconds = 7 * 24 * 60 * 60;
+    const mondayOffsetSeconds = 3 * 24 * 60 * 60;
+
+    return Math.floor((timestampSeconds + mondayOffsetSeconds) / weekSeconds) * weekSeconds - mondayOffsetSeconds;
+  }
+
+  const intervalSeconds = timeframeSeconds[timeframe] ?? 15 * 60;
+
+  return Math.floor(timestampSeconds / intervalSeconds) * intervalSeconds;
+}
+
+const timeframeSeconds: Partial<Record<Timeframe, number>> = {
+  '1d': 24 * 60 * 60,
+  '1h': 60 * 60,
+  '1m': 60,
+  '2h': 2 * 60 * 60,
+  '30m': 30 * 60,
+  '4h': 4 * 60 * 60,
+  '5m': 5 * 60,
+  '15m': 15 * 60,
+};
+
+function liveFallbackCandle(seedCandle: Candle | undefined, lastPrice: number): Candle {
+  const close = roundPrice(lastPrice);
+
+  if (!seedCandle) {
+    return { close, high: close, low: close, open: close, time: timeframeBucketStart(Math.floor(Date.now() / 1000), '15m'), volume: 0 };
+  }
+
+  return {
+    ...seedCandle,
+    close,
+    high: Math.max(seedCandle.high, close),
+    low: Math.min(seedCandle.low, close),
+  };
 }
 
 function buildMarkerSyncRows(markers: TradeMarker[], draft: PositionDraft) {
@@ -1858,6 +2048,40 @@ function getMarketStripPairs(pairs: MarketPair[], selectedSymbol: string) {
   return [selectedPair, ...featuredPairs.filter((pair) => pair.symbol !== selectedPair.symbol).slice(0, 3)];
 }
 
+function buildPairThemeGroups(pairs: MarketPair[], selectedTheme: MarketCategory) {
+  const groups = pairThemes
+    .filter((theme) => theme.key !== 'all' && (selectedTheme === 'all' || selectedTheme === theme.key))
+    .map((theme) => ({
+      ...theme,
+      pairs: sortThemePairs(pairs.filter((pair) => pair.category === theme.key)),
+    }))
+    .filter((theme) => theme.pairs.length > 0);
+
+  if (groups.length > 0 || selectedTheme === 'all') {
+    return groups;
+  }
+
+  return buildPairThemeGroups(pairs, 'all');
+}
+
+function sortThemePairs(pairs: MarketPair[]) {
+  return [...pairs].sort((first, second) => {
+    if (second.volume24h !== first.volume24h) {
+      return second.volume24h - first.volume24h;
+    }
+
+    return Math.abs(second.change24h) - Math.abs(first.change24h);
+  });
+}
+
+function countPairsByTheme(pairs: MarketPair[], theme: MarketCategory) {
+  return theme === 'all' ? pairs.length : pairs.filter((pair) => pair.category === theme).length;
+}
+
+function formatPairOption(pair: MarketPair) {
+  return `${pair.symbol} · ${pair.name}`;
+}
+
 function formatOrderType(orderType: UserPreferences['orderType']) {
   switch (orderType) {
     case 'limit':
@@ -1918,6 +2142,14 @@ function timeframeLabel(timeframe: Timeframe) {
   return timeframe === '1y' ? '1Y' : timeframe;
 }
 
+function resolveChartMarketType(exchangeId: string | undefined, preferredMarketType: UserPreferences['preferredMarketType']): ChartMarketType {
+  if (exchangeId && preferredMarketType !== 'spot') {
+    return 'perpetual';
+  }
+
+  return 'spot';
+}
+
 function exchangeMarketStatusLabel(exchange: ExchangeConnection | undefined, isMarketDataLive: boolean, hasBinancePrices: boolean, candleStatus: 'loading' | 'live' | 'fallback') {
   if (!exchange) {
     return 'Marché · exchange indisponible';
@@ -1934,13 +2166,21 @@ function exchangeMarketStatusLabel(exchange: ExchangeConnection | undefined, isM
   return `Marché · ${exchange.name} ${exchange.status === 'connected' ? 'connecté' : 'à connecter'}`;
 }
 
-function exchangeCapabilityLabel(exchange: ExchangeConnection | undefined, isBinanceLive: boolean, candleStatus: 'loading' | 'live' | 'fallback') {
+function exchangeCapabilityLabel(exchange: ExchangeConnection | undefined, isBinanceLive: boolean, candleStatus: 'loading' | 'live' | 'fallback', marketType: ChartMarketType) {
   if (!exchange) {
     return 'API indisponible';
   }
 
+  if (exchange.id === 'binance' && marketType === 'perpetual') {
+    return isBinanceLive ? (candleStatus === 'live' ? 'Futures WS + REST' : 'Futures WebSocket') : candleStatus === 'live' ? 'Futures REST' : 'Futures REST indisponible';
+  }
+
+  if (marketType === 'perpetual' && hasPublicRestMarketData(exchange.id)) {
+    return candleStatus === 'live' ? 'Perp REST' : 'Perp REST indisponible';
+  }
+
   if (exchange.id === 'binance' && isBinanceLive) {
-    return 'REST + WebSocket';
+    return 'Spot REST + WebSocket';
   }
 
   if (hasPublicRestMarketData(exchange.id)) {

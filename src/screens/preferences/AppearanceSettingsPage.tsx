@@ -7,16 +7,21 @@ import { PreferencesSectionNav } from '../../components/preferences/PreferencesS
 import { Button, Card, HelpPopover, ThemeToggle } from '../../components/ui';
 import { patchJson } from '../../services/api-client';
 import { useTheme, type ThemePreference } from '../../stores/theme-store';
+import type { UserPreferences } from '../../types/trading';
 
-export function AppearanceSettingsPage() {
+type AppearanceSettingsPageProps = {
+  preferences: UserPreferences;
+};
+
+export function AppearanceSettingsPage({ preferences }: AppearanceSettingsPageProps) {
   const { setTheme, theme } = useTheme();
-  const [accent, setAccent] = useState('blue');
-  const [chartPreset, setChartPreset] = useState('terminal');
-  const [density, setDensity] = useState<'compact' | 'comfortable' | 'spacious'>('comfortable');
-  const [fontSize, setFontSize] = useState<'small' | 'medium' | 'large'>('medium');
-  const [sidebarBehavior, setSidebarBehavior] = useState<'Expanded' | 'Auto' | 'Collapsed'>('Expanded');
-  const [animations, setAnimations] = useState(true);
-  const [reduceMotion, setReduceMotion] = useState(false);
+  const [accent, setAccent] = useState<string>(preferences.accent);
+  const [chartPreset, setChartPreset] = useState(asAppearanceChoice(preferences.chartPreset, 'terminal'));
+  const [density, setDensity] = useState<'compact' | 'comfortable' | 'spacious'>(preferences.density);
+  const [fontSize, setFontSize] = useState<'small' | 'medium' | 'large'>(asFontSize(preferences.fontSize));
+  const [sidebarBehavior, setSidebarBehavior] = useState<'Expanded' | 'Auto' | 'Collapsed'>(asSidebarBehavior(preferences.sidebarBehavior));
+  const [animations, setAnimations] = useState(asBoolean(preferences.animations, true));
+  const [reduceMotion, setReduceMotion] = useState(asBoolean(preferences.reduceMotion, false));
   const [saveStatus, setSaveStatus] = useState('Ready');
 
   async function saveAppearance() {
@@ -274,4 +279,20 @@ function ThemeOption({
 
 function titleCase(value: string) {
   return value[0].toUpperCase() + value.slice(1);
+}
+
+function asAppearanceChoice(value: unknown, fallback: string) {
+  return typeof value === 'string' && value ? value : fallback;
+}
+
+function asBoolean(value: unknown, fallback: boolean) {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function asFontSize(value: unknown): 'large' | 'medium' | 'small' {
+  return value === 'large' || value === 'small' ? value : 'medium';
+}
+
+function asSidebarBehavior(value: unknown): 'Auto' | 'Collapsed' | 'Expanded' {
+  return value === 'Auto' || value === 'Collapsed' ? value : 'Expanded';
 }

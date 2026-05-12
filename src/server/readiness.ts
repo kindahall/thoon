@@ -42,6 +42,26 @@ export async function getProductionReadiness() {
       ok: Boolean(env.productionBaseUrl) || env.nodeEnv !== 'production',
       message: env.productionBaseUrl || env.nodeEnv !== 'production' ? 'Production URL context available or not required locally.' : 'Set THOON_PRODUCTION_BASE_URL.',
     },
+    {
+      id: 'runtime-rate-limit',
+      ok: env.rateLimitEnabled && env.loginRateLimitMax > 0 && env.mutationRateLimitMax > 0,
+      message: env.rateLimitEnabled ? 'Runtime API rate limits enabled.' : 'Keep THOON_RATE_LIMIT_ENABLED enabled in production.',
+    },
+    {
+      id: 'edge-rate-limit',
+      ok: env.edgeRateLimitPolicy === 'configured' || env.nodeEnv !== 'production',
+      message: env.edgeRateLimitPolicy === 'configured' || env.nodeEnv !== 'production' ? 'Edge/WAF rate-limit policy acknowledged.' : 'Set THOON_EDGE_RATE_LIMIT_POLICY=configured after enabling host/WAF throttling.',
+    },
+    {
+      id: 'agent-cron-secret',
+      ok: Boolean(env.cronSecret) || env.nodeEnv !== 'production',
+      message: env.cronSecret || env.nodeEnv !== 'production' ? 'Agent cron endpoint is protected or running locally.' : 'Set THOON_CRON_SECRET before enabling scheduled agent runs.',
+    },
+    {
+      id: 'audit-retention',
+      ok: env.auditMaxEvents >= 500 && env.auditRetentionDays >= 30,
+      message: env.auditMaxEvents >= 500 && env.auditRetentionDays >= 30 ? 'Audit retention is configured.' : 'Set THOON_AUDIT_MAX_EVENTS and THOON_AUDIT_RETENTION_DAYS for incident review.',
+    },
   ];
 
   return {

@@ -42,8 +42,12 @@ export function isResearchOnlyStrategy(strategy: Strategy | undefined) {
   return Boolean(strategy?.agentSource?.sourceId.startsWith('tradingview:'));
 }
 
+export function isInnovationStrategy(strategy: Strategy | undefined) {
+  return Boolean(strategy?.agentSource?.sourceId.startsWith('agent-innovation:'));
+}
+
 export function isExecutableStrategy(strategy: Strategy | undefined) {
-  return Boolean(strategy && (strategy.id === JIMMY_STRATEGY_ID || strategy.agentSource?.sourceId === JIMMY_SOURCE_ID || isResearchOnlyStrategy(strategy)));
+  return Boolean(strategy && (strategy.id === JIMMY_STRATEGY_ID || strategy.agentSource?.sourceId === JIMMY_SOURCE_ID || isResearchOnlyStrategy(strategy) || isInnovationStrategy(strategy)));
 }
 
 function strategyFromResearchRecord(record: StrategyResearchRecord, canonicalStrategies: Strategy[]): Strategy {
@@ -69,7 +73,7 @@ function strategyFromResearchRecord(record: StrategyResearchRecord, canonicalStr
     performance30d: 0,
     riskPerTrade: sourceStrategy?.riskPerTrade ?? 1,
     riskSettings: sourceStrategy?.riskSettings,
-    status: 'draft',
+    status: 'active',
     timeframe,
     type: inferStrategyType(record),
     updatedAt: record.fetchedAt,

@@ -1,6 +1,6 @@
 'use client';
 
-import { Archive, Bot, Copy, Edit3, FileText, LineChart, Play, Trash2 } from 'lucide-react';
+import { Archive, Copy, Edit3, FileText, LineChart, Play, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useMemo, useState, type ReactNode } from 'react';
@@ -99,9 +99,15 @@ export function StrategyDetailPage({ agentReports, agentRuns, agentSettings, age
             </span>
             <span>Backtest</span>
           </Link>
+          <Link className="ui-button ui-button--primary ui-button--sm" href={`/backtest?strategyId=${encodeURIComponent(strategyRecord.id)}&pair=${encodeURIComponent(strategyRecord.market)}&timeframe=${encodeURIComponent(strategyRecord.timeframe)}`}>
+            <span className="ui-button__icon">
+              <LineChart size={15} />
+            </span>
+            <span>Backtest avant bot</span>
+          </Link>
           <Link className="ui-button ui-button--primary ui-button--sm" href={`/bots/new?strategyId=${encodeURIComponent(strategyRecord.id)}`}>
             <span className="ui-button__icon">
-              <Bot size={15} />
+              <Play size={15} />
             </span>
             <span>Create Bot</span>
           </Link>

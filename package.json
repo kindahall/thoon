@@ -11,11 +11,16 @@
     "db:push": "node scripts/thoon-db-push.mjs",
     "start": "next start -H 127.0.0.1",
     "test": "node scripts/thoon-functional-tests.mjs",
+    "test:staging": "node scripts/thoon-staging-smoke.mjs",
+    "test:e2e": "playwright test",
+    "security:check": "npm audit --omit=dev --audit-level=moderate && npm run test:staging",
+    "verify": "npm run lint && npm run typecheck && npm run build && npm run test && npm run test:staging && npm run test:e2e",
     "auth:hash": "node scripts/thoon-auth-hash.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint ."
   },
   "dependencies": {
+    "ethers": "^6.16.0",
     "lightweight-charts": "^5.2.0",
     "lucide-react": "^1.14.0",
     "next": "^16.2.4",
@@ -28,6 +33,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.59.1",
     "@types/node": "25.6.0",
     "@types/pg": "^8.20.0",
     "@types/react": "^19.2.14",

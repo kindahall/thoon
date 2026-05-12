@@ -3,6 +3,8 @@ import { getBinanceMarketCandles, getBinanceMarketDataSnapshot } from '../server
 import { getPublicRestMarketCandles } from '../server/exchanges/public-rest-market-data';
 import { readThoonDb } from '../server/thoon-db';
 
+type MarketDataType = 'futures' | 'perpetual' | 'spot';
+
 export async function getMarketDataSnapshot(): Promise<MarketDataSnapshot> {
   const db = readThoonDb();
 
@@ -29,7 +31,7 @@ export async function getMarketOverview() {
   return (await getMarketDataSnapshot()).overview;
 }
 
-export async function getMarketCandles(symbol: string, timeframe: Timeframe, exchangeId = 'binance', requestedLimit?: number, options: { strict?: boolean } = {}): Promise<Candle[]> {
+export async function getMarketCandles(symbol: string, timeframe: Timeframe, exchangeId = 'binance', requestedLimit?: number, options: { marketType?: MarketDataType; strict?: boolean } = {}): Promise<Candle[]> {
   const db = readThoonDb();
 
   if (exchangeId !== 'binance') {

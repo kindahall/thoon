@@ -1,7 +1,10 @@
+import { randomUUID } from 'node:crypto';
+
+import { Wallet as EvmWallet } from 'ethers';
 import { NextRequest, NextResponse } from 'next/server';
 
 import { JIMMY_LEGACY_STRATEGY_IDS, JIMMY_STRATEGY_ID } from '../../../config/jimmy-strategy';
-import { appendAuditEvent } from '../../../server/audit';
+import { appendAuditEvent, runWithAuditContext } from '../../../server/audit';
 import { runBacktestFromCandles } from '../../../server/backtest-engine';
 import {
   clearedSessionCookieOptions,
@@ -15,10 +18,14 @@ import {
 } from '../../../server/auth';
 import { encryptSecret, maskSecret } from '../../../server/crypto';
 import { getThoonServerEnv, hasProductionEncryptionKey } from '../../../server/env';
-import { executeLiveOrder } from '../../../server/exchanges/live-executor';
-import { getMetricsSnapshot, incrementMetric, logServerEvent } from '../../../server/observability';
+import { executeLiveOrder, fetchLiveAccountSnapshot, verifyLiveApiKey } from '../../../server/exchanges/live-executor';
+import { getMetricsSnapshot, incrementMetric, observeApiResponse, logServerEvent } from '../../../server/observability';
+import { checkRateLimit, rateLimitHeaders } from '../../../server/rate-limit';
 import { getProductionReadiness } from '../../../server/readiness';
-import { generateAiStrategySuggestions, getStrategyAgentAiStatus } from '../../../server/strategy-agent-ai';
+import { generateAiStrategySuggestions, getStrategyAgentAiStatus, runCodexAgentChat } from '../../../server/strategy-agent-ai';
+import { getKronosIntegrationProfile } from '../../../server/kronos-integration';
+import { advanceKronosLearning, getKronosLearningProfile } from '../../../server/kronos-learning';
+import { getTradingViewMcpProfile } from '../../../server/tradingview-mcp-integration';
 import {
   archiveVersion,
   buildAgentSuggestions,
@@ -35,9 +42,9 @@ import {
 import { flushPendingPostgresMirror, readThoonDb, updateThoonDb, type SavedSetupRecord, type ThoonDb } from '../../../server/thoon-db';
 import { researchTradingViewStrategies } from '../../../server/tradingview-research';
 import { getMarketCandles, getMarketDataSnapshot } from '../../../services/market-service';
-import type { PositionDraft, Timeframe } from '../../../types/market';
-import { buildRiskOrderInputFromDraft, evaluateRiskEngine } from '../../../services/risk-engine';
-import type { AgentAction, AgentRun, Alert, ApiKeyRecord, BacktestReport, Bot, JournalTrade, Order, Position, Strategy, StrategyCondition, StrategyRiskSettings } from '../../../types/trading';
+import type { MarketDataSnapshot, MarketPair, PositionDraft, Timeframe } from '../../../types/market';
+import { buildRiskOrderInputFromDraft, evaluateRiskEngine, lossPercentFromPnl } from '../../../services/risk-engine';
+import type { AgentAction, AgentChatMessage, AgentQueueTask, AgentReport, AgentRun, Alert, ApiKeyRecord, BacktestExecutionSettings, BacktestReport, Bot, JournalTrade, Order, PaperTestSession, Position, RiskRules, Strategy, StrategyCondition, StrategyResearchRecord, StrategyRiskSettings, TradeLimits, UserPreferences, UserProfile, WalletConnection, Watchlist } from '../../../types/trading';
 import { findVisibleStrategyRecord, isExecutableStrategy, strategyIdFromResearchRecord, visibleStrategyRecords as buildVisibleStrategyRecords } from '../../../utils/strategy-catalog';
 
 export const dynamic = 'force-dynamic';
@@ -49,13 +56,27 @@ type RouteContext = {
   }>;
 };
 
+const loginAttempts = new Map<string, { blockedUntil?: number; count: number; firstAttemptAt: number }>();
+const agentCronBacktestBatchSize = 24;
+const agentCronBacktestPeriod = '30D';
+const agentCronInnovationBatchSize = 8;
+const agentCronResearchIntervalMs = 30 * 60 * 1000;
+const agentCronTargetPairCount = 100;
+const agentCronTimeframesPerSweep = 4;
+const maximumNumericInput = 1_000_000_000;
+const maximumCandleLimit = 1000;
+
 export async function GET(request: NextRequest, context: RouteContext) {
-  return handleApiError(() => getHandler(request, context));
+  return handleApiError(request, () => getHandler(request, context));
 }
 
 async function getHandler(request: NextRequest, context: RouteContext) {
   const path = await routePath(context);
-  const db = readThoonDb();
+  const guard = readGuard(request, path);
+
+  if (guard) {
+    return guard;
+  }
 
   if (path[0] === 'auth' && path[1] === 'session') {
     const session = getSessionFromRequest(request);
@@ -66,6 +87,8 @@ async function getHandler(request: NextRequest, context: RouteContext) {
 
     return json({ authenticated: Boolean(session), auth: getAuthProductionStatus(), session });
   }
+
+  const db = readThoonDb();
 
   if (path[0] === 'production' && path[1] === 'readiness') {
     const readiness = await getProductionReadiness();
@@ -87,6 +110,16 @@ async function getHandler(request: NextRequest, context: RouteContext) {
       resources: resourceIndex,
       updatedAt: db.updatedAt,
     });
+  }
+
+  if (path[0] === 'agent' && (path[1] === 'cron' || path[1] === 'progress')) {
+    const guard = cronRequestGuard(request, path);
+
+    if (guard) {
+      return guard;
+    }
+
+    return durableMutation(async () => (path[1] === 'progress' ? agentProgressCron() : agentCron()));
   }
 
   if (path[0] === 'agent') {
@@ -120,11 +153,37 @@ async function getHandler(request: NextRequest, context: RouteContext) {
       return json(strategyId ? db.agentQueueRecords.filter((task) => task.strategyId === strategyId) : db.agentQueueRecords);
     }
 
+    if (path[1] === 'chat') {
+      return json(db.agentChatRecords);
+    }
+
+    if (path[1] === 'kronos') {
+      return json(getKronosIntegrationProfile());
+    }
+
+    if (path[1] === 'kronos-learning') {
+      return json({
+        profile: getKronosLearningProfile(db.kronosForecastRecords),
+        records: db.kronosForecastRecords.slice(0, 80),
+      });
+    }
+
+    if (path[1] === 'tradingview-mcp') {
+      return json(getTradingViewMcpProfile());
+    }
+
     if (path[1] === 'research') {
       return json(strategyId ? db.strategyResearchRecords.filter((record) => record.strategyId === strategyId) : db.strategyResearchRecords);
     }
 
     return json(agentDashboard(db, strategyId));
+  }
+
+  if (path[0] === 'paper-tests') {
+    const strategyId = request.nextUrl.searchParams.get('strategyId') ?? undefined;
+    const session = path[1] ? db.paperTestSessionRecords.find((record) => record.id === path[1]) : undefined;
+
+    return json(path[1] ? session : strategyId ? db.paperTestSessionRecords.filter((record) => record.strategyId === strategyId) : db.paperTestSessionRecords);
   }
 
   if (path[0] === 'markets') {
@@ -134,13 +193,18 @@ async function getHandler(request: NextRequest, context: RouteContext) {
       const symbol = request.nextUrl.searchParams.get('symbol');
       const timeframe = request.nextUrl.searchParams.get('timeframe');
       const exchangeId = request.nextUrl.searchParams.get('exchangeId') ?? 'binance';
-      const requestedLimit = positiveInteger(request.nextUrl.searchParams.get('limit'), undefined);
+      const marketType = marketDataType(request.nextUrl.searchParams.get('marketType'));
+      const requestedLimit = normalizeCandleLimit(request.nextUrl.searchParams.get('limit'));
 
       if (!symbol || !isTimeframe(timeframe)) {
         return json({ error: 'Missing symbol or timeframe' }, 400);
       }
 
-      return json(await getMarketCandles(symbol, timeframe, exchangeId, requestedLimit));
+      try {
+        return json(await getMarketCandles(symbol, timeframe, exchangeId, requestedLimit, { marketType, strict: marketType !== 'spot' }));
+      } catch (error) {
+        throw new ApiError(error instanceof Error ? error.message : `${exchangeId} ${marketType} candles unavailable.`, 502);
+      }
     }
 
     if (path[1] === 'status') {
@@ -217,6 +281,10 @@ async function getHandler(request: NextRequest, context: RouteContext) {
     return json({ apiKeys: db.apiKeyRecords, exchanges: db.exchangeRecords });
   }
 
+  if (path[0] === 'wallets') {
+    return json(db.walletRecords);
+  }
+
   if (path[0] === 'audit-logs') {
     return json(db.auditLogRecords);
   }
@@ -229,7 +297,7 @@ async function getHandler(request: NextRequest, context: RouteContext) {
 }
 
 export async function POST(request: NextRequest, context: RouteContext) {
-  return handleApiError(() => durableMutation(() => postHandler(request, context)));
+  return handleApiError(request, () => durableMutation(() => postHandler(request, context)));
 }
 
 async function postHandler(request: NextRequest, context: RouteContext) {
@@ -254,31 +322,63 @@ async function postHandler(request: NextRequest, context: RouteContext) {
     return agentAction(body);
   }
 
+  if (path[0] === 'agent' && path[1] === 'chat') {
+    return agentChat(body);
+  }
+
+  if (path[0] === 'agent' && (path[1] === 'cron' || path[1] === 'progress')) {
+    return path[1] === 'progress' ? agentProgressCron() : agentCron();
+  }
+
   if (path[0] === 'bots' && path[1] && path[2] === 'action') {
-    return json(
-      updateThoonDb((db) => {
-        const bot = db.botRecords.find((item) => item.id === path[1]);
+    const result = updateThoonDb((db) => {
+      const bot = db.botRecords.find((item) => item.id === path[1]);
 
-        if (!bot) {
-          throw new ApiError('Bot not found', 404);
+      if (!bot) {
+        throw new ApiError('Bot not found', 404);
+      }
+
+      const action = normalizeBotAction(body.action);
+
+      if (!action) {
+        throw new ApiError('Unknown bot action', 400);
+      }
+
+      if (action === 'start') {
+        const validationBlocker = getBotLaunchValidationBlocker(db, bot.strategyId, bot.symbol, bot.sourceBacktestReportId);
+
+        if (validationBlocker) {
+          appendAuditEvent(db, {
+            action: 'Bot start blocked',
+            actor: 'system',
+            botId: bot.id,
+            details: validationBlocker,
+            eventType: 'risk',
+            exchange: bot.exchange,
+            status: 'blocked',
+            symbol: bot.symbol,
+          });
+
+          return { error: validationBlocker };
         }
+      }
 
-        const action = asString(body.action);
-        bot.status = action === 'pause' ? 'paused' : action === 'stop' ? 'stopped' : action === 'start' ? 'running' : bot.status;
-        appendAuditEvent(db, {
-          action: `Bot ${action || 'updated'}`,
-          actor: 'user',
-          botId: bot.id,
-          details: `${bot.name} status set to ${bot.status}.`,
-          eventType: 'bot',
-          exchange: bot.exchange,
-          status: 'success',
-          symbol: bot.symbol,
-        });
+      bot.status = action === 'pause' ? 'paused' : action === 'stop' ? 'stopped' : 'running';
+      appendAuditEvent(db, {
+        action: `Bot ${action || 'updated'}`,
+        actor: 'user',
+        botId: bot.id,
+        details: `${bot.name} status set to ${bot.status}.`,
+        eventType: 'bot',
+        exchange: bot.exchange,
+        status: 'success',
+        symbol: bot.symbol,
+      });
 
-        return bot;
-      }),
-    );
+      return bot;
+    });
+
+    return json(result, 'error' in result ? 403 : 200);
   }
 
   if (path[0] === 'orders' && path[1] === 'close-all') {
@@ -363,7 +463,72 @@ async function postHandler(request: NextRequest, context: RouteContext) {
         const symbol = asString(body.symbol);
         const list = db.watchlistRecords.find((item) => item.id === listId);
 
-        if (!list || !symbol) {
+        if (action === 'create-list') {
+          const customCount = db.watchlistRecords.filter((item) => item.type === 'custom').length + 1;
+          const name = asString(body.name) || `List ${customCount}`;
+          const nextList: Watchlist = {
+            alertCount: 0,
+            id: `watchlist-${slug(name)}-${Date.now()}`,
+            name,
+            pairSymbols: [],
+            type: 'custom',
+            updatedAt: new Date().toISOString(),
+          };
+
+          db.watchlistRecords = [...db.watchlistRecords, nextList];
+          appendAuditEvent(db, {
+            action: 'Watchlist created',
+            actor: 'user',
+            details: `${nextList.name} created.`,
+            eventType: 'system',
+            status: 'success',
+          });
+
+          return nextList;
+        }
+
+        if (action === 'rename-list') {
+          if (!list || list.id === 'favorites') {
+            throw new ApiError('Only custom watchlists can be renamed', 400);
+          }
+
+          const nextName = asString(body.name);
+
+          if (!nextName) {
+            throw new ApiError('Watchlist name is required', 400);
+          }
+
+          list.name = nextName.slice(0, 80);
+          list.updatedAt = new Date().toISOString();
+          appendAuditEvent(db, {
+            action: 'Watchlist renamed',
+            actor: 'user',
+            details: `${list.id} renamed to ${list.name}.`,
+            eventType: 'system',
+            status: 'success',
+          });
+
+          return list;
+        }
+
+        if (action === 'delete-list') {
+          if (!list || list.id === 'favorites') {
+            throw new ApiError('Only custom watchlists can be deleted', 400);
+          }
+
+          db.watchlistRecords = db.watchlistRecords.filter((item) => item.id !== list.id);
+          appendAuditEvent(db, {
+            action: 'Watchlist deleted',
+            actor: 'user',
+            details: `${list.name} deleted.`,
+            eventType: 'system',
+            status: 'warning',
+          });
+
+          return list;
+        }
+
+        if (!list || !symbol || (action !== 'add-pair' && action !== 'remove-pair')) {
           throw new ApiError('Missing watchlist or symbol', 400);
         }
 
@@ -498,7 +663,7 @@ async function postHandler(request: NextRequest, context: RouteContext) {
           appendAuditEvent(db, {
             action: 'Live bot blocked',
             actor: 'system',
-            details: 'Live bot launch blocked because THOON_APP_MODE is not live-enabled.',
+            details: 'Live bot launch blocked because live execution readiness is incomplete.',
             eventType: 'risk',
             exchange: asString(body.exchange) || 'Live',
             status: 'blocked',
@@ -512,6 +677,31 @@ async function postHandler(request: NextRequest, context: RouteContext) {
     }
 
     const result = updateThoonDb((db) => {
+      const botStrategyId = normalizeStrategyId(asString(body.strategyId) || db.strategyRecords[0]?.id || 'manual', db);
+      const botSymbol = asString(body.symbol) || db.marketPairRecords[0].symbol;
+      const requestedSourceReportId = asString(body.sourceBacktestReportId);
+      const sourceReport = requestedSourceReportId ? resolveBotSourceReport(db, botStrategyId, botSymbol, requestedSourceReportId) : undefined;
+
+      if (requestedSourceReportId && !sourceReport) {
+        return { error: 'Bot source report blocked: the selected backtest does not match this exact strategy and pair.' };
+      }
+
+      const validationBlocker = requestedStatus === 'running' ? getBotLaunchValidationBlocker(db, botStrategyId, botSymbol, sourceReport?.id) : undefined;
+
+      if (validationBlocker) {
+        appendAuditEvent(db, {
+          action: 'Bot launch blocked',
+          actor: 'system',
+          details: validationBlocker,
+          eventType: 'risk',
+          exchange: asString(body.exchange) || 'Paper',
+          status: 'blocked',
+          symbol: botSymbol,
+        });
+
+        return { error: validationBlocker };
+      }
+
       const liveBotBlocker =
         requestedMode === 'live' && requestedStatus === 'running' ? getLiveTradingBlocker(db, asString(body.exchange) || 'Live') : undefined;
 
@@ -538,9 +728,20 @@ async function postHandler(request: NextRequest, context: RouteContext) {
           name: asString(body.name) || 'New Bot',
           pnl: 0,
           riskPerTrade: asNumber(body.riskPerTrade, db.riskRulesRecord.maxRiskPerTrade),
+          sourceBacktestPeriod: sourceReport?.period,
+          sourceBacktestReportId: sourceReport?.id,
+          sourceCandleChecksum: sourceReport?.dataWindow?.candleChecksum,
+          sourceExchangeId: sourceReport?.exchangeId,
+          sourceExchangeName: sourceReport?.exchangeName,
+          sourceExecutionSettings: sourceReport?.executionSettings,
+          sourceFeesPct: sourceReport?.feesPct,
+          sourceInitialCapital: sourceReport?.initialCapital,
+          sourceMarketDataSource: sourceReport?.marketDataSource,
+          sourceSlippagePct: sourceReport?.slippagePct,
+          sourceTimeframe: sourceReport?.timeframe,
           status: requestedStatus,
-          strategyId: normalizeStrategyId(asString(body.strategyId) || db.strategyRecords[0]?.id || 'manual', db),
-          symbol: asString(body.symbol) || db.marketPairRecords[0].symbol,
+          strategyId: botStrategyId,
+          symbol: botSymbol,
           winRate: 0,
         };
 
@@ -606,14 +807,14 @@ async function postHandler(request: NextRequest, context: RouteContext) {
           appendAuditEvent(db, {
             action: 'Live order blocked',
             actor: 'system',
-            details: 'Live order blocked because THOON_APP_MODE is not live-enabled.',
+            details: 'Live order blocked because live execution readiness is incomplete.',
             eventType: 'risk',
             exchange: asString(body.exchangeName) || 'Live',
             status: 'blocked',
             symbol,
           });
 
-          return { allowed: false, error: 'Live execution is disabled. Set THOON_APP_MODE=live-enabled only after connecting a real exchange executor.' };
+          return { allowed: false, error: 'Live execution is disabled until auth, Postgres, production encryption and a live exchange provider are configured.' };
         }),
         403,
       );
@@ -631,14 +832,71 @@ async function postHandler(request: NextRequest, context: RouteContext) {
       db.exchangeRecords.find((item) => item.name === requestedExchangeName) ??
       db.exchangeRecords.find((item) => item.name === db.userPreferencesRecord.defaultExchange) ??
       db.exchangeRecords[0];
+    const liveApiKey = mode === 'live' ? getActiveTradeApiKey(db, exchange) : undefined;
+    const liveSecret = liveApiKey ? db.apiKeySecrets[liveApiKey.id] : undefined;
+    let liveAccountSnapshot:
+      | {
+          accountBalance: number;
+          availableBalance: number;
+        }
+      | undefined;
+
+    if (mode === 'live') {
+      if (!exchange || !liveApiKey || !liveSecret) {
+        incrementMetric('liveOrdersBlocked');
+
+        return json(
+          updateThoonDb((nextDb) => {
+            appendAuditEvent(nextDb, {
+              action: 'Live order blocked',
+              actor: 'system',
+              details: 'No active trade-enabled API key is available for the selected exchange.',
+              eventType: 'api',
+              exchange: exchange?.name ?? 'Live',
+              status: 'blocked',
+              symbol,
+            });
+
+            return { allowed: false, error: 'No active trade-enabled API key is available for the selected exchange.' };
+          }),
+          403,
+        );
+      }
+
+      try {
+        liveAccountSnapshot = await fetchLiveAccountSnapshot({ apiKey: liveApiKey, exchange, secret: liveSecret });
+      } catch (error) {
+        incrementMetric('apiErrors');
+
+        return json(
+          updateThoonDb((nextDb) => {
+            appendAuditEvent(nextDb, {
+              action: 'Live order blocked',
+              actor: 'system',
+              details: error instanceof Error ? error.message : 'Live account snapshot failed.',
+              eventType: 'api',
+              exchange: exchange.name,
+              status: 'blocked',
+              symbol,
+            });
+
+            return { allowed: false, error: 'Live account balance could not be verified before risk checks.' };
+          }),
+          502,
+        );
+      }
+    }
+
+    const accountBalance = liveAccountSnapshot?.accountBalance ?? 25000;
+    const availableBalance = liveAccountSnapshot?.availableBalance ?? accountBalance;
     const riskResult = evaluateRiskEngine({
       action: 'execute-trade',
       exchange,
       mode,
       order: buildRiskOrderInputFromDraft({
-        accountBalance: 25000,
-        availableBalance: 25000,
-        dailyLossPercent: 0,
+        accountBalance,
+        availableBalance,
+        dailyLossPercent: liveAccountSnapshot ? lossPercentFromPnl(periodPnl(db, 'day'), accountBalance) : 0,
         draft: {
           direction: draft.direction ?? 'long',
           entry: asNumber(draft.entry, 0),
@@ -651,7 +909,7 @@ async function postHandler(request: NextRequest, context: RouteContext) {
         marginRequired: (asNumber(draft.entry, 0) * asNumber(draft.size, 0)) / Math.max(leverage, 1),
         openPositions: db.positionRecords.length,
         ordersToday: db.openOrderRecords.length + db.plannedOrderRecords.length,
-        weeklyLossPercent: 0,
+        weeklyLossPercent: liveAccountSnapshot ? lossPercentFromPnl(periodPnl(db, 'week'), accountBalance) : 0,
       }),
       riskRules: db.riskRulesRecord,
       tradeLimits: db.tradeLimitsRecord,
@@ -692,8 +950,8 @@ async function postHandler(request: NextRequest, context: RouteContext) {
     let liveResult: Awaited<ReturnType<typeof executeLiveOrder>> | undefined;
 
     if (mode === 'live') {
-      const apiKey = getActiveTradeApiKey(db, exchange);
-      const secret = apiKey ? db.apiKeySecrets[apiKey.id] : undefined;
+      const apiKey = liveApiKey;
+      const secret = liveSecret;
 
       if (!exchange || !apiKey || !secret) {
         incrementMetric('liveOrdersBlocked');
@@ -789,7 +1047,7 @@ async function postHandler(request: NextRequest, context: RouteContext) {
     if (!isExecutableBacktestStrategy(strategy)) {
       return json(
         {
-          error: `${strategy.name} does not have a real executable backtest engine yet. The run was blocked instead of showing fake results.`,
+          error: `${strategy.name} does not have a real executable backtest engine yet. The run was blocked instead of showing synthetic results.`,
           details: strategy.agentSource?.sourceId.startsWith('tradingview:')
             ? 'This TradingView item is a public research candidate. It is visible in Strategies and Backtest, but it needs a real Pine-to-engine implementation before Thoon can calculate results.'
             : 'Only jimmy and agent strategies explicitly linked to the protected jimmy Pine source can currently run through the candle engine.',
@@ -803,10 +1061,11 @@ async function postHandler(request: NextRequest, context: RouteContext) {
     const timeframe = isTimeframe(body.timeframe) ? body.timeframe : strategy.timeframe;
     const exchangeId = asString(body.exchangeId) || 'binance';
     const exchange = db.exchangeRecords.find((record) => record.id === exchangeId);
+    const executionSettings = normalizeBacktestExecutionSettings(body.executionSettings, strategy);
     let candles;
 
     try {
-      candles = await getMarketCandles(symbol, timeframe, exchangeId, desiredBacktestCandleLimit(period, timeframe), { strict: true });
+      candles = await getMarketCandles(symbol, timeframe, exchangeId, desiredBacktestCandleLimit(period, timeframe), { marketType: executionSettings.marketType, strict: true });
     } catch (error) {
       return json(
         {
@@ -824,6 +1083,7 @@ async function postHandler(request: NextRequest, context: RouteContext) {
       candles,
       exchangeId,
       exchangeName: exchange?.name ?? exchangeId,
+      executionSettings,
       feesPct: positiveValue(body.fees, 0.06),
       initialCapital: positiveValue(body.initialCapital, 10000),
       marketDataSource: exchangeId === 'binance' ? 'binance-live' : `${exchangeId}-public-rest`,
@@ -836,11 +1096,19 @@ async function postHandler(request: NextRequest, context: RouteContext) {
 
     return json(
       updateThoonDb((db) => {
+        const kronosLearning = advanceKronosLearning({
+          candles,
+          market: symbol,
+          records: db.kronosForecastRecords,
+          strategyId: strategy.id,
+          timeframe,
+        });
         db.backtestReportRecords = [report, ...db.backtestReportRecords].slice(0, 80);
+        db.kronosForecastRecords = kronosLearning.records;
         appendAuditEvent(db, {
           action: 'Backtest run',
           actor: 'user',
-          details: `${report.period} calculated backtest saved for ${strategyId} on ${report.exchangeName ?? exchangeId} using ${report.candleCount} candles.`,
+          details: `${report.period} calculated backtest saved for ${strategyId} on ${report.exchangeName ?? exchangeId} using ${report.candleCount} candles. Kronos learning: ${kronosLearning.created ? 'forecast created' : 'no new forecast'}, ${kronosLearning.evaluatedCount} evaluated.`,
           eventType: 'strategy',
           status: 'success',
           symbol,
@@ -965,11 +1233,127 @@ async function postHandler(request: NextRequest, context: RouteContext) {
     );
   }
 
+  if (path[0] === 'wallets') {
+    return json(
+      updateThoonDb((db) => {
+        const action = asString(body.action) || 'connect-wallet';
+        const now = new Date().toISOString();
+        const preferredExchangeId = asString(body.exchangeId) || undefined;
+        const preferredExchange = preferredExchangeId ? db.exchangeRecords.find((exchange) => exchange.id === preferredExchangeId) : undefined;
+
+        if (preferredExchangeId && !preferredExchange) {
+          throw new ApiError('Preferred DEX not found.', 404);
+        }
+
+        if (action === 'create-wallet') {
+          const env = getThoonServerEnv();
+          const chain = normalizeWalletChain(body.chain);
+
+          if (chain !== 'evm') {
+            throw new ApiError('Internal wallet creation currently supports EVM only. Connect an existing Solana or Cosmos wallet by public address.', 422);
+          }
+
+          if (!hasProductionEncryptionKey(env.encryptionKey)) {
+            throw new ApiError('Set a unique THOON_ENCRYPTION_KEY of at least 32 characters before creating an internal wallet.', 500);
+          }
+
+          if (!isAuthRequired()) {
+            throw new ApiError('Enable THOON_AUTH_MODE=local-required before creating an internal wallet.', 403);
+          }
+
+          const evmWallet = EvmWallet.createRandom();
+          const label = asString(body.label) || 'Thoon EVM wallet';
+          const record: WalletConnection = {
+            address: evmWallet.address,
+            chain,
+            connector: 'internal-vault',
+            createdAt: now,
+            id: `wallet-${slug(label)}-${Date.now()}`,
+            label,
+            networks: normalizeWalletNetworks(body.networks, body.network),
+            preferredExchangeId,
+            status: 'connected',
+          };
+
+          db.walletRecords = [record, ...db.walletRecords].slice(0, 24);
+          db.walletSecrets[record.id] = {
+            encryptedMnemonic: evmWallet.mnemonic?.phrase ? encryptSecret(evmWallet.mnemonic.phrase, env.encryptionKey) : undefined,
+            encryptedPrivateKey: encryptSecret(evmWallet.privateKey, env.encryptionKey),
+          };
+
+          if (preferredExchange?.venueType === 'dex') {
+            preferredExchange.status = 'connected';
+            preferredExchange.permissions = preferredExchange.permissions.includes('read') ? preferredExchange.permissions : ['read', ...preferredExchange.permissions];
+          }
+
+          appendAuditEvent(db, {
+            action: 'Internal wallet created',
+            actor: 'user',
+            details: 'EVM wallet created server-side. Private key and mnemonic were encrypted and never returned to the client.',
+            eventType: 'api',
+            exchange: preferredExchange?.name,
+            status: 'success',
+          });
+
+          return record;
+        }
+
+        const address = asString(body.address);
+        const chain = normalizeWalletChain(body.chain);
+
+        if (!isLikelyWalletAddress(address, chain)) {
+          throw new ApiError('A valid public wallet address is required for this chain.', 400);
+        }
+
+        const label = asString(body.label) || `${chain.toUpperCase()} wallet`;
+        const existingIndex = db.walletRecords.findIndex((wallet) => wallet.address?.toLowerCase() === address.toLowerCase());
+        const record: WalletConnection = {
+          address,
+          chain,
+          connector: 'external-wallet',
+          createdAt: existingIndex >= 0 ? db.walletRecords[existingIndex].createdAt : now,
+          id: existingIndex >= 0 ? db.walletRecords[existingIndex].id : `wallet-${slug(label)}-${Date.now()}`,
+          label,
+          networks: normalizeWalletNetworks(body.networks, body.network),
+          preferredExchangeId,
+          status: 'connected',
+        };
+
+        if (existingIndex >= 0) {
+          db.walletRecords[existingIndex] = record;
+        } else {
+          db.walletRecords = [record, ...db.walletRecords].slice(0, 24);
+        }
+
+        if (preferredExchange?.venueType === 'dex') {
+          preferredExchange.status = 'connected';
+          preferredExchange.permissions = preferredExchange.permissions.includes('read') ? preferredExchange.permissions : ['read', ...preferredExchange.permissions];
+        }
+
+        appendAuditEvent(db, {
+          action: 'Wallet connected',
+          actor: 'user',
+          details: `${label} connected with a public address only. Signing still requires the wallet at execution time.`,
+          eventType: 'api',
+          exchange: preferredExchange?.name,
+          status: 'success',
+        });
+
+        return record;
+      }),
+      201,
+    );
+  }
+
   if (path[0] === 'exchanges' && path[1] === 'api-keys') {
     const env = getThoonServerEnv();
 
     if (!hasProductionEncryptionKey(env.encryptionKey)) {
       return json({ error: 'Set a unique THOON_ENCRYPTION_KEY of at least 32 characters before storing exchange API keys.' }, 500);
+    }
+
+    if (!isAuthRequired()) {
+      return json({ error: 'Enable THOON_AUTH_MODE=local-required before storing exchange API keys.' }, 403);
     }
 
     return json(
@@ -1019,21 +1403,41 @@ async function postHandler(request: NextRequest, context: RouteContext) {
   }
 
   if (path[0] === 'exchanges' && path[1] === 'test') {
-    return json(
-      updateThoonDb((db) => {
-        const exchangeId = asString(body.exchangeId);
-        const exchange = db.exchangeRecords.find((item) => item.id === exchangeId);
+    const db = readThoonDb();
+    const exchangeId = asString(body.exchangeId);
+    const exchange = db.exchangeRecords.find((item) => item.id === exchangeId);
 
-        if (!exchange) {
-          throw new ApiError('Exchange not found', 404);
+    if (!exchange) {
+      throw new ApiError('Exchange not found', 404);
+    }
+
+    const testingKeys = db.apiKeyRecords.filter((keyRecord) => keyRecord.exchangeId === exchange.id && keyRecord.status === 'testing');
+    const verifiedKeyIds = new Set<string>();
+    let liveNetworkChecked = false;
+    let verificationError: string | undefined;
+
+    if (getThoonServerEnv().liveExchangeProvider === 'binance' && exchange.id === 'binance') {
+      for (const keyRecord of testingKeys) {
+        const secret = db.apiKeySecrets[keyRecord.id];
+
+        if (secret?.encryptedKey && secret.encryptedSecret) {
+          try {
+            await verifyLiveApiKey({ apiKey: keyRecord, exchange, secret });
+            verifiedKeyIds.add(keyRecord.id);
+            liveNetworkChecked = true;
+          } catch (error) {
+            verificationError = error instanceof Error ? error.message : 'Live credential test failed.';
+          }
         }
+      }
+    }
 
+    return json(
+      updateThoonDb((nextDb) => {
         let activatedKeys = 0;
 
-        db.apiKeyRecords = db.apiKeyRecords.map((keyRecord) => {
-          const secret = db.apiKeySecrets[keyRecord.id];
-
-          if (keyRecord.exchangeId !== exchange.id || keyRecord.status !== 'testing' || !secret?.encryptedKey || !secret.encryptedSecret) {
+        nextDb.apiKeyRecords = nextDb.apiKeyRecords.map((keyRecord) => {
+          if (!verifiedKeyIds.has(keyRecord.id)) {
             return keyRecord;
           }
 
@@ -1041,16 +1445,27 @@ async function postHandler(request: NextRequest, context: RouteContext) {
           return { ...keyRecord, status: 'active' };
         });
 
-        appendAuditEvent(db, {
+        appendAuditEvent(nextDb, {
           action: 'API key tested',
           actor: 'system',
-          details: activatedKeys > 0 ? `${exchange.name} key activated after local credential check. Live network test still requires real credentials.` : `${exchange.name} local credential check completed. Live network test requires real credentials.`,
+          details:
+            activatedKeys > 0
+              ? `${exchange.name} key activated after live signed account check.`
+              : verificationError
+                ? `${exchange.name} key was not activated because the live signed account check failed.`
+                : `${exchange.name} key was not activated because no live signed account check completed.`,
           eventType: 'api',
           exchange: exchange.name,
-          status: exchange.permissions.length ? 'success' : 'warning',
+          status: activatedKeys > 0 ? 'success' : 'blocked',
         });
 
-        return { exchange, liveNetworkChecked: false, ok: exchange.status === 'connected' };
+        return {
+          activatedKeys,
+          exchange: nextDb.exchangeRecords.find((item) => item.id === exchangeId) ?? exchange,
+          error: verificationError ? 'Live credential test failed.' : undefined,
+          liveNetworkChecked,
+          ok: activatedKeys > 0,
+        };
       }),
     );
   }
@@ -1095,7 +1510,7 @@ async function postHandler(request: NextRequest, context: RouteContext) {
 }
 
 export async function PATCH(request: NextRequest, context: RouteContext) {
-  return handleApiError(() => durableMutation(() => patchHandler(request, context)));
+  return handleApiError(request, () => durableMutation(() => patchHandler(request, context)));
 }
 
 async function patchHandler(request: NextRequest, context: RouteContext) {
@@ -1125,20 +1540,59 @@ async function patchHandler(request: NextRequest, context: RouteContext) {
     );
   }
 
+  if (path[0] === 'paper-tests' && path[1]) {
+    return json(
+      updateThoonDb((db) => {
+        const session = db.paperTestSessionRecords.find((record) => record.id === path[1]);
+
+        if (!session) {
+          throw new ApiError('Paper test session not found', 404);
+        }
+
+        const status = body.status === 'completed' || body.status === 'running' || body.status === 'blocked' || body.status === 'prepared' ? body.status : session.status;
+        const tradeDelta = Math.max(0, Math.floor(asNumber(body.tradeDelta, 0)));
+        const pnlDelta = asNumber(body.pnlDelta, 0);
+        const rMultipleDelta = asNumber(body.rMultipleDelta, 0);
+        const note = asString(body.note);
+        const nextSession: PaperTestSession = {
+          ...session,
+          notes: note ? [note, ...session.notes].slice(0, 12) : session.notes,
+          pnl: session.pnl + pnlDelta,
+          rMultiple: session.rMultiple + rMultipleDelta,
+          status,
+          tradesRecorded: session.tradesRecorded + tradeDelta,
+          updatedAt: new Date().toISOString(),
+        };
+
+        db.paperTestSessionRecords = db.paperTestSessionRecords.map((record) => (record.id === nextSession.id ? nextSession : record));
+        appendAuditEvent(db, {
+          action: 'Paper test session updated',
+          actor: 'user',
+          details: `${nextSession.id}: ${nextSession.status}, ${nextSession.tradesRecorded} paper trades recorded.`,
+          eventType: 'strategy',
+          status: 'success',
+          symbol: nextSession.market,
+        });
+
+        return nextSession;
+      }),
+    );
+  }
+
   if (path[0] === 'preferences') {
-    return json(updateThoonDb((db) => Object.assign(db.userPreferencesRecord, body)));
+    return json(updateThoonDb((db) => patchUserPreferences(db.userPreferencesRecord, body)));
   }
 
   if (path[0] === 'risk-rules') {
-    return json(updateThoonDb((db) => Object.assign(db.riskRulesRecord, body)));
+    return json(updateThoonDb((db) => patchRiskRules(db.riskRulesRecord, body)));
   }
 
   if (path[0] === 'trade-limits') {
-    return json(updateThoonDb((db) => Object.assign(db.tradeLimitsRecord, body)));
+    return json(updateThoonDb((db) => patchTradeLimits(db.tradeLimitsRecord, body)));
   }
 
   if (path[0] === 'profile') {
-    return json(updateThoonDb((db) => Object.assign(db.userProfileRecord, body)));
+    return json(updateThoonDb((db) => patchUserProfile(db.userProfileRecord, body)));
   }
 
   if (path[0] === 'alerts' && path[1]) {
@@ -1177,7 +1631,11 @@ async function patchHandler(request: NextRequest, context: RouteContext) {
           throw new ApiError('Order not found', 404);
         }
 
-        order.status = body.status === 'cancelled' ? 'cancelled' : order.status;
+        if (body.status !== 'cancelled') {
+          throw new ApiError('Unsupported order update', 400);
+        }
+
+        order.status = 'cancelled';
         db.openOrderRecords = db.openOrderRecords.filter((item) => item.id !== order.id);
         db.plannedOrderRecords = db.plannedOrderRecords.filter((item) => item.id !== order.id);
         db.orderHistoryRecords = [order, ...db.orderHistoryRecords];
@@ -1285,13 +1743,21 @@ async function patchHandler(request: NextRequest, context: RouteContext) {
 
       const requestedMode = body.mode === 'live' ? 'live' : body.mode === 'paper' ? 'paper' : bot.mode;
       const requestedStatus = body.status === 'running' || body.status === 'paused' || body.status === 'stopped' || body.status === 'draft' ? body.status : bot.status;
+      const nextStrategyId = normalizeStrategyId(asString(body.strategyId) || bot.strategyId, db);
+      const nextSymbol = asString(body.symbol) || bot.symbol;
+      const requestedSourceReportId = asString(body.sourceBacktestReportId) || (nextStrategyId === bot.strategyId && nextSymbol === bot.symbol ? bot.sourceBacktestReportId ?? '' : '');
+      const sourceReport = requestedSourceReportId ? resolveBotSourceReport(db, nextStrategyId, nextSymbol, requestedSourceReportId) : undefined;
+
+      if (requestedSourceReportId && !sourceReport) {
+        return { error: 'Bot source report blocked: the selected backtest does not match this exact strategy and pair.' };
+      }
 
       if (requestedMode === 'live' && requestedStatus === 'running' && !isLiveExecutionEnabled()) {
         appendAuditEvent(db, {
           action: 'Live bot update blocked',
           actor: 'system',
           botId: bot.id,
-          details: 'Live bot update blocked because THOON_APP_MODE is not live-enabled.',
+          details: 'Live bot update blocked because live execution readiness is incomplete.',
           eventType: 'risk',
           exchange: asString(body.exchange) || bot.exchange,
           status: 'blocked',
@@ -1299,6 +1765,23 @@ async function patchHandler(request: NextRequest, context: RouteContext) {
         });
 
         return { error: 'Live execution is disabled. Set THOON_APP_MODE=live-enabled only after connecting a real exchange executor.' };
+      }
+
+      const validationBlocker = requestedStatus === 'running' ? getBotLaunchValidationBlocker(db, nextStrategyId, nextSymbol, sourceReport?.id) : undefined;
+
+      if (validationBlocker) {
+        appendAuditEvent(db, {
+          action: 'Bot update blocked',
+          actor: 'system',
+          botId: bot.id,
+          details: validationBlocker,
+          eventType: 'risk',
+          exchange: asString(body.exchange) || bot.exchange,
+          status: 'blocked',
+          symbol: nextSymbol,
+        });
+
+        return { error: validationBlocker };
       }
 
       const liveBotBlocker =
@@ -1328,8 +1811,19 @@ async function patchHandler(request: NextRequest, context: RouteContext) {
       bot.allocatedCapital = positiveValue(body.allocatedCapital, bot.allocatedCapital);
       bot.exchange = asString(body.exchange) || bot.exchange;
       bot.riskPerTrade = positiveValue(body.riskPerTrade, bot.riskPerTrade);
-      bot.strategyId = normalizeStrategyId(asString(body.strategyId) || bot.strategyId, db);
-      bot.symbol = asString(body.symbol) || bot.symbol;
+      bot.sourceBacktestPeriod = sourceReport?.period;
+      bot.sourceBacktestReportId = sourceReport?.id;
+      bot.sourceCandleChecksum = sourceReport?.dataWindow?.candleChecksum;
+      bot.sourceExchangeId = sourceReport?.exchangeId;
+      bot.sourceExchangeName = sourceReport?.exchangeName;
+      bot.sourceExecutionSettings = sourceReport?.executionSettings;
+      bot.sourceFeesPct = sourceReport?.feesPct;
+      bot.sourceInitialCapital = sourceReport?.initialCapital;
+      bot.sourceMarketDataSource = sourceReport?.marketDataSource;
+      bot.sourceSlippagePct = sourceReport?.slippagePct;
+      bot.sourceTimeframe = sourceReport?.timeframe;
+      bot.strategyId = nextStrategyId;
+      bot.symbol = nextSymbol;
 
       appendAuditEvent(db, {
         action: 'Bot updated',
@@ -1352,7 +1846,7 @@ async function patchHandler(request: NextRequest, context: RouteContext) {
 }
 
 export async function DELETE(_request: NextRequest, context: RouteContext) {
-  return handleApiError(() => durableMutation(() => deleteHandler(_request, context)));
+  return handleApiError(_request, () => durableMutation(() => deleteHandler(_request, context)));
 }
 
 async function deleteHandler(_request: NextRequest, context: RouteContext) {
@@ -1387,16 +1881,48 @@ async function deleteHandler(_request: NextRequest, context: RouteContext) {
 
   if (path[0] === 'strategies' && path[1]) {
     return json(updateThoonDb((db) => {
+      const existingStrategy = findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, path[1]);
       const deletedStrategy = removeById(db.strategyRecords, path[1]);
       const beforeResearchCount = db.strategyResearchRecords.length;
       db.strategyResearchRecords = db.strategyResearchRecords.filter((record) => strategyIdFromResearchRecord(record) !== path[1]);
+      const deleted = deletedStrategy || db.strategyResearchRecords.length !== beforeResearchCount;
 
-      return { deleted: deletedStrategy || db.strategyResearchRecords.length !== beforeResearchCount };
+      if (deleted) {
+        appendAuditEvent(db, {
+          action: 'Strategy deleted',
+          actor: 'user',
+          details: `${existingStrategy?.name ?? path[1]} removed from Strategies.`,
+          eventType: 'strategy',
+          status: 'warning',
+          symbol: existingStrategy?.market,
+        });
+      }
+
+      return { deleted };
     }));
   }
 
   if (path[0] === 'bots' && path[1]) {
-    return json(updateThoonDb((db) => ({ deleted: removeById(db.botRecords, path[1]) })));
+    return json(updateThoonDb((db) => {
+      const existingBot = db.botRecords.find((bot) => bot.id === path[1]);
+      const deleted = removeById(db.botRecords, path[1]);
+
+      if (deleted) {
+        db.botLogRecords = db.botLogRecords.filter((log) => log.botId !== path[1]);
+        appendAuditEvent(db, {
+          action: 'Bot deleted',
+          actor: 'user',
+          botId: existingBot?.id,
+          details: `${existingBot?.name ?? path[1]} removed from Bots.`,
+          eventType: 'bot',
+          exchange: existingBot?.exchange,
+          status: 'warning',
+          symbol: existingBot?.symbol,
+        });
+      }
+
+      return { deleted };
+    }));
   }
 
   if (path[0] === 'exchanges' && path[1] === 'api-keys' && path[2]) {
@@ -1449,8 +1975,8 @@ async function deleteHandler(_request: NextRequest, context: RouteContext) {
   return notFound(path);
 }
 
-function json(value: unknown, status = 200) {
-  return NextResponse.json(value, { status });
+function json(value: unknown, status = 200, headers?: HeadersInit) {
+  return NextResponse.json(value, { headers, status });
 }
 
 function login(request: NextRequest, body: Record<string, unknown>) {
@@ -1462,12 +1988,31 @@ function login(request: NextRequest, body: Record<string, unknown>) {
 
   const email = asString(body.email).toLowerCase();
   const password = asString(body.password);
+  const rateLimitKey = loginRateLimitKey(request, email);
+  const rateLimit = getLoginRateLimit(rateLimitKey);
+
+  if (rateLimit.blocked) {
+    incrementMetric('rateLimitedRequests');
+
+    return json(
+      {
+        error: 'Too many login attempts. Try again in a few minutes.',
+        retryAfterSeconds: rateLimit.retryAfterSeconds,
+      },
+      429,
+      { 'Retry-After': String(rateLimit.retryAfterSeconds) },
+    );
+  }
 
   if (!env.thoonAdminPasswordHash) {
+    incrementMetric('authFailures');
+
     return json({ error: 'THOON_ADMIN_PASSWORD_HASH is required before local auth can be enabled.' }, 503);
   }
 
   if (email !== env.thoonAdminEmail.toLowerCase() || !verifyPassword(password, env.thoonAdminPasswordHash)) {
+    incrementMetric('authFailures');
+    recordFailedLoginAttempt(rateLimitKey);
     updateThoonDb((db) => {
       appendAuditEvent(db, {
         action: 'Login failed',
@@ -1481,6 +2026,7 @@ function login(request: NextRequest, body: Record<string, unknown>) {
     return json({ error: 'Invalid credentials.' }, 401);
   }
 
+  clearLoginAttempts(rateLimitKey);
   const { cookie, payload } = createLoginSession(email);
   const response = json({
     authenticated: true,
@@ -1500,7 +2046,7 @@ function login(request: NextRequest, body: Record<string, unknown>) {
         email: payload.email,
         expiresAt: payload.expiresAt,
         id: payload.sessionId,
-        ipAddress: request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'local',
+        ipAddress: clientIp(request),
         lastSeenAt: payload.issuedAt,
         role: payload.role,
         userAgent: request.headers.get('user-agent') ?? 'unknown',
@@ -1541,6 +2087,178 @@ function logout(request: NextRequest) {
   return response;
 }
 
+function loginRateLimitKey(request: NextRequest, email: string) {
+  return `${clientIp(request)}:${email || 'unknown'}`;
+}
+
+function getLoginRateLimit(key: string) {
+  const env = getThoonServerEnv();
+  const windowMs = env.loginRateLimitWindowSeconds * 1000;
+  const now = Date.now();
+  const attempt = loginAttempts.get(key);
+
+  if (!attempt) {
+    return { blocked: false };
+  }
+
+  if (attempt.blockedUntil && attempt.blockedUntil > now) {
+    return { blocked: true, retryAfterSeconds: Math.max(Math.ceil((attempt.blockedUntil - now) / 1000), 1) };
+  }
+
+  if (now - attempt.firstAttemptAt > windowMs) {
+    loginAttempts.delete(key);
+  }
+
+  return { blocked: false };
+}
+
+function recordFailedLoginAttempt(key: string) {
+  const env = getThoonServerEnv();
+  const windowMs = env.loginRateLimitWindowSeconds * 1000;
+  const now = Date.now();
+  const current = loginAttempts.get(key);
+  const next =
+    current && now - current.firstAttemptAt <= windowMs
+      ? { ...current, count: current.count + 1 }
+      : { count: 1, firstAttemptAt: now };
+
+  if (next.count >= env.loginRateLimitMax) {
+    next.blockedUntil = now + windowMs;
+  }
+
+  loginAttempts.set(key, next);
+}
+
+function clearLoginAttempts(key: string) {
+  loginAttempts.delete(key);
+}
+
+function clientIp(request: NextRequest) {
+  return request.headers.get('x-forwarded-for')?.split(',')[0]?.trim().slice(0, 80) || 'local';
+}
+
+async function agentChat(body: Record<string, unknown>) {
+  const content = asString(body.message).trim();
+
+  if (!content) {
+    throw new ApiError('Message is required.', 400);
+  }
+
+  const now = new Date().toISOString();
+  const userMessage: AgentChatMessage = {
+    content,
+    createdAt: now,
+    id: `agent-chat-user-${randomUUID()}`,
+    role: 'user',
+    status: 'completed',
+  };
+
+  updateThoonDb((db) => {
+    db.agentChatRecords = [userMessage, ...db.agentChatRecords].slice(0, 120);
+    appendAuditEvent(db, {
+      action: 'Thoonix chat request',
+      actor: 'user',
+      details: content.slice(0, 160),
+      eventType: 'system',
+      status: 'success',
+    });
+  });
+
+  let tradingViewImportNote = '';
+
+  if (shouldRunTradingViewImportFromChat(content)) {
+    try {
+      const db = readThoonDb();
+      const strategy = findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, JIMMY_STRATEGY_ID);
+      const research = await researchTradingViewStrategies({ limit: 8, query: content, strategy });
+      const newCount = research.records.filter((record) => !db.strategyResearchRecords.some((item) => item.url === record.url)).length;
+
+      updateThoonDb((nextDb) => {
+        nextDb.strategyResearchRecords = mergeResearchRecords(nextDb.strategyResearchRecords, research.records);
+        nextDb.agentRunRecords = [
+          createSystemAgentRun(nextDb, 'research_tradingview', 'completed', `${research.records.length} TradingView records saved from chat request; ${newCount} new.`),
+          ...nextDb.agentRunRecords,
+        ].slice(0, 300);
+        appendAuditEvent(nextDb, {
+          action: 'TradingView import from chat',
+          actor: 'system',
+          details: `${research.records.length} records saved for query: ${content.slice(0, 120)}`,
+          eventType: 'strategy',
+          status: 'success',
+          symbol: strategy?.market,
+        });
+      });
+
+      tradingViewImportNote = `TradingView import pipeline saved ${research.records.length} public strategy records (${newCount} new).`;
+    } catch (error) {
+      tradingViewImportNote = `TradingView import pipeline failed: ${error instanceof Error ? error.message : 'unknown error'}.`;
+      updateThoonDb((db) => {
+        appendAuditEvent(db, {
+          action: 'TradingView import from chat failed',
+          actor: 'system',
+          details: tradingViewImportNote.slice(0, 220),
+          eventType: 'strategy',
+          status: 'failed',
+        });
+      });
+    }
+  }
+
+  try {
+    const db = readThoonDb();
+    const replyText = await runCodexAgentChat({
+      appSnapshot: buildAgentChatSnapshot(db),
+      history: db.agentChatRecords.slice(0, 16).reverse(),
+      message: tradingViewImportNote ? `${content}\n\n${tradingViewImportNote}` : content,
+    });
+    const assistantMessage: AgentChatMessage = {
+      content: replyText || 'Thoonix did not return a message.',
+      createdAt: new Date().toISOString(),
+      id: `agent-chat-thoonix-${randomUUID()}`,
+      role: 'assistant',
+      status: 'completed',
+    };
+
+    return json(
+      updateThoonDb((db) => {
+        db.agentChatRecords = [assistantMessage, ...db.agentChatRecords].slice(0, 120);
+        appendAuditEvent(db, {
+          action: 'Thoonix chat response',
+          actor: 'system',
+          details: assistantMessage.content.slice(0, 160),
+          eventType: 'system',
+          status: 'success',
+        });
+
+        return { messages: db.agentChatRecords, reply: assistantMessage };
+      }),
+    );
+  } catch (error) {
+    const assistantMessage: AgentChatMessage = {
+      content: error instanceof Error ? error.message : 'Thoonix chat failed.',
+      createdAt: new Date().toISOString(),
+      id: `agent-chat-thoonix-${randomUUID()}`,
+      role: 'assistant',
+      status: 'failed',
+    };
+
+    return json(
+      updateThoonDb((db) => {
+        db.agentChatRecords = [assistantMessage, ...db.agentChatRecords].slice(0, 120);
+        appendAuditEvent(db, {
+          action: 'Thoonix chat failed',
+          actor: 'system',
+          details: assistantMessage.content.slice(0, 160),
+          eventType: 'system',
+          status: 'failed',
+        });
+
+        return { messages: db.agentChatRecords, reply: assistantMessage };
+      }),
+    );
+  }
+}
+
 async function agentAction(body: Record<string, unknown>) {
   const action = normalizeAgentAction(body.action);
 
@@ -1552,6 +2270,7 @@ async function agentAction(body: Record<string, unknown>) {
   const initialDb = readThoonDb();
   const strategyId = normalizeStrategyId(asString(body.strategyId), initialDb);
   const versionId = asString(body.versionId);
+  const reportId = asString(body.reportId);
   let aiSuggestionResult: Awaited<ReturnType<typeof generateAiStrategySuggestions>> | undefined;
   let agentBacktestReport: BacktestReport | undefined;
   let tradingViewResearchResult: Awaited<ReturnType<typeof researchTradingViewStrategies>> | undefined;
@@ -1578,6 +2297,8 @@ async function agentAction(body: Record<string, unknown>) {
     const strategy = strategyId ? findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, strategyId) : undefined;
 
     if (strategy) {
+      const executionSettings = normalizeBacktestExecutionSettings(undefined, strategy);
+
       if (!isExecutableBacktestStrategy(strategy)) {
         throw new ApiError(`${strategy.name} does not have a real executable backtest engine yet.`, 422);
       }
@@ -1585,7 +2306,7 @@ async function agentAction(body: Record<string, unknown>) {
       let candles;
 
       try {
-        candles = await getMarketCandles(strategy.market, strategy.timeframe, 'binance', desiredBacktestCandleLimit('90D', strategy.timeframe), { strict: true });
+        candles = await getMarketCandles(strategy.market, strategy.timeframe, 'binance', desiredBacktestCandleLimit('90D', strategy.timeframe), { marketType: executionSettings.marketType, strict: true });
       } catch (error) {
         throw new ApiError(error instanceof Error ? error.message : 'Live Binance candles unavailable for agent backtest.', 502);
       }
@@ -1593,6 +2314,7 @@ async function agentAction(body: Record<string, unknown>) {
         candles,
         exchangeId: 'binance',
         exchangeName: 'Binance',
+        executionSettings,
         feesPct: 0.06,
         initialCapital: strategy.riskSettings?.accountBalance ?? 10000,
         marketDataSource: 'binance-live',
@@ -1660,7 +2382,7 @@ async function agentAction(body: Record<string, unknown>) {
         return { confirmationRequired: true, decision, ok: true, run, task };
       }
 
-      const result = executeAgentAction(db, action, strategy, version, aiSuggestionResult, agentBacktestReport, tradingViewResearchResult);
+      const result = executeAgentAction(db, action, strategy, version, aiSuggestionResult, agentBacktestReport, tradingViewResearchResult, reportId);
       const run: AgentRun = { ...runBase, notes: result.notes, result: 'completed' };
       db.agentQueueRecords = db.agentQueueRecords.map((task) =>
         task.action === action && task.strategyId === strategy?.id && task.versionId === version?.id && task.status === 'waiting_for_confirmation'
@@ -1682,6 +2404,1049 @@ async function agentAction(body: Record<string, unknown>) {
   );
 }
 
+async function agentCron() {
+  const startedAt = new Date().toISOString();
+  const initialDb = readThoonDb();
+  const settings = normalizeAgentSettings(initialDb.agentSettingsRecord);
+
+  if (!settings.enabled || settings.queuePaused) {
+    return json(
+      updateThoonDb((db) => {
+        const notes = settings.enabled ? 'Strategy Agent cron skipped because queue is paused.' : 'Strategy Agent cron skipped because agent is disabled.';
+        const run = createSystemAgentRun(db, 'run_backtest', 'blocked', notes);
+
+        db.agentRunRecords = [run, ...db.agentRunRecords].slice(0, 300);
+        appendAuditEvent(db, {
+          action: 'Strategy Agent cron blocked',
+          actor: 'system',
+          details: notes,
+          eventType: 'strategy',
+          status: 'blocked',
+        });
+
+        return { ok: false, reason: notes, startedAt };
+      }),
+    );
+  }
+
+  let snapshot: MarketDataSnapshot;
+
+  try {
+    snapshot = await getMarketDataSnapshot();
+  } catch (error) {
+    const notes = error instanceof Error ? error.message : 'Live market snapshot failed.';
+
+    return json(
+      updateThoonDb((db) => {
+        const run = createSystemAgentRun(db, 'run_backtest', 'failed', notes);
+
+        db.agentRunRecords = [run, ...db.agentRunRecords].slice(0, 300);
+        appendAuditEvent(db, {
+          action: 'Strategy Agent cron failed',
+          actor: 'system',
+          details: notes,
+          eventType: 'strategy',
+          status: 'failed',
+        });
+
+        return { ok: false, reason: notes, startedAt };
+      }),
+      502,
+    );
+  }
+
+  if (!snapshot.status.live) {
+    const notes = `Live market data is unavailable: ${snapshot.status.warnings[0] ?? 'snapshot provider is local'}. No backtest was saved.`;
+
+    return json(
+      updateThoonDb((db) => {
+        const run = createSystemAgentRun(db, 'run_backtest', 'blocked', notes);
+
+        db.agentRunRecords = [run, ...db.agentRunRecords].slice(0, 300);
+        appendAuditEvent(db, {
+          action: 'Strategy Agent cron blocked',
+          actor: 'system',
+          details: notes,
+          eventType: 'strategy',
+          status: 'blocked',
+        });
+
+        return { ok: false, reason: notes, startedAt, warnings: snapshot.status.warnings };
+      }),
+    );
+  }
+
+  const research = await runAgentCronResearch(initialDb);
+  const newResearchCount = research.records.filter((record) => !initialDb.strategyResearchRecords.some((item) => item.url === record.url)).length;
+  const shouldInnovate = research.attempted && newResearchCount === 0;
+  const innovationStrategies = buildAgentInnovationStrategies(initialDb, snapshot.pairs, shouldInnovate);
+  const virtualDb: ThoonDb = {
+    ...initialDb,
+    agentSettingsRecord: settings,
+    marketPairRecords: mergeLiveMarketPairs(initialDb.marketPairRecords, snapshot.pairs),
+    strategyRecords: [...innovationStrategies, ...initialDb.strategyRecords],
+    strategyResearchRecords: mergeResearchRecords(initialDb.strategyResearchRecords, research.records),
+  };
+  const candidates = selectAgentCronBacktestTargets(virtualDb, snapshot.pairs);
+  const outcomes: AgentCronBacktestOutcome[] = [];
+
+  for (const target of candidates) {
+    outcomes.push(await runAgentCronBacktest(virtualDb, target));
+  }
+
+  return json(
+    updateThoonDb((db) => {
+      db.agentSettingsRecord = normalizeAgentSettings(db.agentSettingsRecord);
+      db.marketPairRecords = mergeLiveMarketPairs(db.marketPairRecords, snapshot.pairs);
+      db.strategyRecords = mergeStrategyRecords(db.strategyRecords, innovationStrategies);
+      db.strategyResearchRecords = mergeResearchRecords(db.strategyResearchRecords, research.records);
+
+      const reports = outcomes.flatMap((outcome) => (outcome.report ? [outcome.report] : []));
+      db.backtestReportRecords = [...reports, ...db.backtestReportRecords].slice(0, 1000);
+      const kronosCreated = outcomes.filter((outcome) => outcome.kronosLearning?.created).length;
+      const kronosEvaluated = outcomes.reduce((sum, outcome) => sum + (outcome.kronosLearning?.evaluatedCount ?? 0), 0);
+      db.kronosForecastRecords = mergeKronosForecastRecords(db.kronosForecastRecords, outcomes.flatMap((outcome) => outcome.kronosLearning?.records ?? []));
+
+      const runRecords = buildAgentCronRunRecords(db, outcomes, research, innovationStrategies.length, newResearchCount);
+      if (kronosCreated || kronosEvaluated) {
+        const profile = getKronosLearningProfile(db.kronosForecastRecords);
+        runRecords.unshift(createSystemAgentRun(db, 'analyze_strategy', 'completed', `Kronos learning updated: ${kronosCreated} new forecast${kronosCreated === 1 ? '' : 's'}, ${kronosEvaluated} evaluated, ${(profile.accuracy * 100).toFixed(1)}% accuracy, weight ${profile.confidenceWeight.toFixed(2)}.`));
+      }
+      db.agentRunRecords = [...runRecords, ...db.agentRunRecords].slice(0, 300);
+      db.agentQueueRecords = buildAutonomousAgentTasks(db);
+      db.agentReportRecords = [...buildAgentCronReports(db, outcomes), ...db.agentReportRecords].slice(0, 160);
+
+      const completed = outcomes.filter((outcome) => outcome.status === 'completed').length;
+      const failed = outcomes.filter((outcome) => outcome.status === 'failed').length;
+      const blocked = outcomes.filter((outcome) => outcome.status === 'blocked').length;
+
+      appendAuditEvent(db, {
+        action: 'Strategy Agent cron executed',
+        actor: 'system',
+        details: `${completed} calculated backtests saved, ${innovationStrategies.length} innovation strategies created, ${newResearchCount} new TradingView records, ${failed} failed, ${blocked} blocked.`,
+        eventType: 'strategy',
+        status: completed ? 'success' : failed || blocked ? 'warning' : 'success',
+      });
+
+      return {
+        backtests: {
+          blocked,
+          completed,
+          failed,
+          requested: candidates.length,
+          saved: reports.length,
+        },
+        innovationsCreated: innovationStrategies.length,
+        kronosLearning: {
+          created: kronosCreated,
+          evaluated: kronosEvaluated,
+          profile: getKronosLearningProfile(db.kronosForecastRecords),
+        },
+        marketPairsSeen: snapshot.pairs.length,
+        matrix: {
+          strategyCount: new Set(candidates.map((candidate) => candidate.strategy.id)).size,
+          symbolCount: new Set(candidates.map((candidate) => candidate.symbol)).size,
+          timeframeCount: new Set(candidates.map((candidate) => candidate.timeframe)).size,
+        },
+        ok: true,
+        research: {
+          attempted: research.attempted,
+          errors: research.errors,
+          newRecords: newResearchCount,
+          savedRecords: research.records.length,
+        },
+        startedAt,
+      };
+    }),
+  );
+}
+
+function agentProgressCron() {
+  return json(
+    updateThoonDb((db) => {
+      const report = buildAgentProgressReport(db);
+      const run = createSystemAgentRun(db, 'create_report', 'completed', report.summary.join(' '));
+
+      db.agentReportRecords = [report, ...db.agentReportRecords].slice(0, 160);
+      db.agentRunRecords = [run, ...db.agentRunRecords].slice(0, 300);
+      appendAuditEvent(db, {
+        action: 'Strategy Agent progress report',
+        actor: 'system',
+        details: report.summary.join(' '),
+        eventType: 'strategy',
+        status: 'success',
+      });
+
+      return { ok: true, report };
+    }),
+  );
+}
+
+type AgentCronResearchOutcome = {
+  attempted: boolean;
+  errors: string[];
+  records: StrategyResearchRecord[];
+  searchedQueries: string[];
+};
+
+type AgentCronBacktestOutcome = {
+  decision: AgentRun['decision'];
+  kronosLearning?: ReturnType<typeof advanceKronosLearning>;
+  notes: string;
+  report?: BacktestReport;
+  status: AgentRun['result'];
+  strategy: Strategy;
+  target: AgentCronBacktestTarget;
+};
+
+type AgentCronBacktestTarget = {
+  marketRank: number;
+  strategy: Strategy;
+  symbol: string;
+  timeframe: Timeframe;
+};
+
+async function runAgentCronResearch(db: ThoonDb): Promise<AgentCronResearchOutcome> {
+  if (!shouldRunAgentCronResearch(db)) {
+    return { attempted: false, errors: [], records: [], searchedQueries: [] };
+  }
+
+  const strategy = findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, JIMMY_STRATEGY_ID);
+
+  try {
+    const result = await researchTradingViewStrategies({ limit: 8, strategy });
+
+    return {
+      attempted: true,
+      errors: result.errors,
+      records: result.records,
+      searchedQueries: result.searchedQueries,
+    };
+  } catch (error) {
+    return {
+      attempted: true,
+      errors: [error instanceof Error ? error.message : 'TradingView public research failed.'],
+      records: [],
+      searchedQueries: [],
+    };
+  }
+}
+
+function shouldRunAgentCronResearch(db: ThoonDb) {
+  const latestFetch = db.strategyResearchRecords.reduce((latest, record) => Math.max(latest, new Date(record.fetchedAt).getTime()), 0);
+
+  return !latestFetch || Date.now() - latestFetch >= agentCronResearchIntervalMs;
+}
+
+function buildAgentInnovationStrategies(db: ThoonDb, pairs: MarketPair[], forceInnovation: boolean): Strategy[] {
+  const settings = normalizeAgentSettings(db.agentSettingsRecord);
+  const livePairs = pairs.filter((pair) => pair.quote === 'USDT').slice(0, agentCronTargetPairCount);
+  const existingIds = new Set(db.strategyRecords.map((strategy) => strategy.id));
+  const existingInnovationCount = db.strategyRecords.filter((strategy) => strategy.agentSource?.sourceId.startsWith('agent-innovation:')).length;
+  const needsCryptoCoverage = existingInnovationCount < Math.min(livePairs.length, agentCronTargetPairCount);
+
+  if (!forceInnovation && !needsCryptoCoverage) {
+    return [];
+  }
+
+  const strategies: Strategy[] = [];
+
+  for (let index = 0; index < livePairs.length; index += 1) {
+    const pair = livePairs[index];
+
+    if (!isMarketAllowedByAgent(settings, pair.symbol)) {
+      continue;
+    }
+
+    const template = innovationTemplateForPair(pair, settings, index);
+    const id = `strat-agent-${slug(pair.symbol)}-${slug(template.timeframe)}-${slug(template.type)}`;
+
+    if (existingIds.has(id)) {
+      continue;
+    }
+
+    existingIds.add(id);
+    strategies.push(makeAgentInnovationStrategy(pair, template, id));
+
+    if (strategies.length >= agentCronInnovationBatchSize) {
+      break;
+    }
+  }
+
+  return strategies;
+}
+
+type AgentInnovationTemplate = {
+  directionBias: NonNullable<Strategy['agentSource']>['directionBias'];
+  label: string;
+  timeframe: Timeframe;
+  type: Strategy['type'];
+};
+
+function innovationTemplateForPair(pair: MarketPair, settings: ReturnType<typeof normalizeAgentSettings>, index: number): AgentInnovationTemplate {
+  const preferredTimeframe = pair.change24h > 4 ? '15m' : pair.change24h < -3 ? '30m' : index % 3 === 0 ? '5m' : '1h';
+  const timeframe = settings.limits.allowedTimeframes.includes(preferredTimeframe) ? preferredTimeframe : settings.limits.allowedTimeframes[0] ?? '15m';
+
+  if (pair.change24h > 4 || pair.volume24h > 1_000_000_000) {
+    return {
+      directionBias: 'both',
+      label: 'Momentum breakout',
+      timeframe,
+      type: 'breakout',
+    };
+  }
+
+  if (pair.change24h < -3) {
+    return {
+      directionBias: 'both',
+      label: 'Volatility reversion',
+      timeframe,
+      type: 'mean-reversion',
+    };
+  }
+
+  return {
+    directionBias: 'both',
+    label: 'Trend continuation',
+    timeframe,
+    type: 'trend',
+  };
+}
+
+function makeAgentInnovationStrategy(pair: MarketPair, template: AgentInnovationTemplate, id: string): Strategy {
+  const stopLossAtr = template.type === 'mean-reversion' ? 'ATR 1.2x required' : template.type === 'breakout' ? 'ATR 1.8x required' : 'ATR 1.5x required';
+  const rrTarget = template.type === 'mean-reversion' ? 1.6 : template.type === 'breakout' ? 2.4 : 2;
+
+  return {
+    agentSource: {
+      directionBias: template.directionBias,
+      language: 'manual',
+      originalTimeframe: template.timeframe,
+      parameters: [
+        { label: 'Origin', value: 'Thoon agent innovation' },
+        { label: 'Template', value: template.label },
+        { label: 'Evidence rule', value: 'Must be backtested with live exchange candles before ranking' },
+        { label: 'Market universe', value: 'Dynamic Binance USDT liquidity list' },
+      ],
+      protectedCore: false,
+      sourceId: `agent-innovation:${slug(pair.symbol)}:${slug(template.timeframe)}:${slug(template.type)}`,
+      summary: `${template.label} generated by Thoon for ${pair.symbol}. This is a test candidate, not a proven strategy, until live-candle backtests and paper trades validate it.`,
+    },
+    entryConditions: innovationEntryConditions(template),
+    exitConditions: innovationExitConditions(template),
+    id,
+    market: pair.symbol,
+    name: `Agent ${pair.base} ${template.label}`,
+    performance30d: 0,
+    riskPerTrade: 0.7,
+    riskSettings: {
+      accountBalance: 10000,
+      maxOpenTrades: 3,
+      positionSizing: 'risk-percent',
+      rrTarget,
+      stopLoss: stopLossAtr,
+      stopRequired: true,
+      takeProfit: `${rrTarget}R target plus ATR trail`,
+      trailingStop: true,
+    },
+    status: 'active',
+    timeframe: template.timeframe,
+    type: template.type,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function innovationEntryConditions(template: AgentInnovationTemplate): StrategyCondition[] {
+  if (template.type === 'breakout') {
+    return [
+      { connector: 'IF', field: 'Close', id: 'agent-breakout-close', operator: 'greater-than', value: 'Donchian upper band' },
+      { connector: 'AND', field: 'Volume', id: 'agent-breakout-volume', operator: 'greater-than', value: 'Donchian volume average' },
+      { connector: 'OR', field: 'Close', id: 'agent-breakout-short', operator: 'less-than', value: 'Donchian lower band' },
+    ];
+  }
+
+  if (template.type === 'mean-reversion') {
+    return [
+      { connector: 'IF', field: 'RSI', id: 'agent-reversion-rsi-low', operator: 'less-than', value: '35 near range low' },
+      { connector: 'OR', field: 'RSI', id: 'agent-reversion-rsi-high', operator: 'greater-than', value: '68 near range high' },
+    ];
+  }
+
+  return [
+    { connector: 'IF', field: 'Fast MA', id: 'agent-trend-ma', operator: 'greater-than', value: 'slow MA' },
+    { connector: 'AND', field: 'Close', id: 'agent-trend-close', operator: 'crosses-above', value: 'fast MA or Donchian high' },
+    { connector: 'OR', field: 'Fast MA', id: 'agent-trend-short', operator: 'less-than', value: 'slow MA' },
+  ];
+}
+
+function innovationExitConditions(template: AgentInnovationTemplate): StrategyCondition[] {
+  return [
+    { connector: 'IF', field: 'ATR Stop', id: `agent-${template.type}-exit-stop`, operator: 'less-than', value: 'strategy ATR stop' },
+    { connector: 'OR', field: 'ATR Trail', id: `agent-${template.type}-exit-trail`, operator: 'crosses-below', value: 'price' },
+    { connector: 'OR', field: 'Target', id: `agent-${template.type}-exit-target`, operator: 'greater-than', value: 'configured R multiple' },
+  ];
+}
+
+function selectAgentCronBacktestTargets(db: ThoonDb, pairs: MarketPair[]): AgentCronBacktestTarget[] {
+  const settings = normalizeAgentSettings(db.agentSettingsRecord);
+  const livePairs = pairs
+    .filter((pair) => pair.quote === 'USDT')
+    .filter((pair) => isMarketAllowedByAgent(settings, pair.symbol))
+    .slice(0, agentCronTargetPairCount);
+  const liveSymbols = new Set(livePairs.map((pair) => pair.symbol));
+  const latestReportTimeByTarget = new Map<string, number>();
+  const latestReportTimeByPairTimeframe = new Map<string, number>();
+
+  for (const report of db.backtestReportRecords) {
+    const generatedAt = new Date(report.generatedAt ?? 0).getTime();
+    const reportTime = Number.isFinite(generatedAt) ? generatedAt : 0;
+    const key = backtestTargetKey(report.strategyId, report.market, report.timeframe);
+    const current = latestReportTimeByTarget.get(key) ?? 0;
+    latestReportTimeByTarget.set(key, Math.max(current, reportTime));
+
+    if (report.market && report.timeframe) {
+      const pairTimeframe = pairTimeframeKey(report.market, report.timeframe);
+      const pairTimeframeCurrent = latestReportTimeByPairTimeframe.get(pairTimeframe) ?? 0;
+      latestReportTimeByPairTimeframe.set(pairTimeframe, Math.max(pairTimeframeCurrent, reportTime));
+    }
+  }
+
+  const strategies = buildVisibleStrategyRecords(db.strategyRecords, db.strategyResearchRecords)
+    .filter((strategy) => isExecutableStrategy(strategy))
+    .filter((strategy) => !strategy.market || liveSymbols.has(strategy.market) || strategy.id === JIMMY_STRATEGY_ID || strategy.agentSource?.sourceId.startsWith('tradingview:'))
+    .slice(0, 80);
+  const timeframes = agentMatrixTimeframes(settings);
+  const groups: Array<{
+    groupTime: number;
+    kronosRank: number;
+    marketRank: number;
+    strategyRank: number;
+    target: AgentCronBacktestTarget;
+    targetTime: number;
+    timeframeRank: number;
+  }> = [];
+
+  for (const [pairIndex, pair] of livePairs.entries()) {
+    for (const [timeframeIndex, timeframe] of timeframes.entries()) {
+      const rankedTargets = strategies
+        .map((strategy, strategyIndex) => {
+          const key = backtestTargetKey(strategy.id, pair.symbol, timeframe);
+
+          return {
+            groupTime: latestReportTimeByPairTimeframe.get(pairTimeframeKey(pair.symbol, timeframe)) ?? 0,
+            kronosRank: kronosTargetRank(db, pair.symbol, timeframe),
+            marketRank: pairIndex + 1,
+            strategyRank: strategyIndex,
+            target: {
+              marketRank: pairIndex + 1,
+              strategy,
+              symbol: pair.symbol,
+              timeframe,
+            },
+            targetTime: latestReportTimeByTarget.get(key) ?? 0,
+            timeframeRank: timeframeIndex,
+          };
+        })
+        .sort((left, right) => {
+          if (left.targetTime !== right.targetTime) {
+            return left.targetTime - right.targetTime;
+          }
+
+          return left.strategyRank - right.strategyRank;
+        });
+
+      const nextTarget = rankedTargets[0];
+
+      if (nextTarget) {
+        groups.push(nextTarget);
+      }
+    }
+  }
+
+  return groups
+    .sort((left, right) => {
+      if (left.groupTime !== right.groupTime) {
+        return left.groupTime - right.groupTime;
+      }
+
+      if (left.kronosRank !== right.kronosRank) {
+        return left.kronosRank - right.kronosRank;
+      }
+
+      if (left.marketRank !== right.marketRank) {
+        return left.marketRank - right.marketRank;
+      }
+
+      if (left.timeframeRank !== right.timeframeRank) {
+        return left.timeframeRank - right.timeframeRank;
+      }
+
+      if (left.targetTime !== right.targetTime) {
+        return left.targetTime - right.targetTime;
+      }
+
+      return left.strategyRank - right.strategyRank;
+    })
+    .slice(0, agentCronBacktestBatchSize)
+    .map((group) => group.target);
+}
+
+async function runAgentCronBacktest(db: ThoonDb, target: AgentCronBacktestTarget): Promise<AgentCronBacktestOutcome> {
+  const strategy = {
+    ...target.strategy,
+    market: target.symbol,
+    timeframe: target.timeframe,
+  };
+  const decision = evaluateAgentAction(db, 'run_backtest', { strategyId: strategy.id });
+
+  if (!decision.allowed || decision.requiredConfirmation) {
+    return {
+      decision,
+      notes: decision.blockers[0] ?? 'Backtest blocked by Strategy Agent policy.',
+      status: 'blocked',
+      strategy,
+      target,
+    };
+  }
+
+  if (!isExecutableBacktestStrategy(strategy)) {
+    return {
+      decision,
+      notes: `${strategy.name} has no executable candle engine. No synthetic result was saved.`,
+      status: 'blocked',
+      strategy,
+      target,
+    };
+  }
+
+  const executionSettings = normalizeBacktestExecutionSettings(undefined, strategy);
+
+  try {
+    const candles = await getMarketCandles(target.symbol, target.timeframe, 'binance', desiredBacktestCandleLimit(agentCronBacktestPeriod, target.timeframe), {
+      marketType: executionSettings.marketType,
+      strict: true,
+    });
+
+    if (candles.length < 40) {
+      return {
+        decision,
+        notes: `Only ${candles.length} live candles returned for ${target.symbol} ${target.timeframe}. Backtest was not saved.`,
+        status: 'failed',
+        strategy,
+        target,
+      };
+    }
+
+    const kronosLearning = advanceKronosLearning({
+      candles,
+      market: target.symbol,
+      records: db.kronosForecastRecords,
+      strategyId: strategy.id,
+      timeframe: target.timeframe,
+    });
+    const report = runBacktestFromCandles({
+      candles,
+      exchangeId: 'binance',
+      exchangeName: 'Binance',
+      executionSettings,
+      feesPct: 0.06,
+      initialCapital: strategy.riskSettings?.accountBalance ?? 10000,
+      marketDataSource: 'binance-live',
+      period: agentCronBacktestPeriod,
+      slippagePct: 0.02,
+      strategy,
+      symbol: target.symbol,
+      timeframe: target.timeframe,
+    });
+    const assessment = assessBotReadiness(report, db.agentSettingsRecord);
+
+    return {
+      decision,
+      kronosLearning,
+      notes: `Calculated ${target.symbol} ${target.timeframe}: score ${assessment.score}/100, ${assessment.decision.replace(/_/g, ' ')}, ${report.profitFactor.toFixed(2)} PF, ${report.winRate.toFixed(1)}% WR, ${report.totalTrades} trades, ${report.drawdown.toFixed(1)}% DD.`,
+      report,
+      status: 'completed',
+      strategy,
+      target,
+    };
+  } catch (error) {
+    return {
+      decision,
+      notes: error instanceof Error ? error.message : `Live candles unavailable for ${target.symbol}.`,
+      status: 'failed',
+      strategy,
+      target,
+    };
+  }
+}
+
+function buildAgentCronRunRecords(db: ThoonDb, outcomes: AgentCronBacktestOutcome[], research: AgentCronResearchOutcome, innovationCount: number, newResearchCount: number): AgentRun[] {
+  const runs = outcomes.map((outcome, index): AgentRun => ({
+    action: 'run_backtest',
+    createdAt: new Date().toISOString(),
+    decision: outcome.decision,
+    id: `agent-run-cron-backtest-${slug(outcome.strategy.id)}-${Date.now()}-${index}`,
+    mode: db.agentSettingsRecord.mode,
+    notes: outcome.notes,
+    permission: outcome.decision.permission,
+    result: outcome.status,
+    strategyId: outcome.strategy.id,
+    userConfirmed: false,
+  }));
+
+  if (research.attempted) {
+    const notes = research.records.length
+      ? newResearchCount
+        ? `${newResearchCount} new TradingView public record${newResearchCount === 1 ? '' : 's'} saved.`
+        : 'TradingView research found no new records; innovation mode was used.'
+      : `TradingView research found no usable records; innovation mode was used. ${research.errors[0] ?? ''}`.trim();
+
+    runs.unshift(createSystemAgentRun(db, 'research_tradingview', research.records.length ? 'completed' : 'failed', notes));
+  }
+
+  if (innovationCount > 0) {
+    runs.unshift(createSystemAgentRun(db, 'create_variant', 'completed', `${innovationCount} agent innovation strateg${innovationCount === 1 ? 'y' : 'ies'} created for live-candle validation.`));
+  }
+
+  return runs;
+}
+
+function buildAgentCronReports(db: ThoonDb, outcomes: AgentCronBacktestOutcome[]): AgentReport[] {
+  return outcomes
+    .filter((outcome): outcome is AgentCronBacktestOutcome & { report: BacktestReport } => Boolean(outcome.report))
+    .sort((left, right) => assessBotReadiness(right.report, db.agentSettingsRecord).score - assessBotReadiness(left.report, db.agentSettingsRecord).score)
+    .slice(0, 3)
+    .map((outcome) => agentReportFromBacktest(db, outcome.strategy, outcome.report));
+}
+
+function buildAgentProgressReport(db: ThoonDb): AgentReport {
+  const strategy = db.strategyRecords[0];
+  const trustedReports = trustedCalculatedReports(db.backtestReportRecords);
+  const best = trustedReports
+    .slice()
+    .sort((left, right) => assessBotReadiness(right, db.agentSettingsRecord).score - assessBotReadiness(left, db.agentSettingsRecord).score)[0];
+  const bestStrategy = best ? findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, best.strategyId) ?? strategy : strategy;
+  const today = new Date().toISOString().slice(0, 10);
+  const todayReports = trustedReports.filter((report) => report.generatedAt?.startsWith(today));
+  const blockedToday = db.agentRunRecords.filter((run) => run.createdAt.startsWith(today) && run.result === 'blocked').length;
+  const failedToday = db.agentRunRecords.filter((run) => run.createdAt.startsWith(today) && run.result === 'failed').length;
+
+  if (!best || !bestStrategy) {
+    return {
+      createdAt: new Date().toISOString(),
+      details: ['No verified live-candle backtest has been saved yet.', `${db.strategyResearchRecords.length} TradingView research records are saved.`, `${db.strategyRecords.filter((item) => item.agentSource?.sourceId.startsWith('agent-innovation:')).length} innovation strategies exist.`],
+      id: `agent-progress-${Date.now()}`,
+      marketsTested: [],
+      nextAction: 'Run live-candle cron validation before ranking any strategy.',
+      periodTested: 'Not tested',
+      recommendations: ['No strategy should be promoted without calculated evidence.'],
+      risks: ['No verified backtest evidence yet.'],
+      status: 'needs_test',
+      strategyId: strategy?.id ?? JIMMY_STRATEGY_ID,
+      strengths: [],
+      summary: [`Comprehension 100%: test strategies across top-100 cryptos, multiple timeframes, then score bot readiness without lying.`, `${todayReports.length} verified backtests today.`, 'No trusted best strategy yet.', `${blockedToday} blocked and ${failedToday} failed agent runs today.`],
+      timeframesTested: [],
+      usagePlan: ['No bot usage until calculated evidence exists.'],
+      weaknesses: ['Evidence missing.'],
+    };
+  }
+
+  const assessment = assessBotReadiness(best, db.agentSettingsRecord);
+
+  return {
+    botDecision: assessment.decision,
+    botScore: assessment.score,
+    createdAt: new Date().toISOString(),
+    details: [
+      `${todayReports.length} verified live-candle backtests today.`,
+      `${db.strategyResearchRecords.length} TradingView research records saved.`,
+      `${db.strategyRecords.filter((item) => item.agentSource?.sourceId.startsWith('agent-innovation:')).length} innovation strategies in the catalog.`,
+      `Matrix coverage today: ${new Set(todayReports.map((report) => report.market)).size} cryptos and ${new Set(todayReports.map((report) => report.timeframe)).size} timeframes.`,
+      `Bot decision: ${assessment.decision.replace(/_/g, ' ')}. ${assessment.reason}`,
+      `Best evidence uses ${best.marketDataSource ?? 'unknown source'} with checksum ${best.dataWindow?.candleChecksum ?? 'missing'}.`,
+    ],
+    evidenceScore: assessment.evidenceScore,
+    id: `agent-progress-${slug(bestStrategy.id)}-${Date.now()}`,
+    marketsTested: [best.market ?? bestStrategy.market],
+    nextAction: assessment.decision === 'bot_candidate' || assessment.decision === 'paper_test' ? 'Use as paper bot candidate only; live remains blocked until real paper validation.' : 'Continue searching, innovating and retesting before any bot.',
+    periodTested: best.period,
+    recommendations: topStrategyRecommendations(db).slice(0, 5),
+    risks: [
+      ...new Set([
+        ...(best.warnings ?? []),
+        ...assessment.blockers,
+        blockedToday ? `${blockedToday} blocked agent run${blockedToday === 1 ? '' : 's'} today.` : '',
+        failedToday ? `${failedToday} failed data or backtest run${failedToday === 1 ? '' : 's'} today.` : '',
+      ].filter(Boolean)),
+    ],
+    status: assessment.decision === 'bot_candidate' ? 'bot_candidate' : assessment.decision === 'paper_test' ? 'paper_candidate' : assessment.decision === 'do_not_use' ? 'reject' : 'monitor',
+    strategyId: bestStrategy.id,
+    strengths: assessment.strengths,
+    summary: [
+      `Comprehension 100%: top-100 crypto matrix, multi-timeframe tests, bot score, strict no-lie evidence.`,
+      `${todayReports.length} verified backtests today.`,
+      `Best bot score: ${assessment.score}/100 for ${bestStrategy.name} on ${best.market ?? bestStrategy.market} ${best.timeframe ?? bestStrategy.timeframe}.`,
+      `${best.profitFactor.toFixed(2)} PF, ${best.winRate.toFixed(1)}% WR, ${best.totalTrades} trades, ${best.drawdown.toFixed(1)}% DD, ${formatMoney(best.netProfit)} net.`,
+      `${blockedToday} blocked and ${failedToday} failed agent runs today.`,
+    ],
+    timeframesTested: best.timeframe ? [best.timeframe] : [bestStrategy.timeframe],
+    usagePlan: assessment.usagePlan,
+    weaknesses: assessment.blockers.length ? assessment.blockers : ['Paper validation still missing.'],
+  };
+}
+
+function agentReportFromBacktest(db: ThoonDb, strategy: Strategy, report: BacktestReport): AgentReport {
+  const assessment = assessBotReadiness(report, db.agentSettingsRecord);
+  const candidate = assessment.decision === 'bot_candidate' || assessment.decision === 'paper_test';
+
+  return {
+    backtestSummary: {
+      drawdown: report.drawdown,
+      netProfit: report.netProfit,
+      period: report.period,
+      profitFactor: report.profitFactor,
+      totalTrades: report.totalTrades,
+      winRate: report.winRate,
+    },
+    botDecision: assessment.decision,
+    botScore: assessment.score,
+    createdAt: new Date().toISOString(),
+    details: [
+      `Data source: ${report.marketDataSource ?? 'unknown'} via ${report.exchangeName ?? report.exchangeId ?? 'unknown exchange'}.`,
+      `Window: ${report.dataWindow?.firstCandleAt ?? 'unknown'} to ${report.dataWindow?.lastCandleAt ?? 'unknown'}.`,
+      `Checksum: ${report.dataWindow?.candleChecksum ?? 'missing'}.`,
+      `Bot score: ${assessment.score}/100. ${assessment.reason}`,
+      'No paper or live result is inferred from this backtest.',
+    ],
+    evidenceScore: assessment.evidenceScore,
+    id: `agent-report-cron-${slug(strategy.id)}-${slug(report.market ?? strategy.market)}-${report.timeframe ?? strategy.timeframe}-${Date.now()}`,
+    marketsTested: [report.market ?? strategy.market],
+    nextAction: candidate ? 'Move to paper validation shortlist; live remains blocked.' : 'Keep testing variants, markets and timeframes before shortlisting.',
+    periodTested: report.period,
+    recommendations: [
+      candidate ? 'Paper validate with the exact market, timeframe and risk below before any bot draft.' : 'Do not use as bot yet.',
+      assessment.reason,
+      report.totalTrades < db.agentSettingsRecord.limits.minTrades ? 'Increase sample size.' : 'Keep sample-size gate satisfied.',
+    ],
+    risks: [...(report.warnings ?? []), ...assessment.blockers],
+    status: assessment.decision === 'bot_candidate' ? 'bot_candidate' : assessment.decision === 'paper_test' ? 'paper_candidate' : assessment.decision === 'do_not_use' ? 'reject' : 'monitor',
+    strategyId: strategy.id,
+    strengths: assessment.strengths,
+    summary: [
+      `${strategy.name} tested on ${report.market ?? strategy.market} ${report.timeframe ?? strategy.timeframe}.`,
+      `Bot score ${assessment.score}/100, ${assessment.decision.replace(/_/g, ' ')}.`,
+      `${report.profitFactor.toFixed(2)} PF, ${report.winRate.toFixed(1)}% WR, ${report.totalTrades} trades, ${report.drawdown.toFixed(1)}% max drawdown.`,
+      `${report.candleCount ?? 0} live candles; source ${report.marketDataSource ?? 'unknown'}.`,
+    ],
+    timeframesTested: report.timeframe ? [report.timeframe] : [strategy.timeframe],
+    usagePlan: assessment.usagePlan,
+    weaknesses: assessment.blockers.length ? assessment.blockers : ['Paper validation missing.'],
+  };
+}
+
+function createSystemAgentRun(db: ThoonDb, action: AgentAction, result: AgentRun['result'], notes: string): AgentRun {
+  const allowed = result === 'completed' || result === 'queued' || result === 'waiting_for_confirmation';
+
+  return {
+    action,
+    createdAt: new Date().toISOString(),
+    decision: {
+      action,
+      allowed,
+      blockers: allowed ? [] : [notes],
+      policy: 'auto_allowed',
+      requiredConfirmation: false,
+      riskEngineResult: {
+        allowed,
+        checked: ['cron authorization', 'live market data', 'no synthetic fallback'],
+      },
+      warnings: result === 'failed' ? [notes] : [],
+    },
+    id: `agent-run-system-${slug(action)}-${Date.now()}`,
+    mode: db.agentSettingsRecord.mode,
+    notes,
+    result,
+    userConfirmed: false,
+  };
+}
+
+function mergeLiveMarketPairs(current: MarketPair[], livePairs: MarketPair[]) {
+  const bySymbol = new Map(current.map((pair) => [pair.symbol, pair]));
+
+  for (const pair of livePairs.slice(0, agentCronTargetPairCount)) {
+    const existing = bySymbol.get(pair.symbol);
+    bySymbol.set(pair.symbol, {
+      ...existing,
+      ...pair,
+      candles: [],
+      draft: {
+        ...(existing?.draft ?? pair.draft),
+        ...pair.draft,
+      },
+      marketCap: pair.marketCap || existing?.marketCap || 0,
+    });
+  }
+
+  return Array.from(bySymbol.values()).slice(0, agentCronTargetPairCount);
+}
+
+function mergeResearchRecords(current: StrategyResearchRecord[], incoming: StrategyResearchRecord[]) {
+  const byUrl = new Map(current.map((record) => [record.url, record]));
+
+  for (const record of incoming) {
+    byUrl.set(record.url, record);
+  }
+
+  return Array.from(byUrl.values())
+    .sort((left, right) => new Date(right.fetchedAt).getTime() - new Date(left.fetchedAt).getTime())
+    .slice(0, 200);
+}
+
+function shouldRunTradingViewImportFromChat(message: string) {
+  const normalized = message
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  const mentionsTradingView = normalized.includes('tradingview') || normalized.includes('trading view') || /\btv\b/.test(normalized);
+  const asksForImportOrResearch = ['chart', 'graphique', 'import', 'importe', 'importer', 'strategie', 'strategy', 'strategies', 'ta summary', 'analyse'].some((token) =>
+    normalized.includes(token),
+  );
+
+  return mentionsTradingView && asksForImportOrResearch;
+}
+
+function mergeKronosForecastRecords(current: ThoonDb['kronosForecastRecords'], incoming: ThoonDb['kronosForecastRecords']) {
+  const byId = new Map(current.map((record) => [record.id, record]));
+
+  for (const record of incoming) {
+    const existing = byId.get(record.id);
+    byId.set(record.id, existing?.status === 'evaluated' && record.status !== 'evaluated' ? existing : record);
+  }
+
+  return Array.from(byId.values())
+    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
+    .slice(0, 500);
+}
+
+function mergeStrategyRecords(current: Strategy[], incoming: Strategy[]) {
+  const ids = new Set(current.map((strategy) => strategy.id));
+  const fresh = incoming.filter((strategy) => !ids.has(strategy.id));
+
+  return [...fresh, ...current];
+}
+
+function trustedCalculatedReports(reports: BacktestReport[]) {
+  return reports.filter((report) => report.source === 'calculated' && Boolean(report.dataWindow?.candleChecksum) && Boolean(report.executionSettings) && Array.isArray(report.equityCurve) && report.equityCurve.length > 0);
+}
+
+function agentMatrixTimeframes(settings: ReturnType<typeof normalizeAgentSettings>) {
+  const preferred: Timeframe[] = ['5m', '15m', '30m', '1h', '2h', '4h'];
+  const allowed = preferred.filter((timeframe) => settings.limits.allowedTimeframes.includes(timeframe));
+
+  return (allowed.length ? allowed : settings.limits.allowedTimeframes).slice(0, agentCronTimeframesPerSweep);
+}
+
+function backtestTargetKey(strategyId: string, market: string | undefined, timeframe: Timeframe | undefined) {
+  return `${strategyId}:${market ?? 'market'}:${timeframe ?? 'tf'}`;
+}
+
+function pairTimeframeKey(market: string, timeframe: Timeframe) {
+  return `${market}:${timeframe}`;
+}
+
+function kronosTargetRank(db: ThoonDb, market: string, timeframe: Timeframe) {
+  const profile = getKronosLearningProfile(db.kronosForecastRecords);
+  const record = db.kronosForecastRecords
+    .filter((item) => item.market === market && item.timeframe === timeframe)
+    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+
+  if (!record || profile.evaluated < 4) {
+    return 100;
+  }
+
+  const confidenceBoost = record.confidence * profile.confidenceWeight * 35;
+  const directionBoost = record.predictedDirection === 'range' ? 0 : 8;
+  const hitBoost = record.status === 'evaluated' && record.hit ? 8 : 0;
+
+  return Math.max(0, Math.round(100 - confidenceBoost - directionBoost - hitBoost));
+}
+
+function assessBotReadiness(report: BacktestReport, settings: ReturnType<typeof normalizeAgentSettings>) {
+  const profitable = report.netProfit > 0 && report.profitFactor > 1;
+  const winrateRulePassed = profitable && (report.winRate >= 80 || report.winRate < 50);
+  const enoughTrades = report.totalTrades >= settings.limits.minTrades;
+  const drawdownOk = Math.abs(report.drawdown) <= settings.limits.maxDrawdownCandidate;
+  const profitFactorOk = report.profitFactor >= settings.limits.minProfitFactor;
+  const evidenceScore =
+    (report.source === 'calculated' ? 4 : 0) +
+    (report.marketDataSource === 'binance-live' || Boolean(report.marketDataSource?.endsWith('-public-rest')) ? 4 : 0) +
+    (report.dataWindow?.candleChecksum ? 4 : 0) +
+    (report.executionSettings ? 4 : 0) +
+    (Array.isArray(report.equityCurve) && report.equityCurve.length > 0 ? 4 : 0);
+  const profitScore = profitable ? Math.min(25, 8 + report.profitFactor * 7 + Math.max(0, Math.min(8, report.netProfit / 10))) : 0;
+  const winrateScore = winrateRulePassed ? 20 : profitable ? 7 : 0;
+  const drawdownScore = Math.max(0, 20 - (Math.abs(report.drawdown) / Math.max(settings.limits.maxDrawdownCandidate, 1)) * 20);
+  const sampleScore = Math.min(15, (report.totalTrades / Math.max(settings.limits.minTrades, 1)) * 15);
+  let score = Math.round(evidenceScore + profitScore + winrateScore + drawdownScore + sampleScore);
+  const blockers: string[] = [];
+  const strengths: string[] = [];
+
+  if (!profitable) {
+    blockers.push('Not profitable after fees and slippage.');
+  } else {
+    strengths.push(`${formatMoney(report.netProfit)} net profit after fees and slippage.`);
+  }
+
+  if (!winrateRulePassed) {
+    blockers.push(`Winrate rule failed: ${report.winRate.toFixed(1)}% WR. Bot candidates must be profitable with >=80% WR, or profitable with <50% WR and positive expectancy.`);
+  } else if (report.winRate >= 80) {
+    strengths.push('High-winrate profitable profile.');
+  } else {
+    strengths.push('Low-winrate positive-expectancy profile.');
+  }
+
+  if (!enoughTrades) {
+    blockers.push(`Sample too small: ${report.totalTrades}/${settings.limits.minTrades} trades.`);
+  } else {
+    strengths.push('Minimum trade sample reached.');
+  }
+
+  if (!drawdownOk) {
+    blockers.push(`Drawdown too high: ${report.drawdown.toFixed(1)}% vs ${settings.limits.maxDrawdownCandidate}% max.`);
+  } else {
+    strengths.push('Drawdown inside candidate limit.');
+  }
+
+  if (!profitFactorOk) {
+    blockers.push(`Profit factor below minimum: ${report.profitFactor.toFixed(2)} vs ${settings.limits.minProfitFactor.toFixed(2)}.`);
+  } else {
+    strengths.push('Profit factor gate passed.');
+  }
+
+  if (evidenceScore < 20) {
+    blockers.push('Evidence incomplete: source, checksum, execution settings or equity curve missing.');
+  }
+
+  if (!profitable) {
+    score = Math.min(score, 49);
+  } else if (!winrateRulePassed) {
+    score = Math.min(score, 69);
+  } else if (!enoughTrades || !drawdownOk || !profitFactorOk || evidenceScore < 20) {
+    score = Math.min(score, 79);
+  }
+
+  const decision =
+    !profitable || evidenceScore < 16
+      ? ('do_not_use' as const)
+      : winrateRulePassed && enoughTrades && drawdownOk && profitFactorOk && score >= 85
+        ? ('bot_candidate' as const)
+        : winrateRulePassed && enoughTrades && drawdownOk && profitFactorOk
+          ? ('paper_test' as const)
+          : ('watch' as const);
+  const usagePlan =
+    decision === 'bot_candidate' || decision === 'paper_test'
+      ? [
+          `Paper bot only on ${report.market ?? 'tested market'} ${report.timeframe ?? 'tested timeframe'}.`,
+          `Use the exact execution settings from the report: ${report.executionSettings?.marketType ?? 'market'} ${report.executionSettings?.directionMode ?? 'direction'}, ${report.executionSettings?.riskPerTradePct ?? 0}% risk, ${report.executionSettings?.leverage ?? 1}x max leverage.`,
+          'Require stop-loss, keep live trading blocked, and compare paper trades against this backtest before promotion.',
+        ]
+      : ['Do not run as bot yet. Keep researching, innovating and retesting until score and blockers improve.'];
+
+  return {
+    blockers,
+    decision,
+    evidenceScore,
+    reason:
+      decision === 'bot_candidate'
+        ? 'Worth paper-bot testing under strict risk controls.'
+        : decision === 'paper_test'
+          ? 'Worth paper validation, not live automation.'
+          : decision === 'watch'
+            ? 'Promising enough to watch, but not eligible for a bot yet.'
+            : 'Not worth using as a bot from current evidence.',
+    score: Math.max(0, Math.min(100, score)),
+    strengths,
+    usagePlan,
+    winrateRulePassed,
+  };
+}
+
+function topStrategyRecommendations(db: ThoonDb) {
+  const strategies = buildVisibleStrategyRecords(db.strategyRecords, db.strategyResearchRecords);
+
+  return trustedCalculatedReports(db.backtestReportRecords)
+    .slice()
+    .filter((report) => {
+      const assessment = assessBotReadiness(report, db.agentSettingsRecord);
+
+      return assessment.decision === 'paper_test' || assessment.decision === 'bot_candidate';
+    })
+    .sort((left, right) => assessBotReadiness(right, db.agentSettingsRecord).score - assessBotReadiness(left, db.agentSettingsRecord).score)
+    .slice(0, 5)
+    .map((report) => {
+      const strategy = strategies.find((item) => item.id === report.strategyId);
+      const assessment = assessBotReadiness(report, db.agentSettingsRecord);
+
+      return `${strategy?.name ?? report.strategyId}: score ${assessment.score}/100, ${report.market ?? strategy?.market ?? 'market'} ${report.timeframe ?? strategy?.timeframe ?? 'tf'}, ${report.profitFactor.toFixed(2)} PF, ${report.winRate.toFixed(1)}% WR, ${report.totalTrades} trades, ${report.drawdown.toFixed(1)}% DD`;
+    });
+}
+
+function selectPaperTestReport(db: ThoonDb, strategy: Strategy, reportId?: string) {
+  const reports = trustedCalculatedReports(db.backtestReportRecords).filter((report) => report.strategyId === strategy.id);
+  const selected = reportId ? reports.find((report) => report.id === reportId) : undefined;
+  const report =
+    selected ??
+    reports
+      .slice()
+      .sort((left, right) => assessBotReadiness(right, db.agentSettingsRecord).score - assessBotReadiness(left, db.agentSettingsRecord).score)[0];
+
+  if (!report) {
+    throw new ApiError('Paper test blocked: no trusted calculated backtest with candle checksum exists for this strategy.', 403);
+  }
+
+  return report;
+}
+
+function createPaperTestSession(strategy: Strategy, report: BacktestReport, assessment: ReturnType<typeof assessBotReadiness>): PaperTestSession {
+  const now = new Date().toISOString();
+  const market = report.market ?? strategy.market;
+  const timeframe = report.timeframe ?? strategy.timeframe;
+
+  return {
+    blockers: assessment.blockers,
+    botDecision: assessment.decision === 'bot_candidate' ? 'bot_candidate' : 'paper_test',
+    botScore: assessment.score,
+    candleChecksum: report.dataWindow?.candleChecksum ?? '',
+    createdAt: now,
+    dataSource: report.marketDataSource ?? 'unknown',
+    id: `paper-session-${slug(strategy.id)}-${slug(market)}-${timeframe}-${slug(report.id)}`,
+    market,
+    notes: [
+      `Prepared from verified backtest ${report.id}.`,
+      `Use exact settings: ${report.executionSettings?.marketType ?? 'market'} ${report.executionSettings?.directionMode ?? 'direction'}, ${report.executionSettings?.riskPerTradePct ?? 0}% risk, ${report.executionSettings?.leverage ?? 1}x leverage.`,
+    ],
+    pnl: 0,
+    reportId: report.id,
+    rMultiple: 0,
+    status: 'prepared',
+    strategyId: strategy.id,
+    timeframe,
+    tradesRecorded: 0,
+    updatedAt: now,
+    usagePlan: assessment.usagePlan,
+  };
+}
+
+function isMarketAllowedByAgent(settings: ReturnType<typeof normalizeAgentSettings>, market: string) {
+  return settings.limits.allowedMarkets.length === 0 || settings.limits.allowedMarkets.includes(market);
+}
+
+function formatMoney(value: number) {
+  const sign = value < 0 ? '-' : '';
+
+  return `${sign}$${Math.abs(value).toFixed(2)}`;
+}
+
 function executeAgentAction(
   db: ThoonDb,
   action: AgentAction,
@@ -1690,6 +3455,7 @@ function executeAgentAction(
   aiSuggestionResult?: Awaited<ReturnType<typeof generateAiStrategySuggestions>>,
   agentBacktestReport?: BacktestReport,
   tradingViewResearchResult?: Awaited<ReturnType<typeof researchTradingViewStrategies>>,
+  reportId?: string,
 ) {
   if (!strategy && action !== 'compare_versions') {
     throw new ApiError('Strategy not found', 404);
@@ -1700,7 +3466,15 @@ function executeAgentAction(
       const suggestions = aiSuggestionResult?.suggestions.length ? aiSuggestionResult.suggestions : buildAgentSuggestions(db, strategy?.id);
       db.agentSuggestionRecords = [...suggestions, ...db.agentSuggestionRecords.filter((suggestion) => suggestion.strategyId !== strategy?.id)].slice(0, 60);
 
-      return { notes: aiSuggestionResult ? `Analysis refreshed with ${aiSuggestionResult.provider.provider} provider.` : 'Analysis refreshed with local rules.', payload: { provider: aiSuggestionResult?.provider ?? getStrategyAgentAiStatus(), suggestions, summary: aiSuggestionResult?.summary } };
+      return {
+        notes: aiSuggestionResult ? `Analysis refreshed with ${aiSuggestionResult.provider.provider} provider.` : 'Analysis refreshed with local rules.',
+        payload: {
+          provider: aiSuggestionResult?.provider ?? getStrategyAgentAiStatus(),
+          researchPlan: 'sweep markets, timeframes and parameters before ranking candidates',
+          suggestions,
+          summary: aiSuggestionResult?.summary,
+        },
+      };
     }
     case 'compare_versions': {
       const versions = strategy ? db.strategyVersionRecords.filter((item) => item.strategyId === strategy.id) : db.strategyVersionRecords;
@@ -1760,18 +3534,63 @@ function executeAgentAction(
     }
     case 'run_paper_test':
     case 'send_to_paper': {
+      const report = selectPaperTestReport(db, strategy as Strategy, reportId);
+      const assessment = assessBotReadiness(report, db.agentSettingsRecord);
+
+      if (assessment.decision !== 'bot_candidate' && assessment.decision !== 'paper_test') {
+        throw new ApiError(`Paper test blocked: ${assessment.reason}`, 403);
+      }
+
+      const market = report.market ?? (strategy as Strategy).market;
+      const timeframe = report.timeframe ?? (strategy as Strategy).timeframe;
+      const session = createPaperTestSession(strategy as Strategy, report, assessment);
+      db.paperTestSessionRecords = [session, ...db.paperTestSessionRecords.filter((record) => record.id !== session.id)].slice(0, 120);
+
       return {
-        notes: 'Paper test workspace prepared. No paper performance is recorded until trades are actually executed.',
-        payload: { href: `/backtest/replay?pair=${encodeURIComponent((strategy as Strategy).market)}&strategyId=${encodeURIComponent((strategy as Strategy).id)}`, version },
+        notes: `Paper test prepared for ${market} ${timeframe}: score ${assessment.score}/100. No paper performance is recorded until trades are actually executed.`,
+        payload: {
+          href: `/backtest/replay?pair=${encodeURIComponent(market)}&strategyId=${encodeURIComponent((strategy as Strategy).id)}&timeframe=${encodeURIComponent(timeframe)}&reportId=${encodeURIComponent(report.id)}&sessionId=${encodeURIComponent(session.id)}`,
+          recommendation: {
+            blockers: assessment.blockers,
+            decision: assessment.decision,
+            market,
+            reason: assessment.reason,
+            reportId: report.id,
+            score: assessment.score,
+            timeframe,
+            usagePlan: assessment.usagePlan,
+          },
+          session,
+          version,
+        },
       };
     }
-    case 'prepare_bot':
+    case 'prepare_bot': {
+      const report = selectPaperTestReport(db, strategy as Strategy, reportId);
+      const market = report.market ?? (strategy as Strategy).market;
+      const timeframe = report.timeframe ?? (strategy as Strategy).timeframe;
+
       return {
         notes: 'Paper bot draft prepared.',
-        payload: { href: `/bots/new?strategyId=${encodeURIComponent((strategy as Strategy).id)}&pair=${encodeURIComponent((strategy as Strategy).market)}` },
+        payload: { href: `/bots/new?strategyId=${encodeURIComponent((strategy as Strategy).id)}&pair=${encodeURIComponent(market)}&timeframe=${encodeURIComponent(timeframe)}&reportId=${encodeURIComponent(report.id)}` },
       };
+    }
     case 'create_draft_bot': {
+      const report = selectPaperTestReport(db, strategy as Strategy, reportId);
       const bot = createDraftBotFromVersion(strategy as Strategy, version);
+      bot.symbol = report.market ?? bot.symbol;
+      bot.riskPerTrade = report.executionSettings?.riskPerTradePct ?? bot.riskPerTrade;
+      bot.sourceBacktestPeriod = report.period;
+      bot.sourceBacktestReportId = report.id;
+      bot.sourceCandleChecksum = report.dataWindow?.candleChecksum;
+      bot.sourceExchangeId = report.exchangeId;
+      bot.sourceExchangeName = report.exchangeName;
+      bot.sourceExecutionSettings = report.executionSettings;
+      bot.sourceFeesPct = report.feesPct;
+      bot.sourceInitialCapital = report.initialCapital;
+      bot.sourceMarketDataSource = report.marketDataSource;
+      bot.sourceSlippagePct = report.slippagePct;
+      bot.sourceTimeframe = report.timeframe;
       db.botRecords = [bot, ...db.botRecords];
       db.botLogRecords = [
         {
@@ -1835,9 +3654,15 @@ function agentDashboard(db: ThoonDb, strategyId?: string) {
   const reports = strategyId ? db.agentReportRecords.filter((report) => report.strategyId === strategyId) : db.agentReportRecords;
   const queue = strategyId ? db.agentQueueRecords.filter((task) => task.strategyId === strategyId) : db.agentQueueRecords;
   const research = strategyId ? db.strategyResearchRecords.filter((record) => record.strategyId === strategyId) : db.strategyResearchRecords;
+  const paperTests = strategyId ? db.paperTestSessionRecords.filter((record) => record.strategyId === strategyId) : db.paperTestSessionRecords;
 
   return {
     ai: getStrategyAgentAiStatus(),
+    kronosLearning: {
+      profile: getKronosLearningProfile(db.kronosForecastRecords),
+      records: db.kronosForecastRecords.slice(0, 80),
+    },
+    paperTests,
     reports,
     research,
     runs,
@@ -1850,6 +3675,7 @@ function agentDashboard(db: ThoonDb, strategyId?: string) {
       reports: reports.length,
       research: research.length,
       suggestions: suggestions.length,
+      paperTests: paperTests.length,
       tasks: queue.length,
       versions: versions.length,
     },
@@ -1858,22 +3684,126 @@ function agentDashboard(db: ThoonDb, strategyId?: string) {
   };
 }
 
+function buildAgentChatSnapshot(db: ThoonDb) {
+  const strategies = buildVisibleStrategyRecords(db.strategyRecords, db.strategyResearchRecords);
+  const calculatedReports = db.backtestReportRecords
+    .filter((report) => report.source === 'calculated')
+    .slice()
+    .sort((left, right) => assessBotReadiness(right, db.agentSettingsRecord).score - assessBotReadiness(left, db.agentSettingsRecord).score || right.netProfit - left.netProfit)
+    .slice(0, 12);
 
-async function handleApiError(handler: () => Promise<NextResponse>) {
-  incrementMetric('apiRequests');
+  return {
+    ai: getStrategyAgentAiStatus(),
+    app: {
+      mode: getThoonServerEnv().appMode,
+      liveExchangeProvider: getThoonServerEnv().liveExchangeProvider,
+      marketDataProvider: getThoonServerEnv().marketDataProvider,
+      release: getThoonServerEnv().release,
+    },
+    kronos: getKronosIntegrationProfile(),
+    kronosLearning: {
+      profile: getKronosLearningProfile(db.kronosForecastRecords),
+      recent: db.kronosForecastRecords.slice(0, 16).map((record) => ({
+        confidence: record.confidence,
+        hit: record.hit,
+        market: record.market,
+        predictedDirection: record.predictedDirection,
+        realizedDirection: record.realizedDirection,
+        status: record.status,
+        timeframe: record.timeframe,
+        weightAtCreation: record.weightAtCreation,
+      })),
+    },
+    tradingViewMcp: getTradingViewMcpProfile(),
+    queue: db.agentQueueRecords.slice(0, 10).map((task) => ({
+      action: task.action,
+      nextAction: task.nextAction,
+      priority: task.priority,
+      result: task.result,
+      status: task.status,
+      strategyId: task.strategyId,
+    })),
+    recentRuns: db.agentRunRecords.slice(0, 12).map((run) => ({
+      action: run.action,
+      createdAt: run.createdAt,
+      notes: run.notes,
+      result: run.result,
+      strategyId: run.strategyId,
+    })),
+    reports: db.agentReportRecords.slice(0, 10).map((report) => ({
+      botDecision: report.botDecision,
+      botScore: report.botScore,
+      nextAction: report.nextAction,
+      status: report.status,
+      strategyId: report.strategyId,
+      summary: report.summary,
+    })),
+    topBacktests: calculatedReports.map((report) => ({
+      botScore: assessBotReadiness(report, db.agentSettingsRecord).score,
+      drawdown: report.drawdown,
+      id: report.id,
+      market: report.market,
+      netProfit: report.netProfit,
+      profitFactor: report.profitFactor,
+      strategyId: report.strategyId,
+      timeframe: report.timeframe,
+      totalTrades: report.totalTrades,
+      winRate: report.winRate,
+    })),
+    strategies: strategies.slice(0, 40).map((strategy) => ({
+      id: strategy.id,
+      market: strategy.market,
+      name: strategy.name,
+      sourceId: strategy.agentSource?.sourceId,
+      status: strategy.status,
+      timeframe: strategy.timeframe,
+      type: strategy.type,
+    })),
+    tradingViewResearch: db.strategyResearchRecords.slice(0, 16).map((record) => ({
+      concepts: record.concepts,
+      fetchedAt: record.fetchedAt,
+      provider: record.provider,
+      scriptType: record.scriptType,
+      sourcePolicy: record.sourcePolicy,
+      sourceVisibility: record.sourceVisibility,
+      strategyId: record.strategyId,
+      title: record.title,
+      url: record.url,
+    })),
+    updatedAt: db.updatedAt,
+  };
+}
+
+
+async function handleApiError(request: NextRequest, handler: () => Promise<NextResponse>) {
+  const startedAt = Date.now();
+  const requestId = randomUUID();
+  let response: NextResponse;
 
   try {
-    return await handler();
+    response = await runWithAuditContext({ ipAddress: clientIp(request), requestId }, handler);
   } catch (error) {
     incrementMetric('apiErrors');
 
     if (error instanceof ApiError) {
-      return json({ error: error.message }, error.status);
+      response = json({ error: error.message }, error.status);
+    } else {
+      logServerEvent('error', 'api.unhandled_error', { error: error instanceof Error ? error.message : String(error), requestId });
+      response = json({ error: 'Internal server error' }, 500);
     }
-
-    logServerEvent('error', 'api.unhandled_error', { error: error instanceof Error ? error.message : String(error) });
-    return json({ error: 'Internal server error' }, 500);
   }
+
+  response.headers.set('X-Thoon-Release', getThoonServerEnv().release);
+  response.headers.set('X-Thoon-Request-Id', requestId);
+  observeApiResponse({
+    durationMs: Date.now() - startedAt,
+    method: request.method,
+    path: request.nextUrl.pathname,
+    requestId,
+    status: response.status,
+  });
+
+  return response;
 }
 
 async function durableMutation(handler: () => Promise<NextResponse>) {
@@ -1882,6 +3812,25 @@ async function durableMutation(handler: () => Promise<NextResponse>) {
   await flushPendingPostgresMirror();
 
   return response;
+}
+
+function readGuard(request: NextRequest, path: string[]) {
+  if (isPublicReadPath(path) || isAgentCronPath(path)) {
+    return null;
+  }
+
+  const session = getSessionFromRequest(request);
+
+  if (isAuthRequired() && !session) {
+    incrementMetric('authFailures');
+    return json({ error: 'Authentication required.' }, 401);
+  }
+
+  return null;
+}
+
+function isPublicReadPath(path: string[]) {
+  return path[0] === 'auth' && path[1] === 'session';
 }
 
 function notFound(path: string[]) {
@@ -1895,15 +3844,120 @@ function mutationGuard(request: NextRequest, path: string[]) {
     return json({ error: 'Cross-origin mutation blocked.' }, 403);
   }
 
+  if (request.headers.get('sec-fetch-site') === 'cross-site') {
+    return json({ error: 'Cross-site mutation blocked.' }, 403);
+  }
+
+  const cronAuthorization = cronAuthorizationState(request, path);
+
+  if (cronAuthorization === 'authorized') {
+    return null;
+  }
+
+  if (cronAuthorization) {
+    return cronAuthorization;
+  }
+
   if (path[0] === 'auth') {
     return null;
   }
 
-  if (isAuthRequired() && !getSessionFromRequest(request)) {
+  const session = getSessionFromRequest(request);
+
+  if (isAuthRequired() && !session) {
+    incrementMetric('authFailures');
+    return json({ error: 'Authentication required.' }, 401);
+  }
+
+  return mutationRateLimit(request, path, session?.email);
+}
+
+function cronRequestGuard(request: NextRequest, path: string[]) {
+  const cronAuthorization = cronAuthorizationState(request, path);
+
+  if (cronAuthorization === 'authorized') {
+    return null;
+  }
+
+  if (cronAuthorization) {
+    return cronAuthorization;
+  }
+
+  if (!isAuthRequired()) {
+    return null;
+  }
+
+  const session = getSessionFromRequest(request);
+
+  if (!session) {
+    incrementMetric('authFailures');
     return json({ error: 'Authentication required.' }, 401);
   }
 
   return null;
+}
+
+function cronAuthorizationState(request: NextRequest, path: string[]): NextResponse | 'authorized' | null {
+  if (!isAgentCronPath(path)) {
+    return null;
+  }
+
+  const env = getThoonServerEnv();
+  const cronSecretRequired =
+    env.nodeEnv === 'production' ||
+    env.authMode === 'local-required' ||
+    env.appMode === 'live-enabled' ||
+    Boolean(env.productionBaseUrl) ||
+    env.release !== 'local';
+
+  if (!env.cronSecret && cronSecretRequired) {
+    return json({ error: 'THOON_CRON_SECRET is required before scheduled agent cron can run in protected runtimes.' }, 503);
+  }
+
+  if (!env.cronSecret) {
+    return null;
+  }
+
+  return request.headers.get('authorization') === `Bearer ${env.cronSecret}` ? 'authorized' : json({ error: 'Invalid cron authorization.' }, 401);
+}
+
+function isAgentCronPath(path: string[]) {
+  return path[0] === 'agent' && (path[1] === 'cron' || path[1] === 'progress');
+}
+
+function mutationRateLimit(request: NextRequest, path: string[], actor?: string) {
+  const env = getThoonServerEnv();
+
+  if (!env.rateLimitEnabled) {
+    return null;
+  }
+
+  const result = checkRateLimit({
+    key: `${clientIp(request)}:${actor ?? 'anonymous'}`,
+    limit: env.mutationRateLimitMax,
+    name: `mutation:${path[0] ?? 'root'}`,
+    windowMs: env.mutationRateLimitWindowSeconds * 1000,
+  });
+
+  if (result.allowed) {
+    return null;
+  }
+
+  incrementMetric('rateLimitedRequests');
+  logServerEvent('warn', 'api.rate_limited', {
+    method: request.method,
+    path: request.nextUrl.pathname,
+    resetAt: result.resetAt,
+  });
+
+  return json(
+    {
+      error: 'Too many API mutations. Try again shortly.',
+      retryAfterSeconds: result.retryAfterSeconds,
+    },
+    429,
+    rateLimitHeaders(result),
+  );
 }
 
 function isEquivalentLocalOrigin(left: string, right: string) {
@@ -1924,10 +3978,26 @@ async function routePath(context: RouteContext) {
 }
 
 async function readJson(request: NextRequest) {
-  try {
-    return (await request.json()) as Record<string, unknown>;
-  } catch {
+  const text = await request.text();
+
+  if (!text.trim()) {
     return {};
+  }
+
+  try {
+    const parsed = JSON.parse(text) as unknown;
+
+    if (!isRecord(parsed)) {
+      throw new ApiError('JSON request body must be an object.', 400);
+    }
+
+    return parsed;
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+
+    throw new ApiError('Malformed JSON request body.', 400);
   }
 }
 
@@ -1953,15 +4023,53 @@ function isExecutableBacktestStrategy(strategy: Strategy) {
 }
 
 function positiveValue(value: unknown, fallback: number) {
+  return boundedNumber(value, 0, maximumNumericInput, fallback);
+}
+
+function boundedNumber(value: unknown, min: number, max: number, fallback: number) {
   const nextValue = asNumber(value, fallback);
 
-  return nextValue >= 0 ? nextValue : fallback;
+  if (!Number.isFinite(nextValue)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, nextValue));
+}
+
+function extractFirstNumber(value: string | undefined) {
+  const match = value?.match(/(\d+(?:\.\d+)?)/);
+  const parsed = match ? Number(match[1]) : 0;
+
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function extractAtrTrailingStop(value: string | undefined, fallback: number) {
+  const explicitAtr =
+    value?.match(/(?:trail(?:ing)?(?:\s+stop)?\s*)?(\d+(?:\.\d+)?)\s*x?\s*atr/i)?.[1] ??
+    value?.match(/atr\s*(\d+(?:\.\d+)?)x/i)?.[1] ??
+    value?.match(/trail(?:ing)?(?:\s+stop)?\s*(\d+(?:\.\d+)?)\s*x/i)?.[1];
+  const parsed = explicitAtr ? Number(explicitAtr) : fallback;
+
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function positiveInteger(value: unknown, fallback: number | undefined) {
   const nextValue = Math.floor(asNumber(value, fallback ?? 0));
 
   return nextValue > 0 ? nextValue : fallback;
+}
+
+function normalizeCandleLimit(value: string | null) {
+  const requestedLimit = positiveInteger(value, undefined);
+
+  if (!requestedLimit) {
+    return undefined;
+  }
+
+  const envLimit = Math.floor(getThoonServerEnv().marketKlineLimit);
+  const configuredLimit = Number.isFinite(envLimit) && envLimit > 0 ? envLimit : maximumCandleLimit;
+
+  return Math.min(requestedLimit, maximumCandleLimit, configuredLimit);
 }
 
 function desiredBacktestCandleLimit(period: string, timeframe: Timeframe) {
@@ -2050,6 +4158,10 @@ function normalizeTimeframe(value: unknown): Strategy['timeframe'] {
 
 function isTimeframe(value: unknown): value is Timeframe {
   return value === '1m' || value === '5m' || value === '15m' || value === '30m' || value === '1h' || value === '2h' || value === '4h' || value === '1d' || value === '1w' || value === '1M' || value === '1y';
+}
+
+function marketDataType(value: unknown) {
+  return value === 'perpetual' || value === 'futures' ? 'perpetual' : 'spot';
 }
 
 function normalizeStrategyType(value: unknown): Strategy['type'] {
@@ -2152,8 +4264,304 @@ function normalizePermissions(value: unknown): ApiKeyRecord['permissions'] {
   return permissions.length ? permissions : ['read'];
 }
 
+function normalizeWalletChain(value: unknown): WalletConnection['chain'] {
+  const chain = asString(value).toLowerCase();
+
+  if (chain === 'cosmos' || chain === 'evm' || chain === 'multi' || chain === 'solana') {
+    return chain;
+  }
+
+  return 'evm';
+}
+
+function normalizeWalletNetworks(networksValue: unknown, networkValue: unknown) {
+  const networks = Array.isArray(networksValue) ? networksValue.map((item) => asString(item)).filter(Boolean) : [];
+  const network = asString(networkValue);
+
+  if (network) {
+    networks.unshift(network);
+  }
+
+  return Array.from(new Set(networks)).slice(0, 8);
+}
+
+function isLikelyWalletAddress(address: string, chain: WalletConnection['chain']) {
+  if (chain === 'evm') {
+    return /^0x[a-fA-F0-9]{40}$/.test(address);
+  }
+
+  if (chain === 'solana') {
+    return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
+  }
+
+  if (chain === 'cosmos') {
+    return /^[a-z0-9]{2,16}1[ac-hj-np-z02-9]{20,80}$/i.test(address);
+  }
+
+  return address.length >= 20 && address.length <= 120;
+}
+
+function normalizeBotAction(value: unknown): 'pause' | 'start' | 'stop' | undefined {
+  const action = asString(value);
+
+  return action === 'pause' || action === 'start' || action === 'stop' ? action : undefined;
+}
+
+function normalizeBacktestExecutionSettings(value: unknown, strategy: Strategy): BacktestExecutionSettings {
+  const record = isRecord(value) ? value : {};
+  const riskSettings = strategy.riskSettings;
+
+  return {
+    directionMode: record.directionMode === 'long-only' || record.directionMode === 'short-only' ? record.directionMode : 'both',
+    leverage: boundedNumber(record.leverage, 1, 125, 1),
+    marketType: record.marketType === 'spot' ? 'spot' : 'perpetual',
+    positionCapPct: boundedNumber(record.positionCapPct, 1, 100, 100),
+    riskPerTradePct: boundedNumber(record.riskPerTradePct, 0.01, 10, strategy.riskPerTrade || 1),
+    stopLossAtr: boundedNumber(record.stopLossAtr, 0.1, 20, extractFirstNumber(riskSettings?.stopLoss) || 1.5),
+    stopLossEnabled: typeof record.stopLossEnabled === 'boolean' ? record.stopLossEnabled : riskSettings?.stopRequired ?? true,
+    takeProfitEnabled: typeof record.takeProfitEnabled === 'boolean' ? record.takeProfitEnabled : true,
+    takeProfitR: boundedNumber(record.takeProfitR, 0.1, 20, riskSettings?.rrTarget ?? 2),
+    trailingStopAtr: boundedNumber(record.trailingStopAtr, 0.1, 20, extractAtrTrailingStop(riskSettings?.takeProfit, 2)),
+    trailingStopEnabled: typeof record.trailingStopEnabled === 'boolean' ? record.trailingStopEnabled : riskSettings?.trailingStop ?? true,
+  };
+}
+
+function buildAutonomousAgentTasks(db: ThoonDb): AgentQueueTask[] {
+  const settings = normalizeAgentSettings(db.agentSettingsRecord);
+
+  if (!settings.enabled || settings.queuePaused) {
+    return [];
+  }
+
+  const latestByStrategy = new Map<string, BacktestReport>();
+  const trustedReports = db.backtestReportRecords
+    .filter((report) => report.source === 'calculated' && Boolean(report.dataWindow?.candleChecksum) && Boolean(report.executionSettings))
+    .sort((left, right) => new Date(right.generatedAt ?? '').getTime() - new Date(left.generatedAt ?? '').getTime());
+
+  for (const report of trustedReports) {
+    if (!latestByStrategy.has(report.strategyId)) {
+      latestByStrategy.set(report.strategyId, report);
+    }
+  }
+
+  const now = new Date().toISOString();
+  const tasks: AgentQueueTask[] = [];
+
+  for (const strategy of db.strategyRecords) {
+    if (!isMarketAllowedByAgent(settings, strategy.market) || !settings.limits.allowedTimeframes.includes(strategy.timeframe)) {
+      continue;
+    }
+
+    const report = latestByStrategy.get(strategy.id);
+
+    if (!report) {
+      tasks.push(makeAgentQueueTask('run_backtest', strategy, 'Run first matrix validation across top-100 cryptos and multiple timeframes.', 'high', now));
+      continue;
+    }
+
+    if (report.totalTrades < settings.limits.minTrades) {
+      tasks.push(makeAgentQueueTask('run_backtest', strategy, `Increase sample size: ${report.totalTrades}/${settings.limits.minTrades} trades.`, 'normal', now));
+      continue;
+    }
+
+    const assessment = assessBotReadiness(report, settings);
+
+    if (assessment.decision === 'bot_candidate' || assessment.decision === 'paper_test') {
+      tasks.push(makeAgentQueueTask('run_paper_test', strategy, `Paper validate ranked candidate: score ${assessment.score}/100, ${report.profitFactor.toFixed(2)} PF, ${report.winRate.toFixed(1)}% WR.`, 'high', now));
+      continue;
+    }
+
+    if (assessment.decision === 'do_not_use' || assessment.decision === 'watch') {
+      tasks.push(makeAgentQueueTask('create_variant', strategy, `Create or test a stronger variant before bot use: score ${assessment.score}/100, ${report.profitFactor.toFixed(2)} PF, ${report.winRate.toFixed(1)}% WR.`, 'normal', now));
+    }
+  }
+
+  return tasks.slice(0, 12);
+}
+
+function makeAgentQueueTask(action: AgentAction, strategy: Strategy, nextAction: string, priority: AgentQueueTask['priority'], createdAt: string): AgentQueueTask {
+  return {
+    action,
+    createdAt,
+    id: `agent-cron-${slug(action)}-${slug(strategy.id)}`,
+    nextAction,
+    priority,
+    status: 'queued',
+    strategyId: strategy.id,
+  };
+}
+
+function patchUserPreferences(current: UserPreferences, body: Record<string, unknown>) {
+  const target = current as unknown as Record<string, unknown>;
+  const enumFields = {
+    accent: ['blue', 'cyan', 'green', 'pink', 'red', 'violet', 'yellow'],
+    breakEvenRule: ['off', 'move-to-be-at-1r', 'move-to-be-at-tp1'],
+    density: ['compact', 'comfortable'],
+    multiTpBehavior: ['single-target', 'partial-take-profits', 'equal-ladder'],
+    orderType: ['market', 'limit', 'stop'],
+    positionSizingMethod: ['risk-percent', 'fixed-usdt', 'fixed-size'],
+    preferredMarketType: ['spot', 'perpetual', 'futures'],
+    quickPreset: ['scalping', 'day-trading', 'swing-trading', 'position-trading', 'custom'],
+    stopLossMode: ['sl-market', 'sl-limit'],
+    takeProfitMode: ['tp-limit', 'tp-market', 'scale-out'],
+    theme: ['dark', 'light', 'system'],
+  } satisfies Record<string, string[]>;
+  const numberFields = ['defaultLeverage', 'defaultRiskPerTrade', 'defaultSlippage', 'trailingStopActivationAtr', 'trailingStopTrailAtr'];
+  const booleanFields = ['breakEvenAutomation', 'trailingStopEnabled'];
+  const stringFields = ['defaultAccount', 'defaultExchange'];
+  const extraPreferenceFields = new Set([
+    'advancedSettings',
+    'analyticsConsent',
+    'animations',
+    'billingSettings',
+    'chartPreset',
+    'fontSize',
+    'keyboardShortcuts',
+    'notificationDigest',
+    'notificationSettings',
+    'personalizedExperience',
+    'reduceMotion',
+    'sidebarBehavior',
+    'workspaceLayouts',
+  ]);
+
+  for (const [key, allowed] of Object.entries(enumFields)) {
+    if (key in body && allowed.includes(asString(body[key]))) {
+      target[key] = asString(body[key]);
+    }
+  }
+
+  for (const key of numberFields) {
+    if (key in body) {
+      target[key] = positiveValue(body[key], Number(target[key] ?? 0));
+    }
+  }
+
+  for (const key of booleanFields) {
+    if (typeof body[key] === 'boolean') {
+      target[key] = body[key];
+    }
+  }
+
+  for (const key of stringFields) {
+    if (typeof body[key] === 'string') {
+      target[key] = asString(body[key]).slice(0, 120);
+    }
+  }
+
+  if (Array.isArray(body.categoryFilters)) {
+    const allowedCategories = new Set(['all', 'trending', 'defi', 'layer-1', 'meme', 'ai']);
+    target.categoryFilters = body.categoryFilters.filter((item): item is string => typeof item === 'string' && allowedCategories.has(item)).slice(0, 8);
+  }
+
+  for (const [key, value] of Object.entries(body)) {
+    if (extraPreferenceFields.has(key)) {
+      target[key] = sanitizeJsonValue(value);
+    }
+  }
+
+  return current;
+}
+
+function patchRiskRules(current: RiskRules, body: Record<string, unknown>) {
+  patchBooleanFields(current, body, ['blockOrdersWithoutStop', 'cancelOnDisconnect', 'confirmLiveOrders', 'emergencyKillSwitch']);
+  patchBoundedNumberField(current, body, 'botLossStreakPause', 0, 100);
+  patchBoundedNumberField(current, body, 'dailyLossLimit', 0, 100);
+  patchBoundedNumberField(current, body, 'maxLeverage', 1, 125);
+  patchBoundedNumberField(current, body, 'maxRiskPerTrade', 0, 100);
+  patchBoundedNumberField(current, body, 'minimumBalance', 0, maximumNumericInput);
+  patchBoundedNumberField(current, body, 'stopBotsAtDrawdown', 0, 100);
+  patchBoundedNumberField(current, body, 'weeklyLossLimit', 0, 100);
+
+  return current;
+}
+
+function patchTradeLimits(current: TradeLimits, body: Record<string, unknown>) {
+  patchBoundedNumberField(current, body, 'cooldownAfterBotErrorMinutes', 0, 1440);
+  patchBoundedNumberField(current, body, 'cooldownAfterLossMinutes', 0, 1440);
+  patchBoundedNumberField(current, body, 'maxApiErrorsBeforePause', 0, 1000);
+  patchBoundedNumberField(current, body, 'maxBotSlotsActive', 0, 1000);
+  patchBoundedNumberField(current, body, 'maxOpenPositions', 0, 1000);
+  patchBoundedNumberField(current, body, 'maxOrdersPerDay', 0, 10000);
+  patchBoundedNumberField(current, body, 'maxOrdersPerHour', 0, 10000);
+  patchBoundedNumberField(current, body, 'maxPositionSizePerPair', 0, maximumNumericInput);
+  patchBoundedNumberField(current, body, 'maxStrategyExecutionsPerDay', 0, 10000);
+  patchBoundedNumberField(current, body, 'maxTotalExposure', 0, maximumNumericInput);
+
+  return current;
+}
+
+function patchUserProfile(current: UserProfile, body: Record<string, unknown>) {
+  const target = current as unknown as Record<string, unknown>;
+
+  for (const key of ['country', 'email', 'name', 'timezone', 'username']) {
+    if (typeof body[key] === 'string') {
+      target[key] = asString(body[key]).slice(0, 160);
+    }
+  }
+
+  if (body.language === 'fr' || body.language === 'en') {
+    current.language = body.language;
+  }
+
+  if (body.mainCurrency === 'USD' || body.mainCurrency === 'EUR' || body.mainCurrency === 'USDT') {
+    current.mainCurrency = body.mainCurrency;
+  }
+
+  if (body.tradingExperience === 'beginner' || body.tradingExperience === 'intermediate' || body.tradingExperience === 'advanced') {
+    current.tradingExperience = body.tradingExperience;
+  }
+
+  return current;
+}
+
+function patchBooleanFields<T extends Record<string, unknown>>(target: T, body: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    if (typeof body[key] === 'boolean') {
+      target[key as keyof T] = body[key] as T[keyof T];
+    }
+  }
+}
+
+function patchBoundedNumberField<T extends Record<string, unknown>>(target: T, body: Record<string, unknown>, key: string, min: number, max: number) {
+  if (key in body) {
+    target[key as keyof T] = boundedNumber(body[key], min, max, Number(target[key as keyof T] ?? min)) as T[keyof T];
+  }
+}
+
+function sanitizeJsonValue(value: unknown, depth = 0): unknown {
+  if (depth > 4) {
+    return undefined;
+  }
+
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') {
+    return Number.isFinite(value as number) || typeof value !== 'number' ? value : undefined;
+  }
+
+  if (typeof value === 'string') {
+    return value.slice(0, 5000);
+  }
+
+  if (Array.isArray(value)) {
+    return value.slice(0, 100).map((item) => sanitizeJsonValue(item, depth + 1));
+  }
+
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => key !== '__proto__' && key !== 'constructor' && key !== 'prototype')
+        .map(([key, item]) => [key.slice(0, 120), sanitizeJsonValue(item, depth + 1)])
+        .filter(([, item]) => item !== undefined),
+    );
+  }
+
+  return undefined;
+}
+
 function isLiveExecutionEnabled() {
-  return getThoonServerEnv().appMode === 'live-enabled';
+  const env = getThoonServerEnv();
+
+  return env.appMode === 'live-enabled' && env.authMode === 'local-required' && env.databaseProvider === 'postgres' && env.liveExchangeProvider !== 'disabled' && hasProductionEncryptionKey(env.encryptionKey);
 }
 
 function getLiveTradingBlocker(db: ThoonDb, exchangeNameOrId: string) {
@@ -2163,11 +4571,80 @@ function getLiveTradingBlocker(db: ThoonDb, exchangeNameOrId: string) {
     return 'Live trading requires a connected exchange.';
   }
 
+  if (exchange.venueType === 'dex') {
+    const wallet = db.walletRecords.find((record) => record.status === 'connected');
+
+    if (!wallet) {
+      return 'Live DEX trading requires a connected wallet in Exchanges.';
+    }
+
+    return 'Live DEX routing is not enabled yet. Keep this bot in paper mode until the signed wallet executor is configured.';
+  }
+
   if (!getActiveTradeApiKey(db, exchange)) {
     return 'Live trading requires an active trade-enabled API key. Save the key, run the connection test, then retry.';
   }
 
   return undefined;
+}
+
+function resolveBotSourceReport(db: ThoonDb, strategyId: string, symbol: string, sourceReportId: string) {
+  return db.backtestReportRecords.find((report) => report.id === sourceReportId && report.source === 'calculated' && report.strategyId === strategyId && report.market === symbol && Boolean(report.dataWindow?.candleChecksum) && Boolean(report.executionSettings));
+}
+
+function getBotLaunchValidationBlocker(db: ThoonDb, strategyId: string, symbol: string, sourceReportId?: string) {
+  const strategy = findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, strategyId);
+  const exactSourceReport = sourceReportId ? resolveBotSourceReport(db, strategyId, symbol, sourceReportId) : undefined;
+
+  if (sourceReportId && !exactSourceReport) {
+    return 'Bot launch blocked: the attached source backtest does not match this exact strategy and pair.';
+  }
+
+  const matchingReports = db.backtestReportRecords
+    .filter((report) => report.source === 'calculated' && report.strategyId === strategyId && report.market === symbol && (!strategy?.timeframe || report.timeframe === strategy.timeframe))
+    .sort((left, right) => {
+      const rightDays = backtestPeriodDays(right.period);
+      const leftDays = backtestPeriodDays(left.period);
+
+      if (rightDays !== leftDays) {
+        return rightDays - leftDays;
+      }
+
+      return new Date(right.generatedAt ?? '').getTime() - new Date(left.generatedAt ?? '').getTime();
+    });
+  const report = exactSourceReport ?? matchingReports.find((item) => backtestPeriodDays(item.period) >= 90) ?? matchingReports[0];
+
+  if (!report) {
+    return 'Bot launch blocked: run a calculated 90D+ backtest for this exact strategy and pair first.';
+  }
+
+  if (backtestPeriodDays(report.period) < 90) {
+    return 'Bot launch blocked: latest validation is below 90D out-of-sample coverage.';
+  }
+
+  if (report.totalTrades < 30) {
+    return `Bot launch blocked: only ${report.totalTrades} trades in validation; minimum is 30.`;
+  }
+
+  if (report.profitFactor < 1.15) {
+    return `Bot launch blocked: profit factor ${report.profitFactor.toFixed(2)} is below 1.15.`;
+  }
+
+  if (report.netProfit <= 0) {
+    return `Bot launch blocked: validation net PnL is ${report.netProfit.toFixed(2)}.`;
+  }
+
+  if (Math.abs(report.drawdown) > Math.max(1, db.riskRulesRecord.stopBotsAtDrawdown)) {
+    return `Bot launch blocked: drawdown ${report.drawdown.toFixed(2)}% exceeds ${db.riskRulesRecord.stopBotsAtDrawdown}%.`;
+  }
+
+  return undefined;
+}
+
+function backtestPeriodDays(period: string) {
+  const parsed = Number(period.match(/(\d+)\s*D/i)?.[1]);
+
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function getActiveTradeApiKey(db: ThoonDb, exchange?: ThoonDb['exchangeRecords'][number]) {
@@ -2176,6 +4653,16 @@ function getActiveTradeApiKey(db: ThoonDb, exchange?: ThoonDb['exchangeRecords']
   }
 
   return db.apiKeyRecords.find((record) => record.exchangeId === exchange.id && record.status === 'active' && record.permissions.includes('trade'));
+}
+
+function periodPnl(db: ThoonDb, period: 'day' | 'week') {
+  const now = Date.now();
+  const windowMs = period === 'day' ? 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
+  const cutoff = now - windowMs;
+
+  return db.journalTradeRecords
+    .filter((trade) => trade.source !== 'paper' && new Date(trade.closedAt).getTime() >= cutoff)
+    .reduce((sum, trade) => sum + trade.pnl, 0);
 }
 
 function findExchange(db: ThoonDb, exchangeNameOrId: string) {
@@ -2269,9 +4756,10 @@ const resourceIndex = [
   'GET|POST /api/auth/session|login|logout',
   'GET /api/agent|settings|versions|suggestions|activity|reports|queue|research|ai/status',
   'POST /api/agent/actions',
+  'GET|POST /api/agent/cron',
   'PATCH /api/agent/settings',
   'GET /api/markets',
-  'GET /api/markets/candles?symbol=BTC%2FUSDT&timeframe=15m&exchangeId=binance|bybit|okx|bitget|kraken|kucoin|coinbase-advanced',
+  'GET /api/markets/candles?symbol=BTC%2FUSDT&timeframe=15m&exchangeId=binance|bybit|okx|bitget|kraken|kucoin|coinbase-advanced&marketType=spot|perpetual',
   'GET /api/markets/status',
   'GET|POST /api/watchlists',
   'GET|POST|PATCH|DELETE /api/alerts',
@@ -2294,5 +4782,6 @@ const resourceIndex = [
   'GET /api/audit-logs',
   'GET|POST|DELETE /api/exchanges/api-keys',
   'POST /api/exchanges/test',
+  'GET|POST /api/wallets',
   'GET|POST /api/setups',
 ];

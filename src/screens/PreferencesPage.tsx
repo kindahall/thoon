@@ -19,6 +19,7 @@ import {
 import Link from 'next/link';
 
 import { Card, HelpPopover } from '../components/ui';
+import type { Alert, ApiKeyRecord, ExchangeConnection, RiskRules, UserPreferences, UserProfile } from '../types/trading';
 
 const preferenceSections = [
   { href: '/preferences/agent', icon: Bot, label: 'Strategy Agent' },
@@ -27,7 +28,6 @@ const preferenceSections = [
   { href: '/preferences/trading-defaults', icon: ChartNoAxesCombined, label: 'Trading Defaults' },
   { href: '/preferences/security', icon: Shield, label: 'Security' },
   { href: '/preferences/notifications', icon: Bell, label: 'Notifications' },
-  { href: '/preferences/exchange-api', icon: PlugZap, label: 'Exchange & API' },
   { href: '/preferences/billing', icon: CreditCard, label: 'Billing & Plan' },
   { href: '/preferences/data-privacy', icon: Database, label: 'Data & Privacy' },
   { href: '/preferences/risk-rules', icon: Shield, label: 'Risk Rules' },
@@ -45,81 +45,19 @@ type SummaryCard = {
   title: string;
 };
 
-const summaryCards: SummaryCard[] = [
-  {
-    href: '/preferences/agent',
-    icon: Bot,
-    rows: [
-      { label: 'Mode', value: 'Assisted' },
-      { label: 'Live actions', value: 'Blocked' },
-      { label: 'Core strategy', tone: 'positive', value: 'Protected' },
-    ],
-    title: 'Strategy Agent',
-  },
-  {
-    href: '/preferences/appearance',
-    icon: Palette,
-    rows: [
-      { label: 'Theme', value: 'Dark' },
-      { label: 'Density', value: 'Comfortable' },
-    ],
-    title: 'Appearance',
-  },
-  {
-    href: '/preferences/trading-defaults',
-    icon: ChartNoAxesCombined,
-    rows: [
-      { label: 'Default Risk', value: '1.00%' },
-      { label: 'Default Leverage', value: '10x' },
-      { label: 'Default Order Type', value: 'Limit' },
-      { label: 'Default Slippage', value: '0.50%' },
-    ],
-    title: 'Trading Defaults',
-  },
-  {
-    href: '/preferences/security',
-    icon: Shield,
-    rows: [
-      { label: 'Password', value: 'Change Password' },
-      { label: 'Two-Factor Authentication', tone: 'positive', value: 'Enabled' },
-      { label: 'Active Sessions', value: '3 active' },
-      { label: 'Login History', value: 'View' },
-    ],
-    title: 'Security',
-  },
-  {
-    href: '/preferences/notifications',
-    icon: Bell,
-    rows: [
-      { label: 'App Notifications', tone: 'positive', value: 'Enabled' },
-      { label: 'Email Notifications', tone: 'positive', value: 'Enabled' },
-      { label: 'Webhook Alerts', tone: 'positive', value: 'Enabled' },
-    ],
-    title: 'Notifications',
-  },
-  {
-    href: '/preferences/exchange-api',
-    icon: PlugZap,
-    rows: [
-      { label: 'Connected Exchanges', value: '2 connected' },
-      { label: 'API Keys', value: '3 keys' },
-      { label: 'Permissions & Scopes', value: 'Manage' },
-    ],
-    title: 'Exchange Connections & API Keys',
-  },
-  {
-    href: '/preferences/billing',
-    icon: CreditCard,
-    rows: [
-      { label: 'Current Plan', value: 'Pro Plan' },
-      { label: 'Next Billing Date', value: 'Jun 17, 2024' },
-      { label: 'Payment Method', value: 'Visa **** 4242' },
-    ],
-    title: 'Billing & Plan',
-  },
-];
+type PreferencesPageProps = {
+  alerts: Alert[];
+  apiKeys: ApiKeyRecord[];
+  exchanges: ExchangeConnection[];
+  preferences: UserPreferences;
+  profile: UserProfile;
+  riskRules: RiskRules;
+};
 
-export function PreferencesPage() {
+export function PreferencesPage({ alerts, apiKeys, exchanges, preferences, profile, riskRules }: PreferencesPageProps) {
+  const cards = buildSummaryCards({ alerts, apiKeys, exchanges, preferences, riskRules });
+  const activeBillingPlan = preferences.billingSettings?.planId ? titleCase(preferences.billingSettings.planId) : 'Private';
+
   return (
     <section className="preferences-page" aria-label="Preferences workspace">
       <div className="workspace-header workspace-header--compact">
@@ -149,35 +87,35 @@ export function PreferencesPage() {
 
         <div className="preferences-overview">
           <Card className="preferences-profile-card">
-            <span className="preferences-avatar">A</span>
+            <span className="preferences-avatar">{profile.name.slice(0, 1).toUpperCase()}</span>
             <div className="preferences-profile-main">
-              <h2>Artisaul</h2>
-              <span>@artisaul</span>
-              <b>Pro Trader</b>
+              <h2>{profile.name}</h2>
+              <span>@{profile.username}</span>
+              <b>{titleCase(profile.tradingExperience)} Trader</b>
             </div>
             <dl>
               <div>
                 <dt>Email</dt>
-                <dd>artisaul@example.com</dd>
+                <dd>{profile.email}</dd>
               </div>
               <div>
                 <dt>Country</dt>
-                <dd>United States</dd>
+                <dd>{profile.country}</dd>
               </div>
               <div>
                 <dt>Timezone</dt>
-                <dd>Europe/Paris</dd>
+                <dd>{profile.timezone}</dd>
               </div>
               <div>
                 <dt>Plan</dt>
-                <dd>Pro Plan</dd>
+                <dd>{activeBillingPlan}</dd>
               </div>
             </dl>
             <Link href="/preferences/billing">Manage Plan</Link>
           </Card>
 
           <div className="preferences-summary">
-            {summaryCards.map((card) => (
+            {cards.map((card) => (
               <PreferenceOverviewCard card={card} key={card.href} />
             ))}
           </div>
@@ -206,6 +144,92 @@ export function PreferencesPage() {
   );
 }
 
+function buildSummaryCards({
+  alerts,
+  apiKeys,
+  exchanges,
+  preferences,
+  riskRules,
+}: Pick<PreferencesPageProps, 'alerts' | 'apiKeys' | 'exchanges' | 'preferences' | 'riskRules'>): SummaryCard[] {
+  const activeAlerts = alerts.filter((alert) => alert.status === 'active').length;
+  const activeKeys = apiKeys.filter((key) => key.status === 'active').length;
+  const connectedExchanges = exchanges.filter((exchange) => exchange.status === 'connected').length;
+  const notificationSettings = preferences.notificationSettings as Record<string, boolean> | undefined;
+
+  return [
+    {
+      href: '/preferences/agent',
+      icon: Bot,
+      rows: [
+        { label: 'Mode', value: 'Codex' },
+        { label: 'Live actions', value: riskRules.confirmLiveOrders ? 'Confirmed' : 'Manual' },
+        { label: 'Core strategy', tone: 'positive', value: 'Protected' },
+      ],
+      title: 'Strategy Agent',
+    },
+    {
+      href: '/preferences/appearance',
+      icon: Palette,
+      rows: [
+        { label: 'Theme', value: titleCase(preferences.theme) },
+        { label: 'Density', value: titleCase(preferences.density) },
+      ],
+      title: 'Appearance',
+    },
+    {
+      href: '/preferences/trading-defaults',
+      icon: ChartNoAxesCombined,
+      rows: [
+        { label: 'Default Risk', value: `${preferences.defaultRiskPerTrade.toFixed(2)}%` },
+        { label: 'Default Leverage', value: `${preferences.defaultLeverage}x` },
+        { label: 'Default Order Type', value: titleCase(preferences.orderType) },
+        { label: 'Default Slippage', value: `${preferences.defaultSlippage.toFixed(2)}%` },
+      ],
+      title: 'Trading Defaults',
+    },
+    {
+      href: '/preferences/security',
+      icon: Shield,
+      rows: [
+        { label: 'Live confirmation', tone: riskRules.confirmLiveOrders ? 'positive' : undefined, value: riskRules.confirmLiveOrders ? 'Enabled' : 'Manual' },
+        { label: 'API keys', tone: activeKeys ? 'positive' : undefined, value: `${activeKeys} active` },
+        { label: 'Kill switch', value: riskRules.emergencyKillSwitch ? 'On' : 'Off' },
+      ],
+      title: 'Security',
+    },
+    {
+      href: '/preferences/notifications',
+      icon: Bell,
+      rows: [
+        { label: 'Active alerts', tone: activeAlerts ? 'positive' : undefined, value: String(activeAlerts) },
+        { label: 'App notifications', tone: notificationSettings?.app !== false ? 'positive' : undefined, value: notificationSettings?.app === false ? 'Off' : 'Enabled' },
+        { label: 'Webhook alerts', tone: notificationSettings?.webhook !== false ? 'positive' : undefined, value: notificationSettings?.webhook === false ? 'Off' : 'Enabled' },
+      ],
+      title: 'Notifications',
+    },
+    {
+      href: '/exchanges',
+      icon: PlugZap,
+      rows: [
+        { label: 'Connected venues', tone: connectedExchanges ? 'positive' : undefined, value: String(connectedExchanges) },
+        { label: 'API Keys', value: `${apiKeys.length} stored` },
+        { label: 'Withdrawals', tone: 'positive', value: 'Disabled' },
+      ],
+      title: 'Exchange Hub',
+    },
+    {
+      href: '/preferences/billing',
+      icon: CreditCard,
+      rows: [
+        { label: 'Current Plan', value: titleCase(preferences.billingSettings?.planId ?? 'private') },
+        { label: 'Period', value: titleCase(preferences.billingSettings?.billingPeriod ?? 'yearly') },
+        { label: 'Status', tone: preferences.billingSettings?.status === 'active' ? 'positive' : undefined, value: titleCase(preferences.billingSettings?.status ?? 'active') },
+      ],
+      title: 'Billing & Plan',
+    },
+  ];
+}
+
 function PreferenceOverviewCard({ card }: { card: SummaryCard }) {
   const Icon = card.icon;
 
@@ -228,4 +252,8 @@ function PreferenceOverviewCard({ card }: { card: SummaryCard }) {
       </Card>
     </Link>
   );
+}
+
+function titleCase(value: string) {
+  return value.slice(0, 1).toUpperCase() + value.slice(1).replace(/[-_]/g, ' ');
 }
