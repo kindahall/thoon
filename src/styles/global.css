@@ -13457,12 +13457,14 @@ button {
 
 .charts-terminal-grid .bottom-panels {
   grid-area: bottom;
-  grid-column: auto;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr);
+  grid-column: 1 / 2;
+  min-width: 0;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr) minmax(0, 0.9fr);
 }
 
 .planned-orders-card,
-.scenario-notes-card {
+.scenario-notes-card,
+.analysis-setups-card {
   min-height: 262px;
   padding: 16px;
 }
@@ -13580,6 +13582,119 @@ button {
   margin: 0 0 8px;
 }
 
+.analysis-setups-card {
+  display: grid;
+  align-content: start;
+}
+
+.analysis-autosave-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  margin-bottom: 10px;
+  padding: 0 10px;
+  color: var(--text-muted);
+  border: 1px solid color-mix(in srgb, var(--profit) 28%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--profit) 9%, var(--surface-raised));
+  font-size: 12px;
+  font-weight: 820;
+}
+
+.analysis-autosave-row strong {
+  color: var(--profit);
+}
+
+.analysis-current-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.analysis-current-summary span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  font-size: 10px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.analysis-current-summary strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analysis-setups-list {
+  display: grid;
+  overflow: auto;
+  max-height: 132px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.analysis-setups-list button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 44px;
+  padding: 8px 10px;
+  color: var(--text);
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  text-align: left;
+}
+
+.analysis-setups-list button:last-child {
+  border-bottom: 0;
+}
+
+.analysis-setups-list button:hover {
+  background: var(--surface-raised);
+}
+
+.analysis-setups-list button span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.analysis-setups-list button strong,
+.analysis-setups-list button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analysis-setups-list button small,
+.analysis-setups-list button em {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 760;
+}
+
+.analysis-setups-empty {
+  display: grid;
+  min-height: 56px;
+  place-items: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 780;
+}
+
 @media (max-width: 1180px) {
   .charts-terminal-grid {
     grid-template-columns: 1fr;
@@ -13677,6 +13792,11 @@ button {
 
   .indicator-control-row,
   .indicator-toggle-row {
+    grid-template-columns: 1fr;
+  }
+
+  .charts-terminal-grid .bottom-panels,
+  .analysis-current-summary {
     grid-template-columns: 1fr;
   }
 

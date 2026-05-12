@@ -52,6 +52,7 @@ import { mirrorThoonDbToPostgres } from './postgres-store';
 let pendingPostgresMirror: Promise<void> | undefined;
 
 export type SavedSetupRecord = {
+  chartHeight?: number;
   draft: unknown;
   drawings?: unknown[];
   exchangeId?: string;
@@ -65,6 +66,7 @@ export type SavedSetupRecord = {
   plannedOrders: Order[];
   riskSettings: unknown;
   savedAt: string;
+  selectedRange?: string;
   strategyId?: string;
   timeframe: string;
 };

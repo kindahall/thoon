@@ -122,6 +122,40 @@ test('position builder can execute a strategy-sourced manual trade payload', asy
   expect(tradePayload?.mode).toBe('paper');
 });
 
+test('chart analysis tools persist across route changes and can be saved', async ({ page }) => {
+  const note = `analyse persistante ${Date.now()}`;
+
+  await page.goto('/charts?pair=BTC%2FUSDT');
+  const entryInput = page.locator('.trade-panel input[aria-label="Entry"]');
+  await entryInput.fill('80600');
+  await expect(entryInput).toHaveValue('80600');
+  await page.locator('.scenario-notes-body textarea').fill(note);
+  await page.waitForFunction(
+    ({ expectedEntry, expectedNote, storageKey }) => {
+      const rawDrafts = window.localStorage.getItem(storageKey);
+
+      if (!rawDrafts) {
+        return false;
+      }
+
+      const drafts = JSON.parse(rawDrafts) as Record<string, { draft?: { entry?: number }; notes?: string }>;
+
+      return Object.values(drafts).some((draft) => draft.notes === expectedNote && draft.draft?.entry === expectedEntry);
+    },
+    { expectedEntry: 80600, expectedNote: note, storageKey: 'thoon.chartWorkspaceDrafts' },
+  );
+
+  await page.locator('.analysis-setups-card .bottom-card-header button').click();
+  await expect(page.locator('.analysis-setups-list')).toContainText('BTC/USDT 15m');
+
+  await page.goto('/markets');
+  await page.goto('/charts?pair=BTC%2FUSDT');
+
+  await expect(page.locator('.trade-panel input[aria-label="Entry"]')).toHaveValue('80600');
+  await expect(page.locator('.scenario-notes-body textarea')).toHaveValue(note);
+  await expect(page.locator('.analysis-setups-list')).toContainText('BTC/USDT 15m');
+});
+
 test('agent chat sends with Enter and keeps Shift Enter for new lines', async ({ page }) => {
   const message = `Entrée envoie le chat ${Date.now()}`;
   let postedMessage = '';

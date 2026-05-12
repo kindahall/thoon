@@ -1494,6 +1494,7 @@ async function postHandler(request: NextRequest, context: RouteContext) {
       updateThoonDb((db) => {
         const setup = body as SavedSetupRecord;
         const record: SavedSetupRecord = {
+          chartHeight: asNumber(setup.chartHeight, 640),
           draft: setup.draft ?? {},
           drawings: Array.isArray(setup.drawings) ? setup.drawings : [],
           exchangeId: asString(setup.exchangeId),
@@ -1507,6 +1508,7 @@ async function postHandler(request: NextRequest, context: RouteContext) {
           plannedOrders: Array.isArray(setup.plannedOrders) ? setup.plannedOrders : [],
           riskSettings: setup.riskSettings ?? {},
           savedAt: asString(setup.savedAt) || new Date().toISOString(),
+          selectedRange: asString(setup.selectedRange) || '1D',
           strategyId: asString(setup.strategyId) || undefined,
           timeframe: asString(setup.timeframe) || '15m',
         };

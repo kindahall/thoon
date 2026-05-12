@@ -73,7 +73,9 @@ const pairThemes: Array<{ key: MarketCategory; label: string }> = [
 const activePairStorageKey = 'thoon.activePair';
 const chartEngineStorageKey = 'thoon.chartEngine';
 const markerDropDataType = 'application/x-thoon-marker';
+const chartWorkspaceDraftsStorageKey = 'thoon.chartWorkspaceDrafts';
 const savedSetupStorageKey = 'thoon.savedSetups';
+const maximumSavedSetups = 8;
 const publicRestExchangeIds = new Set(['bybit', 'okx', 'bitget', 'kraken', 'kucoin', 'coinbase-advanced']);
 const defaultIndicatorConfig: ChartIndicatorConfig = {
   ema: { enabled: false, period: 21 },
@@ -100,6 +102,7 @@ const markerDefinitions: Array<{
 ];
 
 type SavedChartSetup = {
+  chartHeight?: number;
   draft: PositionDraft;
   drawings?: ChartDrawing[];
   exchangeId?: string;
@@ -119,6 +122,7 @@ type SavedChartSetup = {
     trailingStop: boolean;
   };
   savedAt: string;
+  selectedRange?: ChartRange;
   strategyId?: string;
   timeframe: Timeframe;
 };
@@ -191,11 +195,14 @@ export function ChartsWorkspace({
   const [indicatorPanelOpen, setIndicatorPanelOpen] = useState(false);
   const [liveConfirmationOpen, setLiveConfirmationOpen] = useState(false);
   const [liveOrderConfirmationOpen, setLiveOrderConfirmationOpen] = useState(false);
+  const [workspaceDrafts, setWorkspaceDrafts] = useState<Record<string, SavedChartSetup>>({});
   const [savedSetups, setSavedSetups] = useState<SavedChartSetup[]>([]);
   const [savedSetupNotes, setSavedSetupNotes] = useState('');
   const [setupMessage, setSetupMessage] = useState('Ready');
+  const [autoSavedAt, setAutoSavedAt] = useState<string>();
   const [hasLoadedSavedSetups, setHasLoadedSavedSetups] = useState(false);
   const hasHydratedActivePairRef = useRef(false);
+  const hydratedSetupKeyRef = useRef<string | null>(null);
   const setupReloadPairRef = useRef<string | null>(null);
   const previousMarketSymbolRef = useRef(market.symbol);
   const selectedMarkerDefinition = markerDefinitions.find((markerDefinition) => markerDefinition.type === selectedMarkerType);
@@ -208,6 +215,7 @@ export function ChartsWorkspace({
   const strategyOptions = useMemo(() => strategies.filter((strategy) => strategy.status !== 'archived'), [strategies]);
   const selectedStrategy = useMemo(() => strategyOptions.find((strategy) => strategy.id === selectedStrategyId), [selectedStrategyId, strategyOptions]);
   const selectedStrategyMatchesMarket = Boolean(selectedStrategy && selectedStrategy.market === market.symbol);
+  const currentWorkspaceKey = useMemo(() => chartWorkspaceKey(market.symbol, timeframe), [market.symbol, timeframe]);
   const candles = useMemo(() => sanitizeCandles(chartCandles), [chartCandles]);
   const hasChartCandles = candles.length > 0;
   const priceAnchor = market.lastPrice || market.draft.entry || 1;
@@ -492,12 +500,23 @@ export function ChartsWorkspace({
 
   useEffect(() => {
     const rawSetups = window.localStorage.getItem(savedSetupStorageKey);
+    const rawWorkspaceDrafts = window.localStorage.getItem(chartWorkspaceDraftsStorageKey);
 
     if (rawSetups) {
       try {
-        setSavedSetups(JSON.parse(rawSetups));
+        const parsedSetups = JSON.parse(rawSetups) as unknown;
+        setSavedSetups(Array.isArray(parsedSetups) ? parsedSetups.slice(0, maximumSavedSetups) as SavedChartSetup[] : []);
       } catch {
         setSavedSetups([]);
+      }
+    }
+
+    if (rawWorkspaceDrafts) {
+      try {
+        const parsedDrafts = JSON.parse(rawWorkspaceDrafts) as unknown;
+        setWorkspaceDrafts(isRecord(parsedDrafts) ? (parsedDrafts as Record<string, SavedChartSetup>) : {});
+      } catch {
+        setWorkspaceDrafts({});
       }
     }
 
@@ -509,6 +528,70 @@ export function ChartsWorkspace({
       window.localStorage.setItem(savedSetupStorageKey, JSON.stringify(savedSetups));
     }
   }, [hasLoadedSavedSetups, savedSetups]);
+
+  useEffect(() => {
+    if (!hasLoadedSavedSetups) {
+      return;
+    }
+
+    if (hydratedSetupKeyRef.current === currentWorkspaceKey) {
+      return;
+    }
+
+    hydratedSetupKeyRef.current = currentWorkspaceKey;
+    const storedSetup = workspaceDrafts[currentWorkspaceKey];
+
+    if (storedSetup) {
+      reloadSetup(storedSetup, 'Restored');
+      setAutoSavedAt(storedSetup.savedAt);
+    }
+  }, [currentWorkspaceKey, hasLoadedSavedSetups, workspaceDrafts]);
+
+  useEffect(() => {
+    if (!hasLoadedSavedSetups || hydratedSetupKeyRef.current !== currentWorkspaceKey) {
+      return undefined;
+    }
+
+    const saveTimeout = window.setTimeout(() => {
+      const setup = createCurrentSetup({
+        id: `draft-${clientSlug(market.symbol)}-${timeframe}`,
+        name: `Autosave ${market.symbol} ${timeframe}`,
+      });
+
+      setWorkspaceDrafts((currentDrafts) => {
+        const nextDrafts = { ...currentDrafts, [currentWorkspaceKey]: setup };
+        window.localStorage.setItem(chartWorkspaceDraftsStorageKey, JSON.stringify(nextDrafts));
+
+        return nextDrafts;
+      });
+      setAutoSavedAt(setup.savedAt);
+    }, 250);
+
+    return () => {
+      window.clearTimeout(saveTimeout);
+    };
+  }, [
+    chartDrawings,
+    chartHeight,
+    currentWorkspaceKey,
+    draft,
+    executionIntent,
+    executionMode,
+    hasLoadedSavedSetups,
+    indicatorConfig,
+    isBreakEvenOn,
+    isTrailingOn,
+    leverage,
+    market.symbol,
+    plannedOrderDrafts,
+    savedSetupNotes,
+    selectedExchange?.id,
+    selectedRange,
+    selectedStrategy?.id,
+    selectedStrategy?.name,
+    timeframe,
+    tradeMarkers,
+  ]);
 
   function selectMarkerTool(type: TradeMarkerType) {
     const definition = markerDefinitions.find((item) => item.type === type);
@@ -929,16 +1012,17 @@ export function ChartsWorkspace({
     }
   }
 
-  async function saveSetup() {
-    const setup: SavedChartSetup = {
+  function createCurrentSetup({ id, name }: { id: string; name: string }): SavedChartSetup {
+    return {
+      chartHeight,
       draft,
       drawings: chartDrawings,
       exchangeId: selectedExchange?.id,
       executionIntent,
-      id: `setup-${Date.now()}`,
+      id,
       indicators: indicatorConfig,
       markers: tradeMarkers,
-      name: `${market.symbol} ${timeframe}`,
+      name,
       notes: savedSetupNotes,
       pair: market.symbol,
       plannedOrders: plannedOrderDrafts,
@@ -950,11 +1034,20 @@ export function ChartsWorkspace({
         trailingStop: isTrailingOn,
       },
       savedAt: new Date().toISOString(),
+      selectedRange,
       strategyId: executionIntent === 'strategy' ? selectedStrategy?.id : undefined,
       timeframe,
     };
+  }
 
-    setSavedSetups((currentSetups) => [setup, ...currentSetups.filter((item) => item.name !== setup.name)].slice(0, 5));
+  async function saveSetup() {
+    const savedAt = new Date().toISOString();
+    const setup = createCurrentSetup({
+      id: `setup-${Date.now()}`,
+      name: `${market.symbol} ${timeframe} · ${new Date(savedAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`,
+    });
+
+    setSavedSetups((currentSetups) => [setup, ...currentSetups].slice(0, maximumSavedSetups));
     setSetupMessage('Saving');
 
     try {
@@ -965,7 +1058,7 @@ export function ChartsWorkspace({
     }
   }
 
-  function reloadSetup(setup: SavedChartSetup) {
+  function reloadSetup(setup: SavedChartSetup, message = 'Loaded') {
     setupReloadPairRef.current = setup.pair;
     chooseSymbol(setup.pair);
     setTimeframe(setup.timeframe);
@@ -976,15 +1069,17 @@ export function ChartsWorkspace({
     setPlannedOrderDrafts(setup.plannedOrders);
     setExecutionIntent(setup.executionIntent ?? 'manual');
     setSelectedStrategyId(setup.strategyId ?? '');
+    setSelectedRange(setup.selectedRange ?? '1D');
     setSelectedMarkerType(null);
     setActiveChartTool('cursor');
-    setLeverage(setup.riskSettings.leverage);
-    setIsBreakEvenOn(setup.riskSettings.breakEven);
-    setIsTrailingOn(setup.riskSettings.trailingStop);
-    setExecutionMode(setup.riskSettings.executionMode);
+    setLeverage(setup.riskSettings.leverage ?? defaultPreferences.defaultLeverage);
+    setIsBreakEvenOn(setup.riskSettings.breakEven ?? defaultPreferences.breakEvenAutomation);
+    setIsTrailingOn(setup.riskSettings.trailingStop ?? defaultPreferences.trailingStopEnabled);
+    setExecutionMode(setup.riskSettings.executionMode ?? 'paper');
     setSelectedExchangeId(setup.exchangeId ?? defaultExchangeId);
+    setChartHeight(setup.chartHeight ?? 640);
     setSavedSetupNotes(setup.notes);
-    setSetupMessage('Loaded');
+    setSetupMessage(message);
   }
 
   function resetSetup() {
@@ -1008,6 +1103,7 @@ export function ChartsWorkspace({
         trailingStop: defaultPreferences.trailingStopEnabled,
       },
       savedAt: new Date().toISOString(),
+      selectedRange: '1D',
       strategyId: undefined,
       timeframe,
     });
@@ -1596,6 +1692,40 @@ export function ChartsWorkspace({
               <textarea aria-label="Scenario notes" maxLength={2000} onChange={(event) => setSavedSetupNotes(event.target.value)} placeholder="Notes" value={savedSetupNotes} />
             </div>
           </Card>
+
+          <Card className="analysis-setups-card">
+            <div className="bottom-card-header">
+              <h2>Analyses</h2>
+              <button onClick={() => void saveSetup()} type="button">+ Save</button>
+            </div>
+            <div className="analysis-autosave-row">
+              <span>Autosave</span>
+              <strong>{autoSavedAt ? formatSetupTime(autoSavedAt) : 'Ready'}</strong>
+            </div>
+            <div className="analysis-current-summary" aria-label="Current analysis summary">
+              {analysisSummaryItems({ drawings: chartDrawings, markers: tradeMarkers, notes: savedSetupNotes, orders: plannedOrderDrafts }).map((item) => (
+                <span key={item.label}>
+                  {item.label}
+                  <strong>{item.value}</strong>
+                </span>
+              ))}
+            </div>
+            <div className="analysis-setups-list" aria-label="Saved analysis setups">
+              {savedSetups.length ? (
+                savedSetups.slice(0, 5).map((setup) => (
+                  <button key={setup.id} onClick={() => reloadSetup(setup)} type="button">
+                    <span>
+                      <strong>{setup.name}</strong>
+                      <small>{setupSummary(setup)}</small>
+                    </span>
+                    <em>{formatSetupTime(setup.savedAt)}</em>
+                  </button>
+                ))
+              ) : (
+                <div className="analysis-setups-empty">No saved analysis yet</div>
+              )}
+            </div>
+          </Card>
         </div>
       </div>
 
@@ -2002,6 +2132,41 @@ function buildMarkerSyncRows(markers: TradeMarker[], draft: PositionDraft) {
     placed: Boolean(row.marker),
     value: row.marker ? formatUsd(row.marker.price) : typeof row.value === 'number' ? formatUsd(row.value) : '--',
   }));
+}
+
+function analysisSummaryItems({ drawings, markers, notes, orders }: { drawings: ChartDrawing[]; markers: TradeMarker[]; notes: string; orders: Order[] }) {
+  return [
+    { label: 'Tools', value: String(drawings.length) },
+    { label: 'Markers', value: String(markers.length) },
+    { label: 'Orders', value: String(orders.length) },
+    { label: 'Notes', value: notes.trim() ? 'Yes' : 'No' },
+  ];
+}
+
+function setupSummary(setup: SavedChartSetup) {
+  const drawings = setup.drawings?.length ?? 0;
+  const markers = setup.markers.length;
+  const orders = setup.plannedOrders.length;
+
+  return `${setup.pair} · ${setup.timeframe} · ${drawings} tools · ${markers} markers · ${orders} orders`;
+}
+
+function formatSetupTime(value: string) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return '--';
+  }
+
+  return new Intl.DateTimeFormat('fr-FR', { hour: '2-digit', minute: '2-digit' }).format(date);
+}
+
+function chartWorkspaceKey(pair: string, timeframe: Timeframe) {
+  return `${pair}:${timeframe}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function recalculateDraftSize(draft: PositionDraft): PositionDraft {
