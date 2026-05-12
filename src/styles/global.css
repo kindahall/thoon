@@ -474,6 +474,113 @@ body {
     linear-gradient(145deg, color-mix(in srgb, var(--warning) 92%, #fff), color-mix(in srgb, var(--risk) 68%, var(--warning))) !important;
 }
 
+.paper-proposals-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-color: color-mix(in srgb, var(--profit) 30%, var(--border)) !important;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--profit) 12%, transparent), transparent 42%),
+    color-mix(in srgb, var(--surface) 88%, transparent) !important;
+}
+
+.paper-proposals-card__head,
+.paper-proposal-row,
+.paper-proposal-row__metrics,
+.active-paper-session,
+.paper-position-list div {
+  display: flex;
+  align-items: center;
+}
+
+.paper-proposals-card__head {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.paper-proposals-card__head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.paper-proposals-card__head span,
+.paper-proposal-row__summary span,
+.paper-proposal-target span,
+.active-paper-session span,
+.paper-position-list span {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 820;
+}
+
+.paper-proposals-list {
+  display: grid;
+  gap: 8px;
+}
+
+.paper-proposal-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(210px, 0.9fr) auto auto;
+  gap: 10px;
+  min-height: 56px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-raised) 72%, transparent);
+}
+
+.paper-proposal-row.is-active {
+  border-color: color-mix(in srgb, var(--primary) 58%, var(--border));
+  background: color-mix(in srgb, var(--primary) 12%, var(--surface-raised));
+}
+
+.paper-proposal-row__summary {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.paper-proposal-row__summary strong {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.paper-proposal-target {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.paper-proposal-target select {
+  width: 100%;
+  min-width: 0;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-weight: 780;
+}
+
+.paper-proposal-row__metrics {
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.paper-proposal-row__metrics span {
+  min-width: 62px;
+  padding: 6px 8px;
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 850;
+}
+
 .chart-panel--terminal,
 .trade-panel--terminal,
 .planned-orders-card,
@@ -13463,6 +13570,29 @@ button {
   color: var(--warning);
 }
 
+.active-paper-session {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid color-mix(in srgb, var(--profit) 36%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--profit) 10%, var(--surface-raised));
+}
+
+.active-paper-session span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.active-paper-session strong {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .position-builder-fields--terminal {
   gap: 9px;
 }
@@ -13616,6 +13746,39 @@ button {
   min-height: 46px;
   background: var(--primary);
   border-color: color-mix(in srgb, var(--primary) 72%, black);
+}
+
+.paper-position-list {
+  display: grid;
+  gap: 7px;
+}
+
+.paper-position-list div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-raised) 72%, transparent);
+}
+
+.paper-position-list span {
+  min-width: 0;
+}
+
+.paper-position-list strong {
+  margin-right: 5px;
+  color: var(--text);
+}
+
+.paper-position-list button {
+  color: var(--primary);
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 850;
 }
 
 .trade-panel--terminal .trade-panel__actions {
@@ -13983,9 +14146,15 @@ button {
   .trade-pair-control,
   .trade-risk-card,
   .trade-compact-grid,
+  .active-paper-session,
   .charts-terminal-grid .bottom-panels,
+  .paper-proposal-row,
   .planned-orders-table {
     grid-template-columns: 1fr;
+  }
+
+  .paper-proposal-row__metrics {
+    justify-content: stretch;
   }
 
   .planned-orders-table > span {

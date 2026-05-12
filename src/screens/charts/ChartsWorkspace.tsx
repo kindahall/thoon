@@ -29,13 +29,13 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNod
 import { TradingChart, type ChartDrawing, type ChartDrawingType, type ChartIndicatorConfig, type TradeMarker, type TradeMarkerType } from '../../components/chart/TradingChart';
 import { TradingViewChart } from '../../components/chart/TradingViewChart';
 import { StrategyAgentDrawer } from '../../components/agent/StrategyAgentDrawer';
-import { Button, Card, ErrorState, HelpPopover, IconButton, InfoButton, Modal, TooltipInfo } from '../../components/ui';
+import { Badge, Button, Card, ErrorState, HelpPopover, IconButton, InfoButton, Modal, TooltipInfo } from '../../components/ui';
 import { useBinanceLiveMarkets } from '../../hooks/useBinanceLiveMarkets';
-import { apiJson, postJson } from '../../services/api-client';
+import { apiJson, patchJson, postJson } from '../../services/api-client';
 import { buildRiskOrderInputFromDraft, evaluateRiskEngine, lossPercentFromPnl, type RiskEngineCheck } from '../../services/risk-engine';
 import { getTradingErrorDefinition } from '../../services/trading-error-service';
 import type { Candle, MarketCategory, MarketPair, PositionDraft, Timeframe } from '../../types/market';
-import type { AgentReport, AgentRun, AgentSettings, AgentSuggestion, Bot as TradingBot, ExchangeConnection, JournalTrade, Order, OrderExecutionSource, Position, RiskRules, Strategy, StrategyVersion, TradeLimits, UserPreferences } from '../../types/trading';
+import type { AgentReport, AgentRun, AgentSettings, AgentSuggestion, BacktestReport, Bot as TradingBot, ExchangeConnection, Fill, JournalTrade, Order, OrderExecutionSource, PaperTestSession, Position, RiskRules, Strategy, StrategyVersion, TradeLimits, UserPreferences } from '../../types/trading';
 import { normalizeCandle, sanitizeCandles } from '../../utils/candles';
 import {
   adxSeries,
@@ -75,14 +75,20 @@ type ChartsWorkspaceProps = {
   agentSettings: AgentSettings;
   agentSuggestions: AgentSuggestion[];
   agentVersions: StrategyVersion[];
+  backtestReports: BacktestReport[];
   bots: TradingBot[];
   defaultPreferences: UserPreferences;
   exchangeConnections: ExchangeConnection[];
   initialPair?: string;
+  initialPaperSessionId?: string;
+  initialReportId?: string;
+  initialStrategyId?: string;
+  initialTimeframe?: string;
   journalTrades: JournalTrade[];
   marketPairs: MarketPair[];
   openOrders: Order[];
   orderHistory: Order[];
+  paperSessions: PaperTestSession[];
   positions: Position[];
   riskRules: RiskRules;
   strategies: Strategy[];
@@ -108,6 +114,11 @@ const savedSetupStorageKey = 'thoon.savedSetups';
 const maximumSavedSetups = 8;
 const publicRestExchangeIds = new Set(['bybit', 'okx', 'bitget', 'kraken', 'kucoin', 'coinbase-advanced']);
 const defaultIndicatorConfig = defaultChartIndicatorConfig;
+
+function normalizeChartTimeframeParam(value?: string): Timeframe | undefined {
+  return chartTimeframes.find((timeframe) => timeframe === value);
+}
+
 type IndicatorCategory = 'Trend' | 'Momentum' | 'Volatility' | 'Volume';
 type IndicatorField = {
   key: string;
@@ -211,14 +222,20 @@ export function ChartsWorkspace({
   agentSettings,
   agentSuggestions,
   agentVersions,
+  backtestReports,
   bots: _bots,
   defaultPreferences,
   exchangeConnections,
   initialPair,
+  initialPaperSessionId,
+  initialReportId,
+  initialStrategyId,
+  initialTimeframe,
   journalTrades,
   marketPairs,
   openOrders,
   orderHistory,
+  paperSessions,
   positions,
   riskRules,
   strategies,
@@ -240,7 +257,7 @@ export function ChartsWorkspace({
   const defaultSymbol = resolveInitialSymbol(liveMarketPairs, initialPair);
   const [selectedSymbol, setSelectedSymbol] = useState(defaultSymbol);
   const [selectedPairTheme, setSelectedPairTheme] = useState<MarketCategory>('all');
-  const [timeframe, setTimeframe] = useState<Timeframe>('15m');
+  const [timeframe, setTimeframe] = useState<Timeframe>(() => normalizeChartTimeframeParam(initialTimeframe) ?? '15m');
   const market = useMemo(() => liveMarketPairs.find((pair) => pair.symbol === selectedSymbol) ?? liveMarketPairs[0], [liveMarketPairs, selectedSymbol]);
   const hasBinancePrices = market.exchange === 'Binance';
   const [draft, setDraft] = useState(market.draft);
@@ -252,11 +269,17 @@ export function ChartsWorkspace({
   const [activeChartTool, setActiveChartTool] = useState<ChartToolId>('cursor');
   const [executionMode, setExecutionMode] = useState<'paper' | 'live'>('paper');
   const [executionIntent, setExecutionIntent] = useState<TradeExecutionIntent>('manual');
-  const [selectedStrategyId, setSelectedStrategyId] = useState('');
+  const [selectedStrategyId, setSelectedStrategyId] = useState(initialStrategyId ?? '');
   const [chartEngine, setChartEngine] = useState<ChartEngine>('thoon');
   const [leverage, setLeverage] = useState(defaultPreferences.defaultLeverage);
   const [chartHeight, setChartHeight] = useState(640);
   const [selectedRange, setSelectedRange] = useState<ChartRange>('1D');
+  const [paperPositionRecords, setPaperPositionRecords] = useState<Position[]>(positions);
+  const [paperProposalRecords, setPaperProposalRecords] = useState<PaperTestSession[]>(paperSessions);
+  const [selectedPaperSessionId, setSelectedPaperSessionId] = useState(initialPaperSessionId ?? '');
+  const [paperProposalTargets, setPaperProposalTargets] = useState<Record<string, string>>(() =>
+    initialPaperSessionId && initialPair ? { [initialPaperSessionId]: decodeURIComponent(initialPair) } : {},
+  );
   const [noteFormats, setNoteFormats] = useState<NoteFormat[]>([]);
   const [chartCandles, setChartCandles] = useState<Candle[]>([]);
   const [chartCandleStatus, setChartCandleStatus] = useState<'loading' | 'live' | 'fallback'>(() => (market.candles.length ? 'live' : 'loading'));
@@ -273,6 +296,7 @@ export function ChartsWorkspace({
   const [autoSavedAt, setAutoSavedAt] = useState<string>();
   const [hasLoadedSavedSetups, setHasLoadedSavedSetups] = useState(false);
   const hasHydratedActivePairRef = useRef(false);
+  const initialPaperSessionAppliedRef = useRef(false);
   const hydratedSetupKeyRef = useRef<string | null>(null);
   const setupReloadPairRef = useRef<string | null>(null);
   const previousMarketSymbolRef = useRef(market.symbol);
@@ -286,6 +310,20 @@ export function ChartsWorkspace({
   const strategyOptions = useMemo(() => strategies.filter((strategy) => strategy.status !== 'archived'), [strategies]);
   const selectedStrategy = useMemo(() => strategyOptions.find((strategy) => strategy.id === selectedStrategyId), [selectedStrategyId, strategyOptions]);
   const selectedStrategyMatchesMarket = Boolean(selectedStrategy && selectedStrategy.market === market.symbol);
+  const paperProposals = useMemo(() => paperProposalRecords.filter((session) => session.status === 'prepared' || session.status === 'running').slice(0, 8), [paperProposalRecords]);
+  const selectedPaperSession = useMemo(() => paperProposalRecords.find((session) => session.id === selectedPaperSessionId), [paperProposalRecords, selectedPaperSessionId]);
+  const selectedPaperReport = useMemo(
+    () => backtestReports.find((report) => report.id === (selectedPaperSession?.reportId ?? initialReportId)),
+    [backtestReports, initialReportId, selectedPaperSession?.reportId],
+  );
+  const isPaperProposalSymbolOverride = Boolean(
+    selectedPaperSession &&
+      selectedStrategy &&
+      executionMode === 'paper' &&
+      executionIntent === 'strategy' &&
+      selectedPaperSession.strategyId === selectedStrategy.id &&
+      selectedStrategy.market !== market.symbol,
+  );
   const currentWorkspaceKey = useMemo(() => chartWorkspaceKey(market.symbol, timeframe), [market.symbol, timeframe]);
   const candles = useMemo(() => sanitizeCandles(chartCandles), [chartCandles]);
   const hasChartCandles = candles.length > 0;
@@ -331,8 +369,9 @@ export function ChartsWorkspace({
     : undefined;
   const liveExchange = selectedExchange;
   const accountBalance = 25000;
-  const marginUsed = positions.reduce((sum, position) => sum + position.margin, 0);
-  const availableBalance = accountBalance + positions.reduce((sum, position) => sum + position.pnl, 0) - marginUsed;
+  const marketPaperPositions = paperPositionRecords.filter((position) => position.exchange === 'Paper' && position.symbol === market.symbol);
+  const marginUsed = paperPositionRecords.reduce((sum, position) => sum + position.margin, 0);
+  const availableBalance = accountBalance + paperPositionRecords.reduce((sum, position) => sum + position.pnl, 0) - marginUsed;
   const todayLossPercent = lossPercentFromPnl(sumClosedPnl(journalTrades, 1), accountBalance);
   const weeklyLossPercent = lossPercentFromPnl(sumClosedPnl(journalTrades, 7), accountBalance);
   const ordersToday = countOrdersInDays([...openOrders, ...plannedOrderDrafts, ...orderHistory], 1);
@@ -347,7 +386,7 @@ export function ChartsWorkspace({
       draft,
       leverage,
       marginRequired: margin,
-      openPositions: positions.length,
+        openPositions: paperPositionRecords.length,
       ordersToday,
       weeklyLossPercent,
     }),
@@ -355,7 +394,7 @@ export function ChartsWorkspace({
     tradeLimits,
   });
   const liveOrderChecks = liveRiskResult.checks;
-  const strategyExecutionReady = executionIntent === 'manual' || Boolean(selectedStrategy && selectedStrategyMatchesMarket);
+  const strategyExecutionReady = executionIntent === 'manual' || Boolean(selectedStrategy && (selectedStrategyMatchesMarket || isPaperProposalSymbolOverride));
   const isExecutionBlocked = !hasCompletePosition || !strategyExecutionReady;
   const isLiveOrderBlocked = isExecutionBlocked || !liveRiskResult.allowed;
 
@@ -392,6 +431,21 @@ export function ChartsWorkspace({
 
     hasHydratedActivePairRef.current = true;
   }, [initialPair, liveMarketPairs]);
+
+  useEffect(() => {
+    if (!initialPaperSessionId || initialPaperSessionAppliedRef.current || liveMarketPairs.length === 0) {
+      return;
+    }
+
+    const session = paperProposalRecords.find((item) => item.id === initialPaperSessionId);
+
+    if (!session) {
+      return;
+    }
+
+    initialPaperSessionAppliedRef.current = true;
+    applyPaperProposal(session.id, initialPair ? decodeURIComponent(initialPair) : session.market, 'Paper proposal armed');
+  }, [initialPair, initialPaperSessionId, liveMarketPairs, paperProposalRecords]);
 
   useEffect(() => {
     window.localStorage.setItem(activePairStorageKey, selectedSymbol);
@@ -866,6 +920,88 @@ export function ChartsWorkspace({
     setSetupMessage(`Loaded · ${strategy.name}`);
   }
 
+  async function updatePaperSession(sessionId: string, patch: { note?: string; pnlDelta?: number; rMultipleDelta?: number; status?: PaperTestSession['status']; tradeDelta?: number }) {
+    try {
+      const nextSession = await patchJson<PaperTestSession>(`/api/paper-tests/${encodeURIComponent(sessionId)}`, patch);
+      setPaperProposalRecords((currentSessions) => currentSessions.map((session) => (session.id === nextSession.id ? nextSession : session)));
+      return nextSession;
+    } catch {
+      setSetupMessage('Paper session not saved');
+      return undefined;
+    }
+  }
+
+  function applyPaperProposal(sessionId: string, targetSymbol?: string, message = 'Paper proposal loaded') {
+    const session = paperProposalRecords.find((item) => item.id === sessionId);
+    const report = session ? backtestReports.find((item) => item.id === session.reportId) : undefined;
+    const strategy = session ? strategyOptions.find((item) => item.id === session.strategyId) : undefined;
+    const nextSymbol = targetSymbol || session?.market || report?.market || strategy?.market;
+    const targetPair = nextSymbol ? liveMarketPairs.find((pair) => pair.symbol === nextSymbol) : undefined;
+
+    if (!session || !strategy || !targetPair) {
+      setSetupMessage('Paper proposal incomplete');
+      return;
+    }
+
+    const nextDraft = buildPaperProposalDraft(report, strategy, targetPair);
+    const nextTimeframe = report?.timeframe ?? session.timeframe;
+
+    setupReloadPairRef.current = targetPair.symbol;
+    chooseSymbol(targetPair.symbol);
+    setTimeframe(nextTimeframe);
+    setDraft(nextDraft);
+    setTradeMarkers(markersFromDraft(nextDraft, targetPair.symbol));
+    setPlannedOrderDrafts([]);
+    setExecutionMode('paper');
+    setExecutionIntent('strategy');
+    setSelectedStrategyId(strategy.id);
+    setSelectedPaperSessionId(session.id);
+    setPaperProposalTargets((currentTargets) => ({ ...currentTargets, [session.id]: targetPair.symbol }));
+    setLeverage(report?.executionSettings?.leverage ?? defaultPreferences.defaultLeverage);
+    setSavedSetupNotes(
+      targetPair.symbol === session.market
+        ? `Paper live: ${strategy.name} · ${session.market} · ${nextTimeframe}`
+        : `Paper template: ${strategy.name} · source ${session.market} · target ${targetPair.symbol} · ${nextTimeframe}`,
+    );
+    setSetupMessage(targetPair.symbol === session.market ? message : `${message} · override ${targetPair.symbol}`);
+    router.replace(
+      `/charts?pair=${encodeURIComponent(targetPair.symbol)}&strategyId=${encodeURIComponent(strategy.id)}&timeframe=${encodeURIComponent(nextTimeframe)}&reportId=${encodeURIComponent(report?.id ?? session.reportId)}&paperSessionId=${encodeURIComponent(session.id)}`,
+      { scroll: false },
+    );
+    void updatePaperSession(session.id, {
+      note:
+        targetPair.symbol === session.market
+          ? `Paper proposal opened in Charts on ${targetPair.symbol}.`
+          : `Paper proposal opened in Charts on ${targetPair.symbol} with source settings from ${session.market}.`,
+      status: 'running',
+    });
+  }
+
+  async function closePaperPosition(position: Position) {
+    setSetupMessage('Closing paper');
+
+    try {
+      const result = await postJson<{ fill: Fill; order: Order; position: Position; trade: JournalTrade }>(`/api/positions/${encodeURIComponent(position.id)}/close`, {
+        markPrice: visibleMarketPrice,
+      });
+
+      setPaperPositionRecords((currentPositions) => currentPositions.filter((item) => item.id !== position.id));
+      setSetupMessage(`Paper result ${formatUsd(result.position.pnl)}`);
+
+      if (selectedPaperSession) {
+        await updatePaperSession(selectedPaperSession.id, {
+          note: `Closed paper ${result.position.side} ${result.position.symbol}: ${formatUsd(result.position.pnl)}.`,
+          pnlDelta: result.position.pnl,
+          rMultipleDelta: calculatePaperSessionRMultiple(result.position.pnl, selectedPaperReport),
+          status: 'running',
+          tradeDelta: 1,
+        });
+      }
+    } catch (error) {
+      setSetupMessage(error instanceof Error ? error.message : 'Close failed');
+    }
+  }
+
   function validateExecutionDraft() {
     if (!hasCompletePosition) {
       setSetupMessage('Place Entry + SL + TP');
@@ -877,7 +1013,7 @@ export function ChartsWorkspace({
       return false;
     }
 
-    if (executionIntent === 'strategy' && !selectedStrategyMatchesMarket) {
+    if (executionIntent === 'strategy' && !selectedStrategyMatchesMarket && !isPaperProposalSymbolOverride) {
       setSetupMessage('Load strategy market');
       return false;
     }
@@ -887,12 +1023,14 @@ export function ChartsWorkspace({
 
   function tradeExecutionPayload(mode: 'paper' | 'live') {
     return {
+      allowPaperSymbolOverride: mode === 'paper' && isPaperProposalSymbolOverride,
       draft,
       exchangeId: selectedExchange?.id,
       exchangeName: selectedExchange?.name,
       executionSource: executionIntent,
       leverage,
       mode,
+      paperSessionId: selectedPaperSession?.id,
       strategyId: executionIntent === 'strategy' ? selectedStrategy?.id : undefined,
       strategyName: executionIntent === 'strategy' ? selectedStrategy?.name : undefined,
       symbol: market.symbol,
@@ -916,9 +1054,20 @@ export function ChartsWorkspace({
     setSetupMessage('Routing paper');
 
     try {
-      const result = await postJson<{ allowed: boolean }>('/api/trading/execute', tradeExecutionPayload('paper'));
+      const result = await postJson<{ allowed: boolean; order?: Order; position?: Position }>('/api/trading/execute', tradeExecutionPayload('paper'));
 
       setSetupMessage(result.allowed ? (executionIntent === 'strategy' ? 'Strategy paper filled' : 'Manual paper filled') : 'Paper blocked');
+
+      if (result.position) {
+        setPaperPositionRecords((currentPositions) => [result.position as Position, ...currentPositions]);
+      }
+
+      if (result.allowed && selectedPaperSession) {
+        void updatePaperSession(selectedPaperSession.id, {
+          note: `Paper position opened on ${market.symbol} from Charts at ${formatUsd(draft.entry)}.`,
+          status: 'running',
+        });
+      }
     } catch (error) {
       setSetupMessage(error instanceof Error ? error.message : 'Paper failed');
     }
@@ -1311,6 +1460,59 @@ export function ChartsWorkspace({
         })}
       </div>
 
+      {paperProposals.length > 0 ? (
+        <Card className="paper-proposals-card" aria-label="Paper trading proposals">
+          <div className="paper-proposals-card__head">
+            <div>
+              <h2>Paper Trading Live</h2>
+              <span>Propositions validees par backtest, executees dans Charts avec argent fictif.</span>
+            </div>
+            <Badge tone="positive">{paperProposals.length} ready</Badge>
+          </div>
+          <div className="paper-proposals-list">
+            {paperProposals.map((session) => {
+              const report = backtestReports.find((item) => item.id === session.reportId);
+              const strategy = strategyOptions.find((item) => item.id === session.strategyId);
+              const targetSymbol = paperProposalTargets[session.id] ?? session.market;
+              const isActiveSession = session.id === selectedPaperSessionId;
+
+              return (
+                <div className={isActiveSession ? 'paper-proposal-row is-active' : 'paper-proposal-row'} key={session.id}>
+                  <div className="paper-proposal-row__summary">
+                    <strong>{strategy?.name ?? session.strategyId}</strong>
+                    <span>
+                      Source {session.market} · {session.timeframe} · score {session.botScore}/100 · {session.tradesRecorded} trades paper
+                    </span>
+                  </div>
+                  <label className="paper-proposal-target">
+                    <span>Crypto</span>
+                    <select
+                      aria-label={`Target pair for ${strategy?.name ?? session.strategyId}`}
+                      onChange={(event) => setPaperProposalTargets((currentTargets) => ({ ...currentTargets, [session.id]: event.target.value }))}
+                      value={targetSymbol}
+                    >
+                      {liveMarketPairs.map((pair) => (
+                        <option key={pair.symbol} value={pair.symbol}>
+                          {pair.symbol} · {formatUsd(pair.lastPrice)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="paper-proposal-row__metrics">
+                    <span>{report ? `${report.profitFactor.toFixed(2)} PF` : 'PF --'}</span>
+                    <span>{report ? `${report.winRate.toFixed(1)}% WR` : 'WR --'}</span>
+                    <span className={session.pnl >= 0 ? 'positive' : 'negative'}>{formatUsd(session.pnl)}</span>
+                  </div>
+                  <Button onClick={() => applyPaperProposal(session.id, targetSymbol)} size="sm" variant={isActiveSession ? 'primary' : 'secondary'}>
+                    {isActiveSession ? 'Arme' : 'Charger'}
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      ) : null}
+
       <div className="charts-terminal-grid">
         <Card className="chart-panel chart-panel--terminal" style={{ '--chart-height': `${chartHeight}px` } as CSSProperties}>
           <div className="chart-panel__bar">
@@ -1599,11 +1801,36 @@ export function ChartsWorkspace({
               <span className="trade-source-note">Trade libre sur tes prix, avec confirmation live.</span>
             )}
             {executionIntent === 'strategy' && selectedStrategy ? (
-              <span className={selectedStrategyMatchesMarket ? 'trade-source-note is-linked' : 'trade-source-note is-warning'}>
-                {selectedStrategyMatchesMarket ? `${selectedStrategy.name} liee a ${market.symbol}` : `Charge ${selectedStrategy.market} pour executer cette strategie.`}
+              <span className={selectedStrategyMatchesMarket || isPaperProposalSymbolOverride ? 'trade-source-note is-linked' : 'trade-source-note is-warning'}>
+                {selectedStrategyMatchesMarket
+                  ? `${selectedStrategy.name} liee a ${market.symbol}`
+                  : isPaperProposalSymbolOverride
+                    ? `Template paper ${selectedPaperSession?.market ?? selectedStrategy.market} applique a ${market.symbol}`
+                    : `Charge ${selectedStrategy.market} pour executer cette strategie.`}
               </span>
             ) : null}
           </div>
+
+          {selectedPaperSession ? (
+            <div className="active-paper-session" aria-label="Active paper proposal">
+              <span>
+                Paper live
+                <strong>{selectedPaperSession.market} · {selectedPaperSession.timeframe}</strong>
+              </span>
+              <span>
+                Target
+                <strong>{market.symbol}</strong>
+              </span>
+              <span>
+                Score
+                <strong>{selectedPaperSession.botScore}/100</strong>
+              </span>
+              <span>
+                Result
+                <strong className={selectedPaperSession.pnl >= 0 ? 'positive' : 'negative'}>{formatUsd(selectedPaperSession.pnl)}</strong>
+              </span>
+            </div>
+          ) : null}
 
           <div className="position-builder-fields position-builder-fields--terminal">
             <BuilderField label="Entry" onChange={(value) => upsertMarker('entry', value)} value={draft.entry} />
@@ -1683,6 +1910,27 @@ export function ChartsWorkspace({
           <Button className="execute-button" disabled={isExecutionBlocked} onClick={executionMode === 'live' ? requestLiveOrderConfirmation : executePaperOrder} variant="primary">
             {executionMode === 'live' ? (executionIntent === 'strategy' ? 'Execute Strategy Live' : 'Execute Manual Live') : executionIntent === 'strategy' ? 'Execute Strategy Paper' : 'Execute Manual Paper'}
           </Button>
+
+          {marketPaperPositions.length > 0 ? (
+            <div className="paper-position-list" aria-label="Open paper positions">
+              {marketPaperPositions.slice(0, 3).map((position) => {
+                const livePnl = calculateLivePositionPnl(position, visibleMarketPrice);
+
+                return (
+                  <div key={position.id}>
+                    <span>
+                      <strong>{position.side}</strong>
+                      {position.size.toFixed(4)} {market.base}
+                    </span>
+                    <span className={livePnl >= 0 ? 'positive' : 'negative'}>{formatUsd(livePnl)}</span>
+                    <button onClick={() => void closePaperPosition(position)} type="button">
+                      Close
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
 
           <div className="trade-panel__actions">
             <Link
@@ -2283,6 +2531,53 @@ function recalculateDraftSize(draft: PositionDraft): PositionDraft {
     ...draft,
     size: Number((riskAmount / stopDistance).toFixed(4)),
   };
+}
+
+function buildPaperProposalDraft(report: BacktestReport | undefined, strategy: Strategy, targetPair: MarketPair): PositionDraft {
+  const reportDraft = report?.openPosition
+    ? {
+        direction: report.openPosition.side,
+        entry: report.openPosition.entry,
+        riskPercent: report.executionSettings?.riskPerTradePct ?? strategy.riskPerTrade,
+        size: report.openPosition.size,
+        stopLoss: report.openPosition.stop,
+        takeProfit:
+          report.openPosition.side === 'long'
+            ? report.openPosition.entry + Math.abs(report.openPosition.entry - report.openPosition.stop) * (report.executionSettings?.takeProfitR ?? 2)
+            : report.openPosition.entry - Math.abs(report.openPosition.entry - report.openPosition.stop) * (report.executionSettings?.takeProfitR ?? 2),
+      }
+    : undefined;
+  const baseDraft = reportDraft ?? strategy.positionDraft ?? targetPair.draft;
+  const targetPrice = roundPrice(targetPair.lastPrice || targetPair.draft.entry || baseDraft.entry || 1);
+  const direction = report?.executionSettings?.directionMode === 'short-only' ? 'short' : report?.executionSettings?.directionMode === 'long-only' ? 'long' : baseDraft.direction;
+  const baseEntry = Math.max(Math.abs(baseDraft.entry), 1);
+  const stopRatio = Math.max(Math.abs(baseDraft.entry - baseDraft.stopLoss) / baseEntry, 0.003);
+  const rewardRatio = Math.max(Math.abs(baseDraft.takeProfit - baseDraft.entry) / baseEntry, stopRatio * (report?.executionSettings?.takeProfitR ?? 2));
+  const stopLoss = direction === 'long' ? targetPrice * (1 - stopRatio) : targetPrice * (1 + stopRatio);
+  const takeProfit = direction === 'long' ? targetPrice * (1 + rewardRatio) : targetPrice * (1 - rewardRatio);
+
+  return recalculateDraftSize({
+    direction,
+    entry: targetPrice,
+    riskPercent: report?.executionSettings?.riskPerTradePct ?? strategy.riskPerTrade ?? baseDraft.riskPercent,
+    size: baseDraft.size,
+    stopLoss: roundPrice(stopLoss),
+    takeProfit: roundPrice(takeProfit),
+  });
+}
+
+function calculateLivePositionPnl(position: Position, markPrice: number) {
+  const direction = position.side === 'long' ? 1 : -1;
+
+  return (markPrice - position.entryPrice) * position.size * direction;
+}
+
+function calculatePaperSessionRMultiple(pnl: number, report?: BacktestReport) {
+  const accountSize = report?.initialCapital ?? 10000;
+  const riskPct = report?.executionSettings?.riskPerTradePct ?? 1;
+  const riskAmount = Math.max(1, accountSize * (riskPct / 100));
+
+  return pnl / riskAmount;
 }
 
 function calculateRiskReward(draft: PositionDraft) {

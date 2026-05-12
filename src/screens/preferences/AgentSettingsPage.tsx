@@ -14,6 +14,8 @@ type AgentSettingsPageProps = {
     endpoint: string;
     model: string;
     provider: string;
+    sandbox?: string;
+    status?: string;
   };
   settings: AgentSettings;
 };
@@ -108,6 +110,8 @@ export function AgentSettingsPage({ aiStatus, settings }: AgentSettingsPageProps
     await persist(draftRef.current);
   }
 
+  const providerStatusLabel = aiStatus.provider === 'codex' ? (aiStatus.configured ? 'forfait connecte' : 'Codex non connecte') : aiStatus.configured ? 'configured' : 'missing key';
+
   return (
     <section className="agent-settings-page" aria-label="Strategy Agent preferences">
       <div className="workspace-header workspace-header--compact">
@@ -154,8 +158,14 @@ export function AgentSettingsPage({ aiStatus, settings }: AgentSettingsPageProps
             </div>
             <div className="agent-never-row">
               <span>Endpoint</span>
-              <strong>{aiStatus.endpoint} · {aiStatus.configured ? 'configured' : 'missing key'}</strong>
+              <strong>{aiStatus.endpoint} · {providerStatusLabel}</strong>
             </div>
+            {aiStatus.provider === 'codex' ? (
+              <div className="agent-never-row">
+                <span>Codex sandbox</span>
+                <strong>{aiStatus.sandbox ?? 'read-only'}</strong>
+              </div>
+            ) : null}
           </Card>
 
           <Card className="agent-settings-card">

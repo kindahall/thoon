@@ -29,9 +29,9 @@ npm run verify
 
 ## Strategy Agent
 
-- `THOON_AGENT_AI_PROVIDER=codex` runs the local server-side research provider for backtesting, variants and paper tests.
+- `THOON_AGENT_AI_PROVIDER=codex` runs Thoonix through the local Codex CLI logged into the machine's ChatGPT/Codex plan; no OpenAI API key is required for that mode.
 - `THOON_AGENT_AI_PROVIDER=openai` or `openai-compatible` can call a remote model from the server only.
-- `THOON_AGENT_AI_API_KEY` must never be exposed in client code.
+- `THOON_AGENT_AI_API_KEY` is only for remote OpenAI-compatible providers and must never be exposed in client code.
 - TradingView MCP is expected under Codex MCP server name `tradingview`. Check it with `codex mcp list`; Thoonix uses it only for symbol/chart/TA research and public strategy concept import before Thoon backtests and paper-tests the result.
 - Strategy research can be aggressive; live launch, live orders, API key changes and Risk Rules edits remain blocked outside explicit production flows.
 - `/api/agent/cron` is scheduled every 5 minutes by `vercel.json` to research, innovate and run strict live-candle validation batches.

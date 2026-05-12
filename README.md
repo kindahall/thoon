@@ -179,14 +179,15 @@ Pour staging, pars de `.env.staging.example` : auth locale requise, secrets long
 
 Pour le live, une clé Binance avec permission trade doit être sauvegardée, testée, puis visible en statut `active`. Par défaut `THOON_LIVE_ORDER_ENDPOINT=test` utilise l’endpoint signé de test Binance ; le passage à `live` doit rester une bascule volontaire après smoke test contrôlé.
 
-Pour l’agent stratégie local :
+Pour Thoonix en mode agent direct :
 
 ```bash
 THOON_AGENT_AI_PROVIDER=codex
-THOON_AGENT_CODEX_SANDBOX=danger-full-access
+THOON_AGENT_CODEX_BINARY=/Applications/Codex.app/Contents/Resources/codex
+THOON_AGENT_CODEX_SANDBOX=read-only
 ```
 
-En mode `codex`, Thoonix lance le CLI Codex local via `codex exec`; le chemin peut être forcé avec `THOON_AGENT_CODEX_BINARY`. L’agent stratégie ne doit jamais inventer un résultat. Les crons sauvegardent uniquement des backtests calculés depuis des bougies live strictes; si TradingView ne donne aucune nouvelle piste publique, l’agent crée des stratégies d’innovation séparées puis les teste avant tout classement.
+En mode `codex`, Thoonix lance le Codex CLI local connecté au forfait ChatGPT/Codex de la machine, sans clé OpenAI API serveur. L’agent stratégie ne doit jamais inventer un résultat. Les crons sauvegardent uniquement des backtests calculés depuis des bougies live strictes; si TradingView ne donne aucune nouvelle piste publique, l’agent crée des stratégies d’innovation séparées puis les teste avant tout classement.
 
 Le MCP TradingView utilisé par Thoonix est enregistré côté Codex sous le nom `tradingview` avec `npx -y tradingview-mcp-server@0.6.1`. Vérification locale :
 
@@ -194,11 +195,11 @@ Le MCP TradingView utilisé par Thoonix est enregistré côté Codex sous le nom
 codex mcp list
 ```
 
-Thoon expose ce statut dans le chat Agent et passe le contexte MCP à `codex exec`. Quand l’utilisateur demande une analyse TradingView, un chart, une recherche de symbole ou une stratégie importable, Thoonix peut utiliser le MCP pour orienter la recherche, sauvegarder des concepts publics, puis Thoon valide chaque idée avec ses propres backtests et paper tests.
+Thoon expose ce statut dans le chat Agent. Quand l’utilisateur demande une analyse TradingView, un chart, une recherche de symbole ou une stratégie importable, Thoonix peut utiliser le contexte MCP pour orienter la recherche, sauvegarder des concepts publics, puis Thoon valide chaque idée avec ses propres backtests et paper tests.
 
 La boucle Kronos learning enregistre des prévisions par marché/timeframe, évalue les anciennes prévisions quand les candles futures sont disponibles, puis calcule un poids de confiance transmis à Thoonix. Ce poids sert seulement à prioriser la recherche et les backtests; il ne remplace jamais les résultats calculés, les paper tests ou le Risk Engine.
 
-Pour brancher un provider distant plus tard, garde l’appel serveur :
+Pour brancher un provider compatible OpenAI, garde l’appel serveur :
 
 ```bash
 THOON_AGENT_AI_PROVIDER=openai

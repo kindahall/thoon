@@ -17,6 +17,9 @@ function isLegacyLocalAgentChatMessage(message: AgentChatMessage) {
     message.content.startsWith('Connexion directe a Codex CLI en cours') ||
     message.content.startsWith('La reponse instantanee est deja affichee') ||
     message.content.startsWith('La reponse instantanee est affichee, mais') ||
+    message.content.startsWith('Codex indisponible') ||
+    message.content.startsWith('Codex CLI est bien configure') ||
+    message.content.startsWith("Codex CLI n'a pas pu repondre") ||
     message.content.startsWith('Thoonix timed out while waiting for Codex CLI')
   );
 }

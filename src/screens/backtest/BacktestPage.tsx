@@ -416,11 +416,11 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
           <Button disabled={isBacktestRunning || !report} icon={saveButtonIcon} onClick={saveReport} size="sm" variant="ghost">
             Save Report
           </Button>
-          <Link className="ui-button ui-button--secondary ui-button--sm" href={`/backtest/replay?pair=${encodeURIComponent(symbol)}&strategyId=${encodeURIComponent(strategyId)}`}>
+          <Link className="ui-button ui-button--secondary ui-button--sm" href={`/charts?pair=${encodeURIComponent(symbol)}&strategyId=${encodeURIComponent(strategyId)}&timeframe=${encodeURIComponent(timeframe)}`}>
             <span className="ui-button__icon">
               <RotateCcw size={15} />
             </span>
-            <span>Paper Test</span>
+            <span>Paper Trading</span>
           </Link>
           {botDraftHref ? (
             <Link className="ui-button ui-button--ghost ui-button--sm" href={botDraftHref}>
@@ -647,7 +647,7 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
             <Card className="backtest-agent-paper-card">
               <div className="backtest-panel-head">
                 <div>
-                  <h2>Agent Paper Verdict</h2>
+                <h2>Agent Paper Proposal</h2>
                   <span>{paperVerdict.reason}</span>
                 </div>
                 <Badge tone={paperVerdict.tone}>{paperVerdict.score}/100</Badge>
@@ -659,7 +659,7 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
                 <SummaryMetric label="Checksum" value={report.dataWindow?.candleChecksum?.slice(0, 12) ?? 'missing'} />
               </div>
               <div className="backtest-agent-paper-copy">
-                <strong>{paperVerdict.eligible ? 'Recommended for paper test only' : 'Not recommended for paper test yet'}</strong>
+                <strong>{paperVerdict.eligible ? 'Recommended for live paper only' : 'Not recommended for paper yet'}</strong>
                 <span>{paperVerdict.usagePlan}</span>
               </div>
               {paperVerdict.eligible ? <PaperTestRecommendationActions reportId={report.id} strategyId={report.strategyId} /> : null}
@@ -711,9 +711,9 @@ export function BacktestPage({ agentReports, agentRuns, agentSettings, agentSugg
             <Button disabled={isBacktestRunning || !report} icon={saveButtonIcon} onClick={saveReport} variant="ghost">
               Save Report
             </Button>
-            <Link className="ui-button ui-button--ghost" href={`/backtest/replay?pair=${encodeURIComponent(symbol)}&strategyId=${encodeURIComponent(strategyId)}`}>
+            <Link className="ui-button ui-button--ghost" href={`/charts?pair=${encodeURIComponent(symbol)}&strategyId=${encodeURIComponent(strategyId)}&timeframe=${encodeURIComponent(timeframe)}`}>
               <span className="ui-button__icon"><RotateCcw size={15} /></span>
-              <span>Paper Test</span>
+              <span>Paper Trading</span>
             </Link>
             {botDraftHref ? (
               <Link className="ui-button ui-button--ghost" href={botDraftHref}>
@@ -1158,11 +1158,11 @@ function assessBacktestPaperReadiness(report: BacktestReport, settings: AgentSet
     eligible,
     evidenceScore,
     label,
-    reason: eligible ? 'Worth paper validation, not live automation.' : profitable ? 'Promising, but at least one paper-test gate is still blocked.' : 'Not worth paper testing from current evidence.',
+    reason: eligible ? 'Ready for live paper trading in Charts, not live automation.' : profitable ? 'Promising, but at least one paper gate is still blocked.' : 'Not worth paper trading from current evidence.',
     score: Math.max(0, Math.min(100, score)),
     tone: eligible ? ('positive' as const) : profitable ? ('warning' as const) : ('negative' as const),
     usagePlan: eligible
-      ? `Use only ${report.market ?? 'tested market'} ${report.timeframe ?? 'tested timeframe'} with ${report.executionSettings?.marketType ?? 'market'} execution and ${report.executionSettings?.riskPerTradePct ?? 0}% risk per trade.`
+      ? `Open Charts in paper mode on ${report.market ?? 'tested market'} ${report.timeframe ?? 'tested timeframe'} with ${report.executionSettings?.marketType ?? 'market'} execution and ${report.executionSettings?.riskPerTradePct ?? 0}% risk per trade.`
       : 'Continue backtesting or let the agent create a stronger variant.',
     winrateRulePassed,
   };

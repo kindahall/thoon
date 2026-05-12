@@ -47,7 +47,7 @@ export function CodexAgentChat({ aiStatus, initialMessages, kronosLearningProfil
   const [pending, setPending] = useState(false);
   const [deletingMessageIds, setDeletingMessageIds] = useState<string[]>([]);
   const orderedMessages = useMemo(() => messages.slice().reverse(), [messages]);
-  const providerLabel = aiStatus.provider === 'codex' ? 'Codex CLI' : aiStatus.provider;
+  const providerLabel = aiStatus.provider === 'codex' ? 'Codex ChatGPT' : aiStatus.provider === 'openai' ? 'OpenAI API' : aiStatus.provider === 'openai-compatible' ? 'OpenAI compatible' : aiStatus.provider === 'local' ? 'Local rules' : aiStatus.provider;
   const agentLabel = 'Thoonix';
   const directLabel = 'Thoonix direct';
   const hasRunningMessages = messages.some((message) => message.status === 'running');
@@ -250,7 +250,7 @@ export function CodexAgentChat({ aiStatus, initialMessages, kronosLearningProfil
 
 function CodexLiveStatus() {
   return (
-    <button aria-label="Codex CLI actif" className="codex-live-status" title="Codex CLI actif" type="button">
+    <button aria-label="Codex actif" className="codex-live-status" title="Codex actif" type="button">
       <span aria-hidden="true" />
       Actif
     </button>

@@ -5,7 +5,7 @@ export type ThoonServerEnv = {
   agentAiApiKey?: string;
   agentAiBaseUrl: string;
   agentAiCodexBinary: string;
-  agentAiCodexSandbox: 'danger-full-access' | 'read-only' | 'workspace-write';
+  agentAiCodexSandbox: 'read-only' | 'workspace-write';
   agentAiEndpoint: 'chat-completions' | 'responses';
   agentAiIncludeSource: boolean;
   agentAiModel: string;
@@ -116,11 +116,11 @@ function defaultCodexBinary() {
 }
 
 function normalizeCodexSandbox(value: string | undefined): ThoonServerEnv['agentAiCodexSandbox'] {
-  if (value === 'danger-full-access' || value === 'read-only' || value === 'workspace-write') {
+  if (value === 'workspace-write') {
     return value;
   }
 
-  return 'danger-full-access';
+  return 'read-only';
 }
 
 function normalizeAuthMode(value: string | undefined): ThoonServerEnv['authMode'] {

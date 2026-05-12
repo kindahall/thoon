@@ -38,7 +38,7 @@ export function PaperTestRecommendationActions({ reportId, strategyId }: PaperTe
 
   async function confirmPaperTest() {
     setStatus('running');
-    setMessage('Preparing paper test');
+    setMessage('Preparing Charts paper');
 
     try {
       const response = await postJson<AgentPaperActionResponse>('/api/agent/actions', {
@@ -50,21 +50,21 @@ export function PaperTestRecommendationActions({ reportId, strategyId }: PaperTe
       const href = response.result?.href;
 
       setStatus('sent');
-      setMessage(response.run?.notes ?? 'Paper test ready');
+      setMessage(response.run?.notes ?? 'Paper proposal ready in Charts');
 
       if (href) {
         router.push(href);
       }
     } catch (error) {
       setStatus('error');
-      setMessage(error instanceof Error ? error.message : 'Paper test blocked');
+      setMessage(error instanceof Error ? error.message : 'Paper proposal blocked');
     }
   }
 
   return (
     <div className="agent-paper-actions">
       <Button disabled={status === 'running'} icon={<RotateCcw size={15} />} onClick={() => void confirmPaperTest()} size="sm" variant="primary">
-        {status === 'running' ? 'Preparing' : 'Confirm Paper'}
+        {status === 'running' ? 'Preparing' : 'Open in Charts'}
       </Button>
       <Button disabled={status === 'running'} icon={<X size={15} />} onClick={() => setDismissed(true)} size="sm" variant="ghost">
         Ignore
