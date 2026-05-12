@@ -97,17 +97,32 @@ test('core authenticated API contracts remain reachable in test mode', async ({ 
 test('agent chat sends with Enter and keeps Shift Enter for new lines', async ({ page }) => {
   const message = `Entrée envoie le chat ${Date.now()}`;
   let postedMessage = '';
+  let pollCount = 0;
 
   await page.route('**/api/agent/chat', async (route) => {
+    if (route.request().method() === 'GET') {
+      pollCount += 1;
+      await route.fulfill({
+        body: JSON.stringify([
+          { content: 'Analyse profonde terminee.', createdAt: new Date().toISOString(), id: 'test-agent-deep', role: 'assistant', status: 'completed' },
+          { content: postedMessage, createdAt: new Date().toISOString(), id: 'test-user-message', role: 'user', status: 'completed' },
+        ]),
+        contentType: 'application/json',
+        status: 200,
+      });
+      return;
+    }
+
     const payload = JSON.parse(route.request().postData() ?? '{}') as { message?: string };
     postedMessage = payload.message ?? '';
     await route.fulfill({
       body: JSON.stringify({
         messages: [
+          { content: 'Analyse profonde lancee avec Codex.', createdAt: new Date().toISOString(), id: 'test-agent-deep', role: 'assistant', status: 'running' },
+          { content: 'Reponse instantanee.', createdAt: new Date().toISOString(), id: 'test-agent-instant', role: 'assistant', status: 'completed' },
           { content: postedMessage, createdAt: new Date().toISOString(), id: 'test-user-message', role: 'user', status: 'completed' },
-          { content: 'Message recu.', createdAt: new Date().toISOString(), id: 'test-agent-reply', role: 'assistant', status: 'completed' },
         ],
-        reply: { content: 'Message recu.', createdAt: new Date().toISOString(), id: 'test-agent-reply', role: 'assistant', status: 'completed' },
+        reply: { content: 'Reponse instantanee.', createdAt: new Date().toISOString(), id: 'test-agent-instant', role: 'assistant', status: 'completed' },
       }),
       contentType: 'application/json',
       status: 200,
@@ -128,6 +143,8 @@ test('agent chat sends with Enter and keeps Shift Enter for new lines', async ({
   expect(postedMessage).toBe(message);
   await expect(textarea).toHaveValue('');
   await expect(page.locator('.codex-chat-thread')).toContainText(message);
+  await expect(page.locator('.codex-chat-thread')).toContainText('Analyse profonde terminee.');
+  expect(pollCount).toBeGreaterThan(0);
 });
 
 async function buttonLabel(button: Locator) {

@@ -1,7 +1,7 @@
 'use client';
 
 import { BrainCircuit, Send, Sparkles, Tv } from 'lucide-react';
-import { useMemo, useState, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
 
 import { postJson } from '../../services/api-client';
 import type { KronosIntegrationProfile } from '../../server/kronos-integration';
@@ -42,6 +42,41 @@ export function CodexAgentChat({ aiStatus, initialMessages, kronosLearningProfil
   const [pending, setPending] = useState(false);
   const orderedMessages = useMemo(() => messages.slice().reverse(), [messages]);
   const providerLabel = aiStatus.provider === 'codex' ? 'Thoonix' : aiStatus.provider;
+  const hasRunningMessages = messages.some((message) => message.status === 'running');
+
+  useEffect(() => {
+    if (!hasRunningMessages) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function refreshMessages() {
+      try {
+        const response = await fetch('/api/agent/chat', { cache: 'no-store' });
+
+        if (!response.ok) {
+          return;
+        }
+
+        const nextMessages = (await response.json()) as AgentChatMessage[];
+
+        if (!cancelled) {
+          setMessages(nextMessages);
+        }
+      } catch {
+        // Keep the optimistic thread visible; the next interval can recover.
+      }
+    }
+
+    void refreshMessages();
+    const interval = window.setInterval(refreshMessages, 1800);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [hasRunningMessages]);
 
   async function sendMessage(message = draft) {
     const content = message.trim();
