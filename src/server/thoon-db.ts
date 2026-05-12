@@ -31,6 +31,7 @@ import type {
   JournalTrade,
   KronosForecastRecord,
   Order,
+  OrderExecutionSource,
   PaperTestSession,
   Position,
   RiskRules,
@@ -54,6 +55,7 @@ export type SavedSetupRecord = {
   draft: unknown;
   drawings?: unknown[];
   exchangeId?: string;
+  executionIntent?: OrderExecutionSource;
   id: string;
   indicators?: unknown;
   markers: unknown[];
@@ -63,6 +65,7 @@ export type SavedSetupRecord = {
   plannedOrders: Order[];
   riskSettings: unknown;
   savedAt: string;
+  strategyId?: string;
   timeframe: string;
 };
 

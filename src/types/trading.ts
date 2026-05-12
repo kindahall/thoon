@@ -79,15 +79,20 @@ export type Position = {
   takeProfit: number;
 };
 
+export type OrderExecutionSource = 'manual' | 'strategy';
+
 export type Order = {
   createdAt: string;
   exchange: string;
+  executionSource?: OrderExecutionSource;
   id: string;
   price: number;
   reduceOnly: boolean;
   side: 'buy' | 'sell';
   size: number;
   status: 'open' | 'filled' | 'cancelled' | 'rejected' | 'planned';
+  strategyId?: string;
+  strategyName?: string;
   symbol: string;
   type: 'market' | 'limit' | 'stop' | 'take-profit';
 };

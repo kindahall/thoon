@@ -825,6 +825,10 @@ async function postHandler(request: NextRequest, context: RouteContext) {
     const draft = body.draft as { direction?: 'long' | 'short'; entry?: number; riskPercent?: number; size?: number; stopLoss?: number; takeProfit?: number };
     const symbol = asString(body.symbol) || db.marketPairRecords[0].symbol;
     const leverage = asNumber(body.leverage, db.userPreferencesRecord.defaultLeverage);
+    const executionSource = body.executionSource === 'strategy' ? 'strategy' : 'manual';
+    const requestedStrategyId = asString(body.strategyId);
+    const requestedStrategyName = asString(body.strategyName);
+    const executionStrategy = requestedStrategyId ? findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, requestedStrategyId) : undefined;
     const requestedExchangeId = asString(body.exchangeId);
     const requestedExchangeName = asString(body.exchangeName);
     const exchange =
@@ -840,6 +844,16 @@ async function postHandler(request: NextRequest, context: RouteContext) {
           availableBalance: number;
         }
       | undefined;
+
+    if (executionSource === 'strategy') {
+      if (!executionStrategy) {
+        throw new ApiError('A strategy trade requires a valid strategy.', 400);
+      }
+
+      if (executionStrategy.market !== symbol) {
+        throw new ApiError(`${executionStrategy.name} targets ${executionStrategy.market}; switch the chart pair before execution.`, 400);
+      }
+    }
 
     if (mode === 'live') {
       if (!exchange || !liveApiKey || !liveSecret) {
@@ -938,12 +952,15 @@ async function postHandler(request: NextRequest, context: RouteContext) {
     const order: Order = {
       createdAt: new Date().toISOString(),
       exchange: mode === 'paper' ? 'Paper' : exchange?.name ?? 'Live',
+      executionSource,
       id: `ord-${slug(symbol)}-${Date.now()}`,
       price: asNumber(draft.entry, 0),
       reduceOnly: false,
       side: draft.direction === 'short' ? 'sell' : 'buy',
       size: asNumber(draft.size, 0),
       status: mode === 'paper' ? 'filled' : 'open',
+      strategyId: executionStrategy?.id,
+      strategyName: executionStrategy?.name ?? (requestedStrategyName || undefined),
       symbol,
       type: 'limit',
     };
@@ -1023,7 +1040,9 @@ async function postHandler(request: NextRequest, context: RouteContext) {
         appendAuditEvent(nextDb, {
           action: mode === 'paper' ? 'Paper order executed' : 'Live order sent',
           actor: 'user',
-          details: liveResult?.exchangeOrderId ? `${order.side} ${symbol} sent. Exchange order ${liveResult.exchangeOrderId}.` : `${order.side} ${symbol} at ${order.price}.`,
+          details: liveResult?.exchangeOrderId
+            ? `${order.side} ${symbol} sent from ${executionSource}${order.strategyName ? ` (${order.strategyName})` : ''}. Exchange order ${liveResult.exchangeOrderId}.`
+            : `${order.side} ${symbol} from ${executionSource}${order.strategyName ? ` (${order.strategyName})` : ''} at ${order.price}.`,
           eventType: 'order',
           exchange: order.exchange,
           status: 'success',
@@ -1478,6 +1497,7 @@ async function postHandler(request: NextRequest, context: RouteContext) {
           draft: setup.draft ?? {},
           drawings: Array.isArray(setup.drawings) ? setup.drawings : [],
           exchangeId: asString(setup.exchangeId),
+          executionIntent: setup.executionIntent === 'strategy' ? 'strategy' : 'manual',
           id: asString(setup.id) || `setup-${Date.now()}`,
           indicators: setup.indicators ?? {},
           markers: Array.isArray(setup.markers) ? setup.markers : [],
@@ -1487,6 +1507,7 @@ async function postHandler(request: NextRequest, context: RouteContext) {
           plannedOrders: Array.isArray(setup.plannedOrders) ? setup.plannedOrders : [],
           riskSettings: setup.riskSettings ?? {},
           savedAt: asString(setup.savedAt) || new Date().toISOString(),
+          strategyId: asString(setup.strategyId) || undefined,
           timeframe: asString(setup.timeframe) || '15m',
         };
 
@@ -4758,12 +4779,15 @@ function normalizeOrder(body: Record<string, unknown>, fallbackSymbol: string): 
   return {
     createdAt: new Date().toISOString(),
     exchange: asString(body.exchange) || 'Paper',
+    executionSource: body.executionSource === 'strategy' ? 'strategy' : 'manual',
     id: asString(body.id) || `plan-${Date.now()}`,
     price: positiveValue(body.price, 0),
     reduceOnly: Boolean(body.reduceOnly),
     side: body.side === 'sell' ? 'sell' : 'buy',
     size: positiveValue(body.size, 0),
     status: body.status === 'open' || body.status === 'filled' || body.status === 'cancelled' || body.status === 'rejected' ? body.status : 'planned',
+    strategyId: asString(body.strategyId) || undefined,
+    strategyName: asString(body.strategyName) || undefined,
     symbol: asString(body.symbol) || fallbackSymbol,
     type: body.type === 'market' || body.type === 'stop' || body.type === 'take-profit' ? body.type : 'limit',
   };

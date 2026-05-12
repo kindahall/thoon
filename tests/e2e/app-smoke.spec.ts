@@ -94,6 +94,34 @@ test('core authenticated API contracts remain reachable in test mode', async ({ 
   expect(blockedOrigin.status()).toBe(403);
 });
 
+test('position builder can execute a strategy-sourced manual trade payload', async ({ page }) => {
+  let tradePayload: Record<string, unknown> | undefined;
+
+  await page.route('**/api/trading/execute', async (route) => {
+    tradePayload = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>;
+    await route.fulfill({
+      body: JSON.stringify({ allowed: true, order: { id: 'test-order' } }),
+      contentType: 'application/json',
+      status: 200,
+    });
+  });
+
+  await page.goto('/charts?pair=BTC%2FUSDT');
+  await page.getByRole('button', { name: 'Strategie' }).click();
+  await page.getByLabel('Trade strategy').selectOption({ index: 1 });
+
+  await page.locator('.trade-panel input[aria-label="Entry"]').fill('80493');
+  await page.locator('.trade-panel input[aria-label="Stop Loss"]').fill('78800');
+  await page.locator('.trade-panel input[aria-label="Take Profit"]').fill('84600');
+
+  await page.getByRole('button', { name: 'Execute Strategy Paper' }).click();
+  await expect(page.locator('.trade-panel__status')).toContainText(/filled|blocked/i);
+
+  expect(tradePayload?.executionSource).toBe('strategy');
+  expect(typeof tradePayload?.strategyId).toBe('string');
+  expect(tradePayload?.mode).toBe('paper');
+});
+
 test('agent chat sends with Enter and keeps Shift Enter for new lines', async ({ page }) => {
   const message = `Entrée envoie le chat ${Date.now()}`;
   let postedMessage = '';

@@ -14,6 +14,7 @@ import {
   listOpenOrders,
   listOrderHistory,
   listPositions,
+  listStrategies,
   listStrategyVersions,
 } from '../services/thoon-data-service';
 
@@ -42,6 +43,7 @@ export async function ChartsPage({ initialPair }: ChartsPageProps) {
       orderHistory={listOrderHistory()}
       positions={listPositions()}
       riskRules={getRiskRules()}
+      strategies={listStrategies()}
       tradeLimits={getTradeLimits()}
     />
   );

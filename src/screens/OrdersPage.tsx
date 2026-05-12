@@ -230,7 +230,7 @@ export function OrdersPage({ fills: initialFills, openOrders: initialOpenOrders,
               <span>Size</span>
               <span>Status</span>
               <span>Opened</span>
-              <span>Exchange</span>
+              <span>Source</span>
             </div>
             {orderHistory.length > 0 ? (
               orderHistory.map((order) => <HistoryRow key={order.id} order={order} />)
@@ -344,7 +344,7 @@ function OrderCompactRow({ onCancel, order }: { onCancel: (order: Order) => void
       <div>
         <strong>{order.symbol}</strong>
         <span>
-          {order.side} · {order.type}
+          {order.side} · {order.type} · {formatOrderSource(order)}
         </span>
       </div>
       <span>{formatUsd(order.price)}</span>
@@ -380,7 +380,15 @@ function HistoryRow({ order }: { order: Order }) {
       <span>{order.size}</span>
       <span>{order.status}</span>
       <span>{new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(order.createdAt))}</span>
-      <span>{order.exchange}</span>
+      <span>{order.strategyName ?? order.exchange}</span>
     </div>
   );
+}
+
+function formatOrderSource(order: Order) {
+  if (order.executionSource === 'strategy') {
+    return order.strategyName ?? 'strategy';
+  }
+
+  return 'manual';
 }

@@ -35,7 +35,7 @@ import { apiJson, postJson } from '../../services/api-client';
 import { buildRiskOrderInputFromDraft, evaluateRiskEngine, lossPercentFromPnl, type RiskEngineCheck } from '../../services/risk-engine';
 import { getTradingErrorDefinition } from '../../services/trading-error-service';
 import type { Candle, MarketCategory, MarketPair, PositionDraft, Timeframe } from '../../types/market';
-import type { AgentReport, AgentRun, AgentSettings, AgentSuggestion, Bot as TradingBot, ExchangeConnection, JournalTrade, Order, Position, RiskRules, StrategyVersion, TradeLimits, UserPreferences } from '../../types/trading';
+import type { AgentReport, AgentRun, AgentSettings, AgentSuggestion, Bot as TradingBot, ExchangeConnection, JournalTrade, Order, OrderExecutionSource, Position, RiskRules, Strategy, StrategyVersion, TradeLimits, UserPreferences } from '../../types/trading';
 import { normalizeCandle, sanitizeCandles } from '../../utils/candles';
 import { formatCompact, formatCompactUsd, formatPercent, formatUsd } from '../../utils/format';
 
@@ -55,6 +55,7 @@ type ChartsWorkspaceProps = {
   orderHistory: Order[];
   positions: Position[];
   riskRules: RiskRules;
+  strategies: Strategy[];
   tradeLimits: TradeLimits;
 };
 
@@ -104,6 +105,7 @@ type SavedChartSetup = {
   exchangeId?: string;
   id: string;
   indicators?: ChartIndicatorConfig;
+  executionIntent?: TradeExecutionIntent;
   markers: TradeMarker[];
   name: string;
   notes: string;
@@ -117,6 +119,7 @@ type SavedChartSetup = {
     trailingStop: boolean;
   };
   savedAt: string;
+  strategyId?: string;
   timeframe: Timeframe;
 };
 
@@ -125,6 +128,7 @@ type ChartEngine = 'thoon' | 'tradingview';
 type ChartMarketType = 'perpetual' | 'spot';
 type ChartRange = (typeof chartRanges)[number];
 type NoteFormat = 'bold' | 'italic' | 'list';
+type TradeExecutionIntent = OrderExecutionSource;
 
 export function ChartsWorkspace({
   agentReports,
@@ -142,6 +146,7 @@ export function ChartsWorkspace({
   orderHistory,
   positions,
   riskRules,
+  strategies,
   tradeLimits,
 }: ChartsWorkspaceProps) {
   const router = useRouter();
@@ -171,6 +176,8 @@ export function ChartsWorkspace({
   const [selectedMarkerType, setSelectedMarkerType] = useState<TradeMarkerType | null>(null);
   const [activeChartTool, setActiveChartTool] = useState<ChartToolId>('cursor');
   const [executionMode, setExecutionMode] = useState<'paper' | 'live'>('paper');
+  const [executionIntent, setExecutionIntent] = useState<TradeExecutionIntent>('manual');
+  const [selectedStrategyId, setSelectedStrategyId] = useState('');
   const [chartEngine, setChartEngine] = useState<ChartEngine>('thoon');
   const [leverage, setLeverage] = useState(defaultPreferences.defaultLeverage);
   const [chartHeight, setChartHeight] = useState(640);
@@ -198,6 +205,9 @@ export function ChartsWorkspace({
   const chartMarketLabel = chartMarketType === 'perpetual' ? 'perpetual' : 'spot';
   const marketStripPairs = useMemo(() => getMarketStripPairs(liveMarketPairs, selectedSymbol), [liveMarketPairs, selectedSymbol]);
   const pairThemeGroups = useMemo(() => buildPairThemeGroups(liveMarketPairs, selectedPairTheme), [liveMarketPairs, selectedPairTheme]);
+  const strategyOptions = useMemo(() => strategies.filter((strategy) => strategy.status !== 'archived'), [strategies]);
+  const selectedStrategy = useMemo(() => strategyOptions.find((strategy) => strategy.id === selectedStrategyId), [selectedStrategyId, strategyOptions]);
+  const selectedStrategyMatchesMarket = Boolean(selectedStrategy && selectedStrategy.market === market.symbol);
   const candles = useMemo(() => sanitizeCandles(chartCandles), [chartCandles]);
   const hasChartCandles = candles.length > 0;
   const priceAnchor = market.lastPrice || market.draft.entry || 1;
@@ -266,7 +276,23 @@ export function ChartsWorkspace({
     tradeLimits,
   });
   const liveOrderChecks = liveRiskResult.checks;
-  const isLiveOrderBlocked = !hasCompletePosition || !liveRiskResult.allowed;
+  const strategyExecutionReady = executionIntent === 'manual' || Boolean(selectedStrategy && selectedStrategyMatchesMarket);
+  const isExecutionBlocked = !hasCompletePosition || !strategyExecutionReady;
+  const isLiveOrderBlocked = isExecutionBlocked || !liveRiskResult.allowed;
+
+  useEffect(() => {
+    if (executionIntent !== 'strategy') {
+      return;
+    }
+
+    setSelectedStrategyId((currentStrategyId) => {
+      if (currentStrategyId && strategyOptions.some((strategy) => strategy.id === currentStrategyId)) {
+        return currentStrategyId;
+      }
+
+      return bestStrategyForSymbol(strategyOptions, market.symbol)?.id ?? '';
+    });
+  }, [executionIntent, market.symbol, strategyOptions]);
 
   useEffect(() => {
     if (hasHydratedActivePairRef.current && !initialPair) {
@@ -639,6 +665,86 @@ export function ChartsWorkspace({
     });
   }
 
+  function selectExecutionIntent(nextIntent: TradeExecutionIntent) {
+    setExecutionIntent(nextIntent);
+
+    if (nextIntent === 'manual') {
+      setSetupMessage('Manual trade ready');
+      return;
+    }
+
+    const strategy = selectedStrategy ?? bestStrategyForSymbol(strategyOptions, market.symbol);
+
+    if (strategy) {
+      setSelectedStrategyId(strategy.id);
+      setSetupMessage(`Strategy source · ${strategy.name}`);
+    } else {
+      setSetupMessage('No strategy available');
+    }
+  }
+
+  function chooseExecutionStrategy(strategyId: string) {
+    const strategy = strategyOptions.find((item) => item.id === strategyId);
+
+    setExecutionIntent('strategy');
+    setSelectedStrategyId(strategyId);
+
+    if (!strategy) {
+      setSetupMessage('Strategy unavailable');
+      return;
+    }
+
+    chooseSymbol(strategy.market);
+    setTimeframe(strategy.timeframe);
+    setPlannedOrderDrafts([]);
+
+    if (strategy.positionDraft) {
+      const nextDraft = recalculateDraftSize({
+        ...strategy.positionDraft,
+        riskPercent: strategy.riskPerTrade || strategy.positionDraft.riskPercent,
+      });
+      setDraft(nextDraft);
+      setTradeMarkers(markersFromDraft(nextDraft, strategy.market));
+    } else {
+      setDraft((currentDraft) => recalculateDraftSize({ ...currentDraft, riskPercent: strategy.riskPerTrade || currentDraft.riskPercent }));
+    }
+
+    setSetupMessage(`Loaded · ${strategy.name}`);
+  }
+
+  function validateExecutionDraft() {
+    if (!hasCompletePosition) {
+      setSetupMessage('Place Entry + SL + TP');
+      return false;
+    }
+
+    if (executionIntent === 'strategy' && !selectedStrategy) {
+      setSetupMessage('Select strategy first');
+      return false;
+    }
+
+    if (executionIntent === 'strategy' && !selectedStrategyMatchesMarket) {
+      setSetupMessage('Load strategy market');
+      return false;
+    }
+
+    return true;
+  }
+
+  function tradeExecutionPayload(mode: 'paper' | 'live') {
+    return {
+      draft,
+      exchangeId: selectedExchange?.id,
+      exchangeName: selectedExchange?.name,
+      executionSource: executionIntent,
+      leverage,
+      mode,
+      strategyId: executionIntent === 'strategy' ? selectedStrategy?.id : undefined,
+      strategyName: executionIntent === 'strategy' ? selectedStrategy?.name : undefined,
+      symbol: market.symbol,
+    };
+  }
+
   function requestLiveMode() {
     setLiveConfirmationOpen(true);
   }
@@ -649,32 +755,23 @@ export function ChartsWorkspace({
   }
 
   async function executePaperOrder() {
-    if (!hasCompletePosition) {
-      setSetupMessage('Place Entry + SL + TP');
+    if (!validateExecutionDraft()) {
       return;
     }
 
     setSetupMessage('Routing paper');
 
     try {
-      const result = await postJson<{ allowed: boolean }>('/api/trading/execute', {
-        draft,
-        exchangeId: selectedExchange?.id,
-        exchangeName: selectedExchange?.name,
-        leverage,
-        mode: 'paper',
-        symbol: market.symbol,
-      });
+      const result = await postJson<{ allowed: boolean }>('/api/trading/execute', tradeExecutionPayload('paper'));
 
-      setSetupMessage(result.allowed ? 'Paper filled' : 'Paper blocked');
+      setSetupMessage(result.allowed ? (executionIntent === 'strategy' ? 'Strategy paper filled' : 'Manual paper filled') : 'Paper blocked');
     } catch (error) {
       setSetupMessage(error instanceof Error ? error.message : 'Paper failed');
     }
   }
 
   function requestLiveOrderConfirmation() {
-    if (!hasCompletePosition) {
-      setSetupMessage('Place Entry + SL + TP');
+    if (!validateExecutionDraft()) {
       return;
     }
 
@@ -689,17 +786,10 @@ export function ChartsWorkspace({
     setSetupMessage('Routing live');
 
     try {
-      const result = await postJson<{ allowed: boolean }>('/api/trading/execute', {
-        draft,
-        exchangeId: selectedExchange?.id,
-        exchangeName: selectedExchange?.name,
-        leverage,
-        mode: 'live',
-        symbol: market.symbol,
-      });
+      const result = await postJson<{ allowed: boolean }>('/api/trading/execute', tradeExecutionPayload('live'));
 
       setLiveOrderConfirmationOpen(false);
-      setSetupMessage(result.allowed ? 'Live sent' : 'Live blocked');
+      setSetupMessage(result.allowed ? (executionIntent === 'strategy' ? 'Strategy live sent' : 'Manual live sent') : 'Live blocked');
     } catch (error) {
       setSetupMessage(error instanceof Error ? error.message : 'Live failed');
     }
@@ -711,14 +801,26 @@ export function ChartsWorkspace({
       return;
     }
 
+    if (executionIntent === 'strategy' && !selectedStrategy) {
+      setSetupMessage('Select strategy first');
+      return;
+    }
+
+    if (executionIntent === 'strategy' && !selectedStrategyMatchesMarket) {
+      setSetupMessage('Load strategy market');
+      return;
+    }
+
     const timestamp = Date.now();
     const orderExchange = executionMode === 'paper' ? 'Paper' : selectedExchange?.name ?? 'Live';
     const nextOrders = [
       createPlannedOrder({
         draft,
         exchange: orderExchange,
+        executionSource: executionIntent,
         id: `${clientSlug(market.symbol)}-${timestamp}-plan-entry`,
         kind: 'entry',
+        strategy: executionIntent === 'strategy' ? selectedStrategy : undefined,
         symbol: market.symbol,
       }),
       ...(hasCompletePosition
@@ -726,15 +828,19 @@ export function ChartsWorkspace({
             createPlannedOrder({
               draft,
               exchange: orderExchange,
+              executionSource: executionIntent,
               id: `${clientSlug(market.symbol)}-${timestamp}-plan-sl`,
               kind: 'stopLoss',
+              strategy: executionIntent === 'strategy' ? selectedStrategy : undefined,
               symbol: market.symbol,
             }),
             createPlannedOrder({
               draft,
               exchange: orderExchange,
+              executionSource: executionIntent,
               id: `${clientSlug(market.symbol)}-${timestamp}-plan-tp`,
               kind: 'takeProfit',
+              strategy: executionIntent === 'strategy' ? selectedStrategy : undefined,
               symbol: market.symbol,
             }),
           ]
@@ -828,6 +934,7 @@ export function ChartsWorkspace({
       draft,
       drawings: chartDrawings,
       exchangeId: selectedExchange?.id,
+      executionIntent,
       id: `setup-${Date.now()}`,
       indicators: indicatorConfig,
       markers: tradeMarkers,
@@ -843,6 +950,7 @@ export function ChartsWorkspace({
         trailingStop: isTrailingOn,
       },
       savedAt: new Date().toISOString(),
+      strategyId: executionIntent === 'strategy' ? selectedStrategy?.id : undefined,
       timeframe,
     };
 
@@ -866,6 +974,8 @@ export function ChartsWorkspace({
     setIndicatorConfig(setup.indicators ?? defaultIndicatorConfig);
     setTradeMarkers(setup.markers);
     setPlannedOrderDrafts(setup.plannedOrders);
+    setExecutionIntent(setup.executionIntent ?? 'manual');
+    setSelectedStrategyId(setup.strategyId ?? '');
     setSelectedMarkerType(null);
     setActiveChartTool('cursor');
     setLeverage(setup.riskSettings.leverage);
@@ -882,6 +992,7 @@ export function ChartsWorkspace({
       draft: market.draft,
       drawings: [],
       exchangeId: defaultExchangeId,
+      executionIntent: 'manual',
       id: 'reset',
       indicators: defaultIndicatorConfig,
       markers: [],
@@ -897,6 +1008,7 @@ export function ChartsWorkspace({
         trailingStop: defaultPreferences.trailingStopEnabled,
       },
       savedAt: new Date().toISOString(),
+      strategyId: undefined,
       timeframe,
     });
   }
@@ -987,7 +1099,9 @@ export function ChartsWorkspace({
           </span>
           <span className="cockpit-chip cockpit-chip--primary">Journal · {journalTrades.length} trades</span>
           <span className="cockpit-chip cockpit-chip--warning">Risk · runtime</span>
-          <span className="cockpit-chip cockpit-chip--negative">Live verrouille</span>
+          <span className={executionMode === 'live' ? (selectedExchangeCanTrade ? 'cockpit-chip cockpit-chip--positive' : 'cockpit-chip cockpit-chip--negative') : 'cockpit-chip cockpit-chip--warning'}>
+            {executionMode === 'live' ? (selectedExchangeCanTrade ? 'Live arme' : 'Live bloque') : 'Paper actif'}
+          </span>
         </div>
       </div>
 
@@ -1293,6 +1407,37 @@ export function ChartsWorkspace({
             </select>
           </label>
 
+          <div className="trade-source-card">
+            <div className="trade-source-row" aria-label="Trade source">
+              <button className={executionIntent === 'manual' ? 'is-active' : undefined} onClick={() => selectExecutionIntent('manual')} type="button">
+                Manuel
+              </button>
+              <button className={executionIntent === 'strategy' ? 'is-active' : undefined} onClick={() => selectExecutionIntent('strategy')} type="button">
+                Strategie
+              </button>
+            </div>
+            {executionIntent === 'strategy' ? (
+              <label className="trade-strategy-control">
+                <span>Strategie</span>
+                <select aria-label="Trade strategy" disabled={strategyOptions.length === 0} onChange={(event) => chooseExecutionStrategy(event.target.value)} value={selectedStrategyId}>
+                  <option value="">Choisir</option>
+                  {strategyOptions.map((strategy) => (
+                    <option key={strategy.id} value={strategy.id}>
+                      {strategy.name} · {strategy.market} · {strategy.timeframe}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <span className="trade-source-note">Trade libre sur tes prix, avec confirmation live.</span>
+            )}
+            {executionIntent === 'strategy' && selectedStrategy ? (
+              <span className={selectedStrategyMatchesMarket ? 'trade-source-note is-linked' : 'trade-source-note is-warning'}>
+                {selectedStrategyMatchesMarket ? `${selectedStrategy.name} liee a ${market.symbol}` : `Charge ${selectedStrategy.market} pour executer cette strategie.`}
+              </span>
+            ) : null}
+          </div>
+
           <div className="position-builder-fields position-builder-fields--terminal">
             <BuilderField label="Entry" onChange={(value) => upsertMarker('entry', value)} value={draft.entry} />
             <BuilderField info="Live orders are invalid without stop-loss." label="Stop Loss" onChange={(value) => upsertMarker('stopLoss', value)} tone="negative" value={draft.stopLoss} />
@@ -1368,8 +1513,8 @@ export function ChartsWorkspace({
             </div>
           ) : null}
 
-          <Button className="execute-button" disabled={!hasCompletePosition} onClick={executionMode === 'live' ? requestLiveOrderConfirmation : executePaperOrder} variant="primary">
-            Execute Trade
+          <Button className="execute-button" disabled={isExecutionBlocked} onClick={executionMode === 'live' ? requestLiveOrderConfirmation : executePaperOrder} variant="primary">
+            {executionMode === 'live' ? (executionIntent === 'strategy' ? 'Execute Strategy Live' : 'Execute Manual Live') : executionIntent === 'strategy' ? 'Execute Strategy Paper' : 'Execute Manual Paper'}
           </Button>
 
           <div className="trade-panel__actions">
@@ -1406,7 +1551,7 @@ export function ChartsWorkspace({
             </Link>
           </div>
 
-          <small className="trade-panel__note">Values are estimates. Live orders require confirmation.</small>
+          <small className="trade-panel__note">Manuel ou strategie: tu peux armer le live quand tu veux, puis le Risk Engine confirme avant envoi.</small>
         </Card>
 
         <div className="bottom-panels">
@@ -1479,6 +1624,7 @@ export function ChartsWorkspace({
         account={defaultPreferences.defaultAccount}
         draft={draft}
         exchange={liveExchange}
+        executionIntent={executionIntent}
         estimatedFees={estimatedFees}
         isBlocked={isLiveOrderBlocked}
         leverage={leverage}
@@ -1490,6 +1636,7 @@ export function ChartsWorkspace({
         potentialLoss={potentialLoss}
         potentialProfit={potentialProfit}
         riskChecks={liveOrderChecks}
+        strategyName={executionIntent === 'strategy' ? selectedStrategy?.name : undefined}
       />
     </section>
   );
@@ -1875,13 +2022,41 @@ function calculateRiskReward(draft: PositionDraft) {
   return risk > 0 ? reward / risk : 0;
 }
 
-function createPlannedOrder({ draft, exchange, id, kind, symbol }: { draft: PositionDraft; exchange: string; id: string; kind: 'entry' | 'stopLoss' | 'takeProfit'; symbol: string }): Order {
+function markersFromDraft(draft: PositionDraft, symbol: string): TradeMarker[] {
+  return [createMarker('entry', draft.entry, symbol), createMarker('stopLoss', draft.stopLoss, symbol), createMarker('takeProfit', draft.takeProfit, symbol)];
+}
+
+function createPlannedOrder({
+  draft,
+  exchange,
+  executionSource,
+  id,
+  kind,
+  strategy,
+  symbol,
+}: {
+  draft: PositionDraft;
+  exchange: string;
+  executionSource: TradeExecutionIntent;
+  id: string;
+  kind: 'entry' | 'stopLoss' | 'takeProfit';
+  strategy?: Strategy;
+  symbol: string;
+}): Order {
   const closeSide = draft.direction === 'long' ? 'sell' : 'buy';
+  const sourceMetadata = strategy
+    ? {
+        executionSource,
+        strategyId: strategy.id,
+        strategyName: strategy.name,
+      }
+    : { executionSource };
 
   if (kind === 'takeProfit') {
     return {
       createdAt: new Date().toISOString(),
       exchange,
+      ...sourceMetadata,
       id,
       price: roundPrice(draft.takeProfit),
       reduceOnly: true,
@@ -1897,6 +2072,7 @@ function createPlannedOrder({ draft, exchange, id, kind, symbol }: { draft: Posi
     return {
       createdAt: new Date().toISOString(),
       exchange,
+      ...sourceMetadata,
       id,
       price: roundPrice(draft.stopLoss),
       reduceOnly: true,
@@ -1911,6 +2087,7 @@ function createPlannedOrder({ draft, exchange, id, kind, symbol }: { draft: Posi
   return {
     createdAt: new Date().toISOString(),
     exchange,
+    ...sourceMetadata,
     id,
     price: roundPrice(draft.entry),
     reduceOnly: false,
@@ -2071,6 +2248,10 @@ function buildPairThemeGroups(pairs: MarketPair[], selectedTheme: MarketCategory
   }
 
   return buildPairThemeGroups(pairs, 'all');
+}
+
+function bestStrategyForSymbol(strategies: Strategy[], symbol: string) {
+  return strategies.find((strategy) => strategy.status === 'active' && strategy.market === symbol) ?? strategies.find((strategy) => strategy.market === symbol) ?? strategies.find((strategy) => strategy.status === 'active') ?? strategies[0];
 }
 
 function sortThemePairs(pairs: MarketPair[]) {
@@ -2240,6 +2421,7 @@ type LiveOrderModalProps = {
   draft: PositionDraft;
   estimatedFees: number;
   exchange?: ExchangeConnection;
+  executionIntent: TradeExecutionIntent;
   isBlocked: boolean;
   leverage: number;
   onCancel: () => void;
@@ -2250,6 +2432,7 @@ type LiveOrderModalProps = {
   potentialLoss: number;
   potentialProfit: number;
   riskChecks: RiskEngineCheck[];
+  strategyName?: string;
 };
 
 function LiveOrderModal({
@@ -2257,6 +2440,7 @@ function LiveOrderModal({
   draft,
   estimatedFees,
   exchange,
+  executionIntent,
   isBlocked,
   leverage,
   onCancel,
@@ -2267,6 +2451,7 @@ function LiveOrderModal({
   potentialLoss,
   potentialProfit,
   riskChecks,
+  strategyName,
 }: LiveOrderModalProps) {
   const blockedCheck = riskChecks.find((check) => check.status === 'blocked');
   const blockedError = blockedCheck?.errorCode ? getTradingErrorDefinition(blockedCheck.errorCode) : getTradingErrorDefinition('order-rejected');
@@ -2294,6 +2479,7 @@ function LiveOrderModal({
 
         <div className="live-order-grid">
           <LiveOrderItem label="Pair" value={pair} />
+          <LiveOrderItem label="Source" value={executionIntent === 'strategy' ? strategyName ?? 'Strategy' : 'Manual'} />
           <LiveOrderItem label="Side" value={draft.direction === 'long' ? 'Long / Buy' : 'Short / Sell'} />
           <LiveOrderItem label="Order type" value={formatOrderType(orderType)} />
           <LiveOrderItem label="Entry" value={formatUsd(draft.entry)} />
