@@ -11033,7 +11033,10 @@ h2 {
   display: grid;
   align-content: start;
   gap: 8px;
+  box-sizing: border-box;
   min-height: 536px;
+  min-width: 0;
+  overflow: hidden;
   padding: 8px;
   border-right: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface-raised) 74%, transparent);
@@ -11043,12 +11046,22 @@ h2 {
   display: grid;
   gap: 4px;
   place-items: center;
+  width: 100%;
+  min-width: 0;
   min-height: 54px;
+  overflow: hidden;
   color: var(--text-muted);
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;
   font-size: 11px;
+}
+
+.chart-tool span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chart-tool.is-active,
@@ -12941,7 +12954,7 @@ button {
 }
 
 .chart-panel--terminal .chart-panel__body {
-  grid-template-columns: 56px minmax(0, 1fr);
+  grid-template-columns: 76px minmax(0, 1fr);
   flex: 1;
 }
 
@@ -12951,7 +12964,7 @@ button {
 
 .chart-panel--terminal .chart-tools {
   min-height: var(--chart-height, 640px);
-  padding: 8px 7px;
+  padding: 8px;
 }
 
 .chart-panel--terminal .chart-tool {
