@@ -1,7 +1,7 @@
 'use client';
 
 import { BrainCircuit, Send, Sparkles, Tv } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type KeyboardEvent } from 'react';
 
 import { postJson } from '../../services/api-client';
 import type { KronosIntegrationProfile } from '../../server/kronos-integration';
@@ -71,6 +71,15 @@ export function CodexAgentChat({ aiStatus, initialMessages, kronosLearningProfil
     } finally {
       setPending(false);
     }
+  }
+
+  function handleDraftKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
+      return;
+    }
+
+    event.preventDefault();
+    void sendMessage();
   }
 
   return (
@@ -152,7 +161,7 @@ export function CodexAgentChat({ aiStatus, initialMessages, kronosLearningProfil
           void sendMessage();
         }}
       >
-        <textarea onChange={(event) => setDraft(event.target.value)} placeholder="Parle directement a Thoonix..." value={draft} />
+        <textarea onChange={(event) => setDraft(event.target.value)} onKeyDown={handleDraftKeyDown} placeholder="Parle directement a Thoonix..." value={draft} />
         <Button disabled={pending || !draft.trim()} icon={<Send size={15} />} size="sm" type="submit" variant="primary">
           Envoyer
         </Button>

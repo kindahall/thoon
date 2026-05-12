@@ -94,6 +94,42 @@ test('core authenticated API contracts remain reachable in test mode', async ({ 
   expect(blockedOrigin.status()).toBe(403);
 });
 
+test('agent chat sends with Enter and keeps Shift Enter for new lines', async ({ page }) => {
+  const message = `Entrée envoie le chat ${Date.now()}`;
+  let postedMessage = '';
+
+  await page.route('**/api/agent/chat', async (route) => {
+    const payload = JSON.parse(route.request().postData() ?? '{}') as { message?: string };
+    postedMessage = payload.message ?? '';
+    await route.fulfill({
+      body: JSON.stringify({
+        messages: [
+          { content: postedMessage, createdAt: new Date().toISOString(), id: 'test-user-message', role: 'user', status: 'completed' },
+          { content: 'Message recu.', createdAt: new Date().toISOString(), id: 'test-agent-reply', role: 'assistant', status: 'completed' },
+        ],
+        reply: { content: 'Message recu.', createdAt: new Date().toISOString(), id: 'test-agent-reply', role: 'assistant', status: 'completed' },
+      }),
+      contentType: 'application/json',
+      status: 200,
+    });
+  });
+
+  await page.goto('/agent');
+  const textarea = page.locator('.codex-chat-form textarea');
+  await textarea.fill('ligne 1');
+  await textarea.press('Shift+Enter');
+  await expect(textarea).toHaveValue('ligne 1\n');
+
+  await textarea.fill(message);
+  const responsePromise = page.waitForResponse((response) => response.url().includes('/api/agent/chat') && response.request().method() === 'POST');
+  await textarea.press('Enter');
+  await responsePromise;
+
+  expect(postedMessage).toBe(message);
+  await expect(textarea).toHaveValue('');
+  await expect(page.locator('.codex-chat-thread')).toContainText(message);
+});
+
 async function buttonLabel(button: Locator) {
   const text = await button.innerText().catch(() => '');
   const aria = await button.getAttribute('aria-label').catch(() => '');
