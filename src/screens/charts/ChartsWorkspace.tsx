@@ -36,6 +36,7 @@ import { buildRiskOrderInputFromDraft, evaluateRiskEngine, lossPercentFromPnl, t
 import { getTradingErrorDefinition } from '../../services/trading-error-service';
 import type { Candle, MarketCategory, MarketPair, PositionDraft, Timeframe } from '../../types/market';
 import type { AgentReport, AgentRun, AgentSettings, AgentSuggestion, Bot as TradingBot, ExchangeConnection, JournalTrade, Order, Position, RiskRules, StrategyVersion, TradeLimits, UserPreferences } from '../../types/trading';
+import { normalizeCandle, sanitizeCandles } from '../../utils/candles';
 import { formatCompact, formatCompactUsd, formatPercent, formatUsd } from '../../utils/format';
 
 type ChartsWorkspaceProps = {
@@ -197,7 +198,7 @@ export function ChartsWorkspace({
   const chartMarketLabel = chartMarketType === 'perpetual' ? 'perpetual' : 'spot';
   const marketStripPairs = useMemo(() => getMarketStripPairs(liveMarketPairs, selectedSymbol), [liveMarketPairs, selectedSymbol]);
   const pairThemeGroups = useMemo(() => buildPairThemeGroups(liveMarketPairs, selectedPairTheme), [liveMarketPairs, selectedPairTheme]);
-  const candles = chartCandles;
+  const candles = useMemo(() => sanitizeCandles(chartCandles), [chartCandles]);
   const hasChartCandles = candles.length > 0;
   const priceAnchor = market.lastPrice || market.draft.entry || 1;
   const fallbackCandle = liveFallbackCandle(market.candles.at(-1), priceAnchor);
@@ -352,8 +353,9 @@ export function ChartsWorkspace({
     })
       .then((nextCandles) => {
         if (!controller.signal.aborted) {
-          setChartCandles(nextCandles);
-          setChartCandleStatus(nextCandles.length ? 'live' : 'fallback');
+          const cleanCandles = sanitizeCandles(nextCandles);
+          setChartCandles(cleanCandles);
+          setChartCandleStatus(cleanCandles.length ? 'live' : 'fallback');
         }
       })
       .catch(() => {
@@ -1741,44 +1743,50 @@ function syncDraftWithMarker(draft: PositionDraft, type: TradeMarkerType, price:
 }
 
 function syncLastCandleToTicker(candles: Candle[], lastPrice: number, timeframe: Timeframe, eventTimeMs?: number) {
-  if (!candles.length || !Number.isFinite(lastPrice)) {
+  const normalizedCandles = sanitizeCandles(candles);
+
+  if (!normalizedCandles.length || !Number.isFinite(lastPrice) || lastPrice <= 0) {
     return candles;
   }
 
-  const lastIndex = candles.length - 1;
-  const lastCandle = candles[lastIndex];
+  const lastIndex = normalizedCandles.length - 1;
+  const lastCandle = normalizedCandles[lastIndex];
   const close = roundPrice(lastPrice);
   const eventTimeSeconds = Math.floor((eventTimeMs ?? Date.now()) / 1000);
   const currentCandleTime = timeframeBucketStart(eventTimeSeconds, timeframe);
 
+  if (currentCandleTime < lastCandle.time) {
+    return normalizedCandles;
+  }
+
   if (currentCandleTime > lastCandle.time) {
-    const nextCandle = {
+    const nextCandle = normalizeCandle({
       close,
       high: Math.max(lastCandle.close, close),
       low: Math.min(lastCandle.close, close),
       open: lastCandle.close,
       time: currentCandleTime,
       volume: 0,
-    };
+    });
 
-    return [...candles, nextCandle].slice(-Math.max(candles.length, 120));
+    return nextCandle ? [...normalizedCandles, nextCandle].slice(-Math.max(normalizedCandles.length, 120)) : normalizedCandles;
   }
 
   if (Math.abs(lastCandle.close - close) < 0.000001) {
-    return candles;
+    return normalizedCandles;
   }
 
-  return candles.map((candle, index) => {
+  return normalizedCandles.map((candle, index) => {
     if (index !== lastIndex) {
       return candle;
     }
 
-    return {
+    return normalizeCandle({
       ...candle,
       close,
       high: Math.max(candle.high, close),
       low: Math.min(candle.low, close),
-    };
+    }) ?? candle;
   });
 }
 
@@ -1818,16 +1826,17 @@ const timeframeSeconds: Partial<Record<Timeframe, number>> = {
 
 function liveFallbackCandle(seedCandle: Candle | undefined, lastPrice: number): Candle {
   const close = roundPrice(lastPrice);
+  const normalizedSeedCandle = normalizeCandle(seedCandle);
 
-  if (!seedCandle) {
+  if (!normalizedSeedCandle) {
     return { close, high: close, low: close, open: close, time: timeframeBucketStart(Math.floor(Date.now() / 1000), '15m'), volume: 0 };
   }
 
   return {
-    ...seedCandle,
+    ...normalizedSeedCandle,
     close,
-    high: Math.max(seedCandle.high, close),
-    low: Math.min(seedCandle.low, close),
+    high: Math.max(normalizedSeedCandle.high, close),
+    low: Math.min(normalizedSeedCandle.low, close),
   };
 }
 

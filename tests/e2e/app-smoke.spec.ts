@@ -37,6 +37,11 @@ test('primary routes render and safe buttons respond', async ({ page }) => {
     await expect(page.locator('.app-shell')).toBeVisible();
     await expect(page.locator('body')).not.toContainText(/Application error|Internal Server Error|Unhandled Runtime Error/);
 
+    if (route.startsWith('/charts')) {
+      await expect(page.locator('.chart-indicator-readout').first()).toBeVisible();
+      await expect(page.locator('.chart-indicator-readout').first()).not.toContainText(/L\s+\$0(?:\.00)?\b/);
+    }
+
     const buttons = await page.locator('button:visible').all();
     totalButtons += buttons.length;
 

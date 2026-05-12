@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type PointerEvent } from 'react';
+import { useEffect, useMemo, useRef, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type PointerEvent } from 'react';
 import { X } from 'lucide-react';
 import {
   CandlestickSeries,
@@ -21,6 +21,7 @@ import {
 
 import type { Candle } from '../../types/market';
 import { useTheme } from '../../hooks/useTheme';
+import { sanitizeCandles } from '../../utils/candles';
 import { formatUsd } from '../../utils/format';
 
 type TradingChartProps = {
@@ -109,6 +110,7 @@ export function TradingChart({
   onUpdateMarkerPrice,
   positionPreview,
 }: TradingChartProps) {
+  const chartCandles = useMemo(() => sanitizeCandles(candles), [candles]);
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -120,10 +122,10 @@ export function TradingChart({
   const priceLineRefs = useRef<IPriceLine[]>([]);
   const fittedDataIdentityRef = useRef<string | null>(null);
   const { resolvedTheme } = useTheme();
-  const priceRange = resolvePriceRange(candles, markers, drawings);
-  const firstCandleTime = candles[0]?.time ?? 'empty';
-  const lastCandleTime = candles[candles.length - 1]?.time ?? 'empty';
-  const dataWindowIdentity = `${dataIdentity}:${candles.length}:${firstCandleTime}:${lastCandleTime}`;
+  const priceRange = resolvePriceRange(chartCandles, markers, drawings);
+  const firstCandleTime = chartCandles[0]?.time ?? 'empty';
+  const lastCandleTime = chartCandles[chartCandles.length - 1]?.time ?? 'empty';
+  const dataWindowIdentity = `${dataIdentity}:${chartCandles.length}:${firstCandleTime}:${lastCandleTime}`;
 
   useEffect(() => {
     if (!surfaceRef.current) {
@@ -265,18 +267,18 @@ export function TradingChart({
       return;
     }
 
-    candleSeries.setData(toCandlestickData(candles));
-    maFastSeriesRef.current?.setData(indicators.maFast.enabled ? buildMovingAverageData(candles, indicators.maFast.period) : []);
-    maSlowSeriesRef.current?.setData(indicators.maSlow.enabled ? buildMovingAverageData(candles, indicators.maSlow.period) : []);
-    emaSeriesRef.current?.setData(indicators.ema.enabled ? buildExponentialAverageData(candles, indicators.ema.period) : []);
-    vwapSeriesRef.current?.setData(indicators.vwap.enabled ? buildVwapData(candles) : []);
-    volumeSeriesRef.current?.setData(indicators.volume.enabled ? toVolumeData(candles) : []);
+    candleSeries.setData(toCandlestickData(chartCandles));
+    maFastSeriesRef.current?.setData(indicators.maFast.enabled ? buildMovingAverageData(chartCandles, indicators.maFast.period) : []);
+    maSlowSeriesRef.current?.setData(indicators.maSlow.enabled ? buildMovingAverageData(chartCandles, indicators.maSlow.period) : []);
+    emaSeriesRef.current?.setData(indicators.ema.enabled ? buildExponentialAverageData(chartCandles, indicators.ema.period) : []);
+    vwapSeriesRef.current?.setData(indicators.vwap.enabled ? buildVwapData(chartCandles) : []);
+    volumeSeriesRef.current?.setData(indicators.volume.enabled ? toVolumeData(chartCandles) : []);
 
     if (fittedDataIdentityRef.current !== dataWindowIdentity) {
       fittedDataIdentityRef.current = dataWindowIdentity;
       chartRef.current?.timeScale().fitContent();
     }
-  }, [candles, dataWindowIdentity, indicators]);
+  }, [chartCandles, dataWindowIdentity, indicators]);
 
   useEffect(() => {
     const candleSeries = candleSeriesRef.current;

@@ -2,6 +2,7 @@ import type { Candle, MarketDataSnapshot, MarketPair, Timeframe } from '../types
 import { getBinanceMarketCandles, getBinanceMarketDataSnapshot } from '../server/exchanges/binance-market-data';
 import { getPublicRestMarketCandles } from '../server/exchanges/public-rest-market-data';
 import { readThoonDb } from '../server/thoon-db';
+import { sanitizeCandles } from '../utils/candles';
 
 type MarketDataType = 'futures' | 'perpetual' | 'spot';
 
@@ -35,8 +36,8 @@ export async function getMarketCandles(symbol: string, timeframe: Timeframe, exc
   const db = readThoonDb();
 
   if (exchangeId !== 'binance') {
-    return getPublicRestMarketCandles(db.marketPairRecords, symbol, timeframe, exchangeId, requestedLimit, options);
+    return sanitizeCandles(await getPublicRestMarketCandles(db.marketPairRecords, symbol, timeframe, exchangeId, requestedLimit, options));
   }
 
-  return getBinanceMarketCandles(db.marketPairRecords, symbol, timeframe, requestedLimit, options);
+  return sanitizeCandles(await getBinanceMarketCandles(db.marketPairRecords, symbol, timeframe, requestedLimit, options));
 }
