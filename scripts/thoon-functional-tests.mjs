@@ -60,7 +60,7 @@ test('Bud backend status, capabilities and safety gates are live', async ({ apiR
   assert(processStatus.payload?.running === true, 'Bud backend process is running');
   assert(processStatus.payload?.pid || processStatus.payload?.managed === false, 'Bud backend exposes a process id when managed or reports an external running process');
 
-  const killSwitch = unwrapPayload(await readJsonResponse(await apiRequest('/api/bud/kill-switch'), 'Kill switch status returns JSON'));
+  const killSwitch = await resetKillSwitch(apiRequest, 'functional safety gate setup');
   assertEqual(killSwitch.active, false, 'Kill switch is clear before tests');
 
   const readiness = unwrapPayload(await readJsonResponse(await apiRequest('/api/bud/live-readiness'), 'Live readiness returns JSON'));
@@ -136,6 +136,8 @@ test('Bud research registry is persisted in PostgreSQL and returns real evaluati
 });
 
 test('Bud paper execution is based on live market price and live order paths are blocked', async ({ apiRequest }) => {
+  await resetKillSwitch(apiRequest, 'functional paper and live route setup');
+
   const blockedLive = await apiRequest('/api/bud/paper', {
     body: JSON.stringify({ liveTrading: true, quantity: 0.0001, side: 'buy', symbol: 'BTCUSDT' }),
     headers: { 'content-type': 'application/json' },
@@ -145,14 +147,35 @@ test('Bud paper execution is based on live market price and live order paths are
   assertStatus(blockedLive, 403, 'Paper route blocks live trading payloads');
   assertIncludes(blockedLiveBody, 'only allows paper trading', 'Live payload block is explicit');
 
+  await resetKillSwitch(apiRequest, 'functional manual live routing setup');
+
   const blockedLiveTrade = await apiRequest('/api/bud/trade', {
     body: JSON.stringify({ exchange: 'binance', live_trading: true, paper_trading: false, quantity: 0.0001, side: 'buy', symbol: 'BTCUSDT' }),
     headers: { 'content-type': 'application/json' },
     method: 'POST',
   });
   const blockedLiveTradeBody = await blockedLiveTrade.text();
-  assertStatus(blockedLiveTrade, 403, 'Bud trade route blocks live trading until hedge fund gates pass');
-  assertIncludes(blockedLiveTradeBody, 'hedge fund readiness', 'Bud live trade gate explains readiness block');
+  assertStatus(blockedLiveTrade, 428, 'Bud trade route requires explicit manual confirmation before live routing');
+  assertIncludes(blockedLiveTradeBody, 'Manual live trading requires explicit user confirmation', 'Bud live trade gate explains the missing user confirmation');
+
+  const manualLiveTrade = await apiRequest('/api/bud/trade', {
+    body: JSON.stringify({ confirmed: true, exchange: 'binance', execution_source: 'manual', live_trading: true, paper_trading: false, quantity: 0.0001, side: 'buy', symbol: 'BTCUSDT' }),
+    headers: { 'content-type': 'application/json' },
+    method: 'POST',
+  });
+  const manualLiveTradeBody = await manualLiveTrade.text();
+  assertStatus(manualLiveTrade, 403, 'Confirmed manual live trades pass the hedge-fund gate and stop on the technical live executor gate in default env');
+  assert(!manualLiveTradeBody.includes('hedge fund readiness'), 'Manual live trade is not blocked by hedge fund readiness gates');
+  assertIncludes(manualLiveTradeBody, 'live trading is disabled', 'Manual live trade reaches Bud live executor safety gate');
+
+  const orchestratedLiveTrade = await apiRequest('/api/bud/trade', {
+    body: JSON.stringify({ confirmed: true, exchange: 'binance', execution_source: 'orchestrator', live_trading: true, paper_trading: false, quantity: 0.0001, side: 'buy', symbol: 'BTCUSDT' }),
+    headers: { 'content-type': 'application/json' },
+    method: 'POST',
+  });
+  const orchestratedLiveTradeBody = await orchestratedLiveTrade.text();
+  assertStatus(orchestratedLiveTrade, 403, 'Orchestrated live trades stay blocked until hedge fund gates pass');
+  assertIncludes(orchestratedLiveTradeBody, 'hedge fund readiness', 'Orchestrated live trade gate still uses hedge fund readiness');
 
   const paperTradeResponse = await apiRequest('/api/bud/trade', {
     body: JSON.stringify({
@@ -247,11 +270,19 @@ test('Source wiring points rebuilt pages to Bud and avoids client-side exchange 
   assertIncludes(dydxConnector, 'node.place_order', 'dYdX live signer places orders through signed node transactions');
 
   const tradeRoute = await readSource('src/app/api/bud/trade/route.ts');
-  assertIncludes(tradeRoute, 'getHedgeFundReadiness', 'Bud trade route gates live trading with hedge fund readiness');
+  assertIncludes(tradeRoute, 'getHedgeFundReadiness', 'Bud trade route gates automated live trading with hedge fund readiness');
+  assertIncludes(tradeRoute, 'isAutomatedExecution', 'Bud trade route separates manual user live orders from orchestrated live orders');
+  assertIncludes(tradeRoute, 'Manual live trading requires explicit user confirmation', 'Bud trade route keeps explicit confirmation on manual live orders');
 
   const legacyTradingRoute = await readSource('src/app/api/[...path]/route.ts');
   assertIncludes(legacyTradingRoute, 'placeBudTrade', 'Legacy chart live execution routes through Bud when configured');
   assertIncludes(legacyTradingRoute, "liveExchangeProvider === 'bud'", 'Legacy chart live execution detects Bud as the live provider');
+  assertIncludes(legacyTradingRoute, 'requiresHedgeFundReadinessForLiveExecution', 'Legacy chart live execution keeps hedge fund gates for orchestrated orders only');
+
+  const chartsWorkspace = await readSource('src/screens/charts/ChartsWorkspace.tsx');
+  assertIncludes(chartsWorkspace, '/api/bud/trade', 'Charts paper and live execution use Bud trade route');
+  assert(!chartsWorkspace.includes('/api/trading/execute'), 'Charts no longer calls legacy trading execute route');
+  assert(!chartsWorkspace.includes('/api/positions/'), 'Charts paper close no longer uses local position close route');
 
   const stateStrip = await readSource('src/components/bud/BudStateStrip.tsx');
   assertIncludes(stateStrip, '/api/bud/status', 'Global Bud strip reads Bud status');
@@ -438,6 +469,19 @@ function unwrapPayload(value) {
   }
 
   return value;
+}
+
+async function resetKillSwitch(apiRequest, detail) {
+  const response = await apiRequest('/api/bud/kill-switch', {
+    body: JSON.stringify({ action: 'reset', confirmation: 'RESET_KILL_SWITCH', detail, reason: 'manual' }),
+    headers: { 'content-type': 'application/json' },
+    method: 'POST',
+  });
+  const payload = unwrapPayload(await readJsonResponse(response, 'Kill switch reset returns JSON'));
+
+  assertStatus(response, 200, 'Kill switch reset succeeds');
+
+  return payload;
 }
 
 async function readJsonResponse(response, message) {

@@ -45,6 +45,7 @@ const navLinks = [
 
 test.beforeEach(async ({ request }) => {
   await ensureAuthenticatedIfNeeded(request);
+  await resetKillSwitch(request);
 });
 
 test('every visible Thoon/Bud page settles without blocking runtime states', async ({ page }) => {
@@ -176,6 +177,20 @@ async function ensureAuthenticatedIfNeeded(request: APIRequestContext) {
   });
 
   await expect(login).toBeOK();
+}
+
+async function resetKillSwitch(request: APIRequestContext) {
+  const response = await request.post('/api/bud/kill-switch', {
+    data: {
+      action: 'reset',
+      confirmation: 'RESET_KILL_SWITCH',
+      detail: 'Playwright no-blockers setup',
+      reason: 'manual',
+    },
+    timeout: 30_000,
+  });
+
+  await expect(response).toBeOK();
 }
 
 async function gotoAuthenticated(page: Page, route: string) {

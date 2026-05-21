@@ -32,7 +32,7 @@ import { apiJson, patchJson, postJson } from '../../services/api-client';
 import { buildRiskOrderInputFromDraft, evaluateRiskEngine, lossPercentFromPnl, type RiskEngineCheck } from '../../services/risk-engine';
 import { getTradingErrorDefinition } from '../../services/trading-error-service';
 import type { Candle, MarketCategory, MarketPair, PositionDraft, Timeframe } from '../../types/market';
-import type { BacktestReport, Bot as TradingBot, ExchangeConnection, Fill, JournalTrade, Order, OrderExecutionSource, PaperTestSession, Position, RiskRules, Strategy, TradeLimits, UserPreferences } from '../../types/trading';
+import type { BacktestReport, Bot as TradingBot, ExchangeConnection, JournalTrade, Order, OrderExecutionSource, PaperTestSession, Position, RiskRules, Strategy, TradeLimits, UserPreferences } from '../../types/trading';
 import { normalizeCandle, sanitizeCandles } from '../../utils/candles';
 import {
   adxSeries,
@@ -119,6 +119,14 @@ type IndicatorField = {
   min: number;
   step?: number;
 };
+type BudEnvelope<T> = {
+  detail?: string;
+  payload?: T;
+  source?: string;
+  status?: number;
+};
+type BudTradePayload = Record<string, unknown>;
+type BudTradeResult = Record<string, unknown>;
 type IndicatorCatalogItem = {
   category: IndicatorCategory;
   description: string;
@@ -981,18 +989,34 @@ export function ChartsWorkspace({
     setSetupMessage('Closing paper');
 
     try {
-      const result = await postJson<{ fill: Fill; order: Order; position: Position; trade: JournalTrade }>(`/api/positions/${encodeURIComponent(position.id)}/close`, {
-        markPrice: visibleMarketPrice,
+      const closeSide = position.side === 'long' ? 'sell' : 'buy';
+      const budResponse = await postJson<BudEnvelope<BudTradeResult>>('/api/bud/trade', {
+        category: chartMarketType === 'spot' ? 'spot' : 'linear',
+        clientOrderId: `chart-close-${position.id}`.slice(0, 64),
+        exchange: selectedExchange?.id ?? 'binance',
+        expectedPrice: Number.isFinite(visibleMarketPrice) ? visibleMarketPrice : undefined,
+        leverage,
+        liveTrading: false,
+        maxSlippageBps: Math.max(1, defaultPreferences.defaultSlippage * 100),
+        orderType: 'MARKET',
+        paperTrading: true,
+        quantity: position.size,
+        reduceOnly: true,
+        side: closeSide,
+        symbol: position.symbol,
       });
+      const budResult = unwrapBudPayload(budResponse);
+      const exitPrice = budExecutionPrice(budResult) ?? visibleMarketPrice;
+      const pnl = calculateClosedPaperPnl(position, exitPrice);
 
       setPaperPositionRecords((currentPositions) => currentPositions.filter((item) => item.id !== position.id));
-      setSetupMessage(`Paper result ${formatUsd(result.position.pnl)}`);
+      setSetupMessage(`Bud paper result ${formatUsd(pnl)}`);
 
       if (selectedPaperSession) {
         await updatePaperSession(selectedPaperSession.id, {
-          note: `Closed paper ${result.position.side} ${result.position.symbol}: ${formatUsd(result.position.pnl)}.`,
-          pnlDelta: result.position.pnl,
-          rMultipleDelta: calculatePaperSessionRMultiple(result.position.pnl, selectedPaperReport),
+          note: `Closed Bud paper ${position.side} ${position.symbol}: ${formatUsd(pnl)}.`,
+          pnlDelta: pnl,
+          rMultipleDelta: calculatePaperSessionRMultiple(pnl, selectedPaperReport),
           status: 'running',
           tradeDelta: 1,
         });
@@ -1021,19 +1045,73 @@ export function ChartsWorkspace({
     return true;
   }
 
-  function tradeExecutionPayload(mode: 'paper' | 'live') {
+  function tradeExecutionPayload(mode: 'paper' | 'live'): BudTradePayload {
+    const orderType = defaultPreferences.orderType === 'limit' && draft.entry > 0 ? 'LIMIT' : 'MARKET';
+
     return {
-      allowPaperSymbolOverride: mode === 'paper' && isPaperProposalSymbolOverride,
-      draft,
-      exchangeId: selectedExchange?.id,
-      exchangeName: selectedExchange?.name,
-      executionSource: executionIntent,
+      category: chartMarketType === 'spot' ? 'spot' : 'linear',
+      clientOrderId: `chart-${mode}-${clientSlug(market.symbol)}-${Date.now()}`.slice(0, 64),
+      exchange: selectedExchange?.id ?? 'binance',
+      expectedPrice: Number.isFinite(visibleMarketPrice) ? visibleMarketPrice : undefined,
       leverage,
-      mode,
-      paperSessionId: selectedPaperSession?.id,
+      liveTrading: mode === 'live',
+      maxSlippageBps: Math.max(1, defaultPreferences.defaultSlippage * 100),
+      orderType,
+      paperTrading: mode === 'paper',
+      price: orderType === 'LIMIT' ? draft.entry : undefined,
+      quantity: draft.size,
+      reduceOnly: false,
+      side: draft.direction === 'short' ? 'sell' : 'buy',
       strategyId: executionIntent === 'strategy' ? selectedStrategy?.id : undefined,
-      strategyName: executionIntent === 'strategy' ? selectedStrategy?.name : undefined,
       symbol: market.symbol,
+    };
+  }
+
+  function buildOrderFromBudResult(result: BudTradeResult, mode: 'paper' | 'live'): Order {
+    const executionPrice = budExecutionPrice(result) ?? (draft.entry > 0 ? draft.entry : visibleMarketPrice);
+    const status = budOrderStatus(result).toLowerCase();
+
+    return {
+      createdAt: new Date().toISOString(),
+      exchange: mode === 'paper' ? 'Paper' : selectedExchange?.name ?? 'Bud',
+      executionSource: executionIntent,
+      id: budOrderId(result) ?? `ord-${clientSlug(market.symbol)}-${Date.now()}`,
+      price: executionPrice,
+      reduceOnly: false,
+      side: draft.direction === 'short' ? 'sell' : 'buy',
+      size: draft.size,
+      status: mode === 'paper' || status.includes('filled') ? 'filled' : status.includes('rejected') ? 'rejected' : 'open',
+      strategyId: selectedStrategy?.id,
+      strategyName: selectedStrategy?.name,
+      symbol: market.symbol,
+      type: defaultPreferences.orderType === 'stop' ? 'stop' : defaultPreferences.orderType === 'limit' ? 'limit' : 'market',
+    };
+  }
+
+  function buildPaperPositionFromBudResult(result: BudTradeResult, order: Order): Position | undefined {
+    if (order.size <= 0 || order.price <= 0 || budOrderStatus(result).toLowerCase().includes('rejected')) {
+      return undefined;
+    }
+
+    const side = draft.direction === 'short' ? ('short' as const) : ('long' as const);
+    const margin = (order.price * order.size) / Math.max(leverage, 1);
+
+    return {
+      entryPrice: order.price,
+      exchange: 'Paper',
+      id: `pos-${clientSlug(market.symbol)}-${Date.now()}`,
+      leverage,
+      liquidationPrice: side === 'long' ? order.price * (1 - 0.9 / Math.max(leverage, 1)) : order.price * (1 + 0.9 / Math.max(leverage, 1)),
+      margin,
+      markPrice: order.price,
+      openedAt: order.createdAt,
+      pnl: 0,
+      pnlPercent: 0,
+      side,
+      size: order.size,
+      stopLoss: draft.stopLoss,
+      symbol: market.symbol,
+      takeProfit: draft.takeProfit,
     };
   }
 
@@ -1054,15 +1132,18 @@ export function ChartsWorkspace({
     setSetupMessage('Routing paper');
 
     try {
-      const result = await postJson<{ allowed: boolean; order?: Order; position?: Position }>('/api/trading/execute', tradeExecutionPayload('paper'));
+      const budResponse = await postJson<BudEnvelope<BudTradeResult>>('/api/bud/trade', tradeExecutionPayload('paper'));
+      const budResult = unwrapBudPayload(budResponse);
+      const order = buildOrderFromBudResult(budResult, 'paper');
+      const position = buildPaperPositionFromBudResult(budResult, order);
 
-      setSetupMessage(result.allowed ? (executionIntent === 'strategy' ? 'Strategy paper filled' : 'Manual paper filled') : 'Paper blocked');
+      setSetupMessage(executionIntent === 'strategy' ? 'Strategy Bud paper filled' : 'Manual Bud paper filled');
 
-      if (result.position) {
-        setPaperPositionRecords((currentPositions) => [result.position as Position, ...currentPositions]);
+      if (position) {
+        setPaperPositionRecords((currentPositions) => [position, ...currentPositions]);
       }
 
-      if (result.allowed && selectedPaperSession) {
+      if (selectedPaperSession) {
         void updatePaperSession(selectedPaperSession.id, {
           note: `Paper position opened on ${market.symbol} from Charts at ${formatUsd(draft.entry)}.`,
           status: 'running',
@@ -1089,10 +1170,13 @@ export function ChartsWorkspace({
     setSetupMessage('Routing live');
 
     try {
-      const result = await postJson<{ allowed: boolean }>('/api/trading/execute', { ...tradeExecutionPayload('live'), confirmed: true });
+      const result = unwrapBudPayload(await postJson<BudEnvelope<BudTradeResult>>('/api/bud/trade', {
+        ...tradeExecutionPayload('live'),
+        liveConfirmation: 'I_UNDERSTAND_LIVE_CRYPTO_TRADING',
+      }));
 
       setLiveOrderConfirmationOpen(false);
-      setSetupMessage(result.allowed ? (executionIntent === 'strategy' ? 'Strategy live sent' : 'Manual live sent') : 'Live blocked');
+      setSetupMessage(budOrderStatus(result).toLowerCase().includes('rejected') ? 'Live blocked' : executionIntent === 'strategy' ? 'Strategy Bud live sent' : 'Manual Bud live sent');
     } catch (error) {
       setSetupMessage(error instanceof Error ? error.message : 'Live failed');
     }
@@ -2420,6 +2504,105 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function unwrapBudPayload<T>(response: BudEnvelope<T> | T): T {
+  if (isRecord(response) && 'payload' in response) {
+    return response.payload as T;
+  }
+
+  return response as T;
+}
+
+function recordPathValue(value: unknown, path: string[]) {
+  return path.reduce<unknown>((currentValue, key) => {
+    if (!isRecord(currentValue)) {
+      return undefined;
+    }
+
+    return currentValue[key];
+  }, value);
+}
+
+function finiteNumber(value: unknown) {
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : undefined;
+
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function stringValue(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function budExecutionPrice(result: BudTradeResult) {
+  const paths = [
+    ['execution_price'],
+    ['average_execution_price'],
+    ['submitted_price'],
+    ['price'],
+    ['raw_exchange_response', 'avgPrice'],
+    ['raw_exchange_response', 'price'],
+    ['raw_exchange_response', 'result', 'price'],
+    ['raw_exchange_response', 'result', 'avgPrice'],
+  ];
+
+  for (const path of paths) {
+    const price = finiteNumber(recordPathValue(result, path));
+
+    if (price && price > 0) {
+      return price;
+    }
+  }
+
+  const fills = Array.isArray(result.fills) ? result.fills : [];
+  const firstFillPrice = finiteNumber(recordPathValue(fills[0], ['price']));
+
+  return firstFillPrice && firstFillPrice > 0 ? firstFillPrice : undefined;
+}
+
+function budOrderId(result: BudTradeResult) {
+  const paths = [
+    ['order_id'],
+    ['orderId'],
+    ['client_order_id'],
+    ['clientOrderId'],
+    ['raw_exchange_response', 'orderId'],
+    ['raw_exchange_response', 'order_id'],
+    ['raw_exchange_response', 'result', 'orderId'],
+    ['raw_exchange_response', 'data', 'orderId'],
+  ];
+
+  for (const path of paths) {
+    const value = stringValue(recordPathValue(result, path));
+
+    if (value) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function budOrderStatus(result: BudTradeResult) {
+  const paths = [
+    ['status'],
+    ['order_status'],
+    ['orderStatus'],
+    ['rawStatus'],
+    ['raw_exchange_response', 'status'],
+    ['raw_exchange_response', 'result', 'orderStatus'],
+    ['raw_exchange_response', 'data', 'orderStatus'],
+  ];
+
+  for (const path of paths) {
+    const value = stringValue(recordPathValue(result, path));
+
+    if (value) {
+      return value;
+    }
+  }
+
+  return 'ACCEPTED';
+}
+
 function recalculateDraftSize(draft: PositionDraft): PositionDraft {
   const accountSize = 10000;
   const riskAmount = accountSize * (draft.riskPercent / 100);
@@ -2468,6 +2651,12 @@ function calculateLivePositionPnl(position: Position, markPrice: number) {
   const direction = position.side === 'long' ? 1 : -1;
 
   return (markPrice - position.entryPrice) * position.size * direction;
+}
+
+function calculateClosedPaperPnl(position: Position, exitPrice: number) {
+  const direction = position.side === 'long' ? 1 : -1;
+
+  return (exitPrice - position.entryPrice) * position.size * direction;
 }
 
 function calculatePaperSessionRMultiple(pnl: number, report?: BacktestReport) {

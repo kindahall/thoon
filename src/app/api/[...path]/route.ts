@@ -1033,8 +1033,10 @@ async function postHandler(request: NextRequest, path: string[]) {
 
   if (path[0] === 'trading' && path[1] === 'execute') {
     const requestedMode = body.mode === 'live' ? 'live' : 'paper';
+    const requestedExecutionSource = body.executionSource === 'strategy' ? 'strategy' : 'manual';
+    const userInitiatedLiveExecution = requestedExecutionSource === 'manual' || requestedExecutionSource === 'strategy';
 
-    if (requestedMode === 'live' && !isLiveExecutionEnabled()) {
+    if (requestedMode === 'live' && !isLiveExecutionEnabled({ userInitiated: userInitiatedLiveExecution })) {
       incrementMetric('liveOrdersBlocked');
 
       return json(
@@ -1044,14 +1046,19 @@ async function postHandler(request: NextRequest, path: string[]) {
           appendAuditEvent(db, {
             action: 'Live order blocked',
             actor: 'system',
-            details: 'Live order blocked because live execution readiness is incomplete.',
+            details: userInitiatedLiveExecution ? 'Manual live order blocked because the live safety baseline is incomplete.' : 'Live order blocked because live execution readiness is incomplete.',
             eventType: 'risk',
             exchange: asString(body.exchangeName) || 'Live',
             status: 'blocked',
             symbol,
           });
 
-          return { allowed: false, error: 'Live execution is disabled until auth, Postgres, production encryption and a live exchange provider are configured.' };
+          return {
+            allowed: false,
+            error: userInitiatedLiveExecution
+              ? 'Manual live execution requires a production encryption key before routing to the Bud live executor.'
+              : 'Live execution is disabled until auth, Postgres, production encryption and a live exchange provider are configured.',
+          };
         }),
         403,
       );
@@ -1085,7 +1092,7 @@ async function postHandler(request: NextRequest, path: string[]) {
     const draft = body.draft as { direction?: 'long' | 'short'; entry?: number; riskPercent?: number; size?: number; stopLoss?: number; takeProfit?: number };
     const symbol = asString(body.symbol) || db.marketPairRecords[0].symbol;
     const leverage = asNumber(body.leverage, db.userPreferencesRecord.defaultLeverage);
-    const executionSource = body.executionSource === 'strategy' ? 'strategy' : 'manual';
+    const executionSource = requestedExecutionSource;
     const requestedStrategyId = asString(body.strategyId);
     const requestedStrategyName = asString(body.strategyName);
     const executionStrategy = requestedStrategyId ? findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, requestedStrategyId) : undefined;
@@ -1097,7 +1104,7 @@ async function postHandler(request: NextRequest, path: string[]) {
       db.exchangeRecords.find((item) => item.name === db.userPreferencesRecord.defaultExchange) ??
       db.exchangeRecords[0];
     const env = getThoonServerEnv();
-    const liveViaBud = mode === 'live' && env.liveExchangeProvider === 'bud';
+    const liveViaBud = mode === 'live' && (env.liveExchangeProvider === 'bud' || (userInitiatedLiveExecution && env.liveExchangeProvider === 'disabled'));
     const liveApiKey = mode === 'live' && !liveViaBud ? getActiveTradeApiKey(db, exchange) : undefined;
     const liveSecret = liveApiKey ? db.apiKeySecrets[liveApiKey.id] : undefined;
     let liveAccountSnapshot:
@@ -1120,7 +1127,7 @@ async function postHandler(request: NextRequest, path: string[]) {
     }
 
     if (mode === 'live' && liveViaBud) {
-      const liveBlocker = getLiveTradingBlocker(db, exchange?.id || requestedExchangeId || requestedExchangeName || 'Live');
+      const liveBlocker = requiresHedgeFundReadinessForLiveExecution(body) ? getLiveTradingBlocker(db, exchange?.id || requestedExchangeId || requestedExchangeName || 'Live') : undefined;
 
       if (liveBlocker) {
         incrementMetric('liveOrdersBlocked');
@@ -1143,37 +1150,39 @@ async function postHandler(request: NextRequest, path: string[]) {
         );
       }
 
-      const hedgeFundReadiness = await getHedgeFundReadiness(request.signal);
+      if (requiresHedgeFundReadinessForLiveExecution(body)) {
+        const hedgeFundReadiness = await getHedgeFundReadiness(request.signal);
 
-      if (!hedgeFundReadiness.liveReady) {
-        incrementMetric('liveOrdersBlocked');
+        if (!hedgeFundReadiness.liveReady) {
+          incrementMetric('liveOrdersBlocked');
 
-        return json(
-          updateThoonDb((nextDb) => {
-            appendAuditEvent(nextDb, {
-              action: 'Live order blocked',
-              actor: 'system',
-              details: 'Live order blocked by Thoon hedge fund readiness gates.',
-              eventType: 'risk',
-              exchange: exchange?.name ?? 'Bud',
-              status: 'blocked',
-              symbol,
-            });
+          return json(
+            updateThoonDb((nextDb) => {
+              appendAuditEvent(nextDb, {
+                action: 'Live order blocked',
+                actor: 'system',
+                details: 'Live order blocked by Thoon hedge fund readiness gates.',
+                eventType: 'risk',
+                exchange: exchange?.name ?? 'Bud',
+                status: 'blocked',
+                symbol,
+              });
 
-            return {
-              allowed: false,
-              blockers: hedgeFundReadiness.blockers,
-              error: 'Live trading blocked by Thoon hedge fund readiness gates.',
-              readiness: {
-                generatedAt: hedgeFundReadiness.generatedAt,
-                score: hedgeFundReadiness.score,
-                status: hedgeFundReadiness.status,
-                summary: hedgeFundReadiness.summary,
-              },
-            };
-          }),
-          403,
-        );
+              return {
+                allowed: false,
+                blockers: hedgeFundReadiness.blockers,
+                error: 'Live trading blocked by Thoon hedge fund readiness gates.',
+                readiness: {
+                  generatedAt: hedgeFundReadiness.generatedAt,
+                  score: hedgeFundReadiness.score,
+                  status: hedgeFundReadiness.status,
+                  summary: hedgeFundReadiness.summary,
+                },
+              };
+            }),
+            403,
+          );
+        }
       }
     } else if (mode === 'live') {
       if (!exchange || !liveApiKey || !liveSecret) {
@@ -1221,7 +1230,7 @@ async function postHandler(request: NextRequest, path: string[]) {
       }
     }
 
-    const riskExchange = liveViaBud && exchange && isBudServerConnectorReady(exchange.id) ? exchangeWithBudServerTrade(exchange) : exchange;
+    const riskExchange = liveViaBud && exchange ? exchangeWithBudServerTrade(exchange) : exchange;
     const accountBalance = liveAccountSnapshot?.accountBalance ?? 25000;
     const availableBalance = liveAccountSnapshot?.availableBalance ?? accountBalance;
     const riskResult = evaluateRiskEngine({
@@ -6099,7 +6108,7 @@ function sanitizeJsonValue(value: unknown, depth = 0): unknown {
   return undefined;
 }
 
-function isLiveExecutionEnabled() {
+function isLiveExecutionEnabled(options: { userInitiated?: boolean } = {}) {
   const env = getThoonServerEnv();
   const context = getThoonRequestContext();
 
@@ -6107,7 +6116,18 @@ function isLiveExecutionEnabled() {
     return false;
   }
 
+  if (options.userInitiated && env.liveOperatorMode === 'single-user') {
+    return hasProductionEncryptionKey(env.encryptionKey);
+  }
+
   return env.appMode === 'live-enabled' && env.authMode === 'local-required' && env.databaseProvider === 'postgres' && env.liveExchangeProvider !== 'disabled' && hasProductionEncryptionKey(env.encryptionKey);
+}
+
+function requiresHedgeFundReadinessForLiveExecution(body: Record<string, unknown>) {
+  const source = asString(body.executionSource || body.execution_source || body.source).toLowerCase();
+  const actor = asString(body.actor).toLowerCase();
+
+  return body.automated === true || body.orchestrated === true || ['agent', 'automation', 'bot', 'orchestrator'].includes(source) || ['agent', 'automation', 'bot', 'orchestrator'].includes(actor);
 }
 
 function getLiveTradingBlocker(db: ThoonDb, exchangeNameOrId: string) {

@@ -216,11 +216,13 @@ class OrderManager:
             request.exchange,
             "get_market_price",
             connector.get_market_price(request.symbol, request.category),
+            trip_kill_switch_on_latency=mode == "live",
         )
         second_price = await self._guarded_call(
             request.exchange,
             "confirm_market_price",
             connector.get_market_price(request.symbol, request.category),
+            trip_kill_switch_on_latency=mode == "live",
         )
 
         if self.risk_engine.price_incoherence_breached(first_price, second_price):
@@ -459,6 +461,7 @@ class OrderManager:
                 position_exchange,
                 "mark_paper_position",
                 connector.get_market_price(position_symbol, category),
+                trip_kill_switch_on_latency=False,
             )
             unrealized = self._paper_unrealized(position, market_price)
             records.append(
@@ -501,17 +504,23 @@ class OrderManager:
         exposure = 0.0
         for (exchange, symbol), position in self._paper_positions.items():
             connector = self._connector(exchange)
-            market_price = await self._guarded_call(exchange, "paper_exposure_mark", connector.get_market_price(symbol, "spot"))
+            market_price = await self._guarded_call(
+                exchange,
+                "paper_exposure_mark",
+                connector.get_market_price(symbol, "spot"),
+                trip_kill_switch_on_latency=False,
+            )
             exposure += abs(position.quantity * market_price)
         return exposure
 
-    async def _guarded_call(self, exchange: ExchangeName, operation: str, awaitable: Any) -> Any:
+    async def _guarded_call(self, exchange: ExchangeName, operation: str, awaitable: Any, *, trip_kill_switch_on_latency: bool = True) -> Any:
         start = time.perf_counter()
         try:
             result = await awaitable
             latency_ms = (time.perf_counter() - start) * 1000
-            self.kill_switch.record_latency(latency_ms, f"{exchange}.{operation}")
-            self.kill_switch.ensure_not_active()
+            if trip_kill_switch_on_latency:
+                self.kill_switch.record_latency(latency_ms, f"{exchange}.{operation}")
+                self.kill_switch.ensure_not_active()
             return result
         except KillSwitchActiveError:
             raise

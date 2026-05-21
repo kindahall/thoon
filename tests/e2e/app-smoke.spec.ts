@@ -24,6 +24,7 @@ const e2eAdminPassword = 'e2e-admin-password-123';
 
 test.beforeEach(async ({ request }) => {
   await ensureAuthenticatedIfNeeded(request);
+  await resetKillSwitch(request);
 });
 
 test('rebuilt Thoon/Bud routes render with global Bud state', async ({ page }) => {
@@ -119,6 +120,35 @@ test('Bud backend API exposes live status, real Binance backtest and safety gate
   });
   expect(blockedLivePaper.status()).toBe(403);
   await expect(blockedLivePaper).not.toBeOK();
+
+  const resetKillSwitchResponse = await request.post('/api/bud/kill-switch', {
+    data: { action: 'reset', confirmation: 'RESET_KILL_SWITCH' },
+    timeout: 120_000,
+  });
+  await expect(resetKillSwitchResponse).toBeOK();
+
+  const unconfirmedManualLive = await request.post('/api/bud/trade', {
+    data: { exchange: 'binance', live_trading: true, paper_trading: false, quantity: 0.0001, side: 'buy', symbol: 'BTCUSDT' },
+  });
+  expect(unconfirmedManualLive.status()).toBe(428);
+  await expect(unconfirmedManualLive).not.toBeOK();
+
+  const confirmedManualLive = await request.post('/api/bud/trade', {
+    data: { confirmed: true, exchange: 'binance', execution_source: 'manual', live_trading: true, paper_trading: false, quantity: 0.0001, side: 'buy', symbol: 'BTCUSDT' },
+    timeout: 120_000,
+  });
+  const confirmedManualLiveText = await confirmedManualLive.text();
+  expect(confirmedManualLive.status()).toBe(403);
+  expect(confirmedManualLiveText).toContain('live trading is disabled');
+  expect(confirmedManualLiveText).not.toContain('hedge fund readiness');
+
+  const orchestratedLive = await request.post('/api/bud/trade', {
+    data: { confirmed: true, exchange: 'binance', execution_source: 'orchestrator', live_trading: true, paper_trading: false, quantity: 0.0001, side: 'buy', symbol: 'BTCUSDT' },
+    timeout: 120_000,
+  });
+  const orchestratedLiveText = await orchestratedLive.text();
+  expect(orchestratedLive.status()).toBe(403);
+  expect(orchestratedLiveText).toContain('hedge fund readiness');
 });
 
 test('backtest page can run a real Bud backtest from the UI', async ({ page }) => {
@@ -171,6 +201,20 @@ async function ensureAuthenticatedIfNeeded(request: APIRequestContext) {
   });
 
   await expect(login).toBeOK();
+}
+
+async function resetKillSwitch(request: APIRequestContext) {
+  const response = await request.post('/api/bud/kill-switch', {
+    data: {
+      action: 'reset',
+      confirmation: 'RESET_KILL_SWITCH',
+      detail: 'Playwright smoke setup',
+      reason: 'manual',
+    },
+    timeout: 30_000,
+  });
+
+  await expect(response).toBeOK();
 }
 
 async function gotoAuthenticated(page: Page, route: string) {

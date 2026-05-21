@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { NextResponse, type NextRequest } from 'next/server';
 
 import { getHedgeFundReadiness } from '../../../../server/hedge-fund-readiness';
@@ -9,13 +11,15 @@ export const runtime = 'nodejs';
 
 const exchanges = new Set(['binance', 'bybit', 'bitget', 'hyperliquid', 'dydx']);
 const categories = new Set(['spot', 'linear', 'inverse', 'option']);
+const budLiveConfirmationText = 'I_UNDERSTAND_LIVE_CRYPTO_TRADING';
 
 export async function POST(request: NextRequest) {
   try {
     const body = await readOptionalJson(request);
     const liveRequested = body.live_trading === true || body.liveTrading === true || body.paper_trading === false || body.paperTrading === false;
+    const automatedRequest = isAutomatedExecution(body);
 
-    if (liveRequested) {
+    if (liveRequested && automatedRequest) {
       const readiness = await getHedgeFundReadiness(request.signal);
 
       if (!readiness.liveReady) {
@@ -37,6 +41,19 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    if (liveRequested && !hasManualLiveConfirmation(body)) {
+      return NextResponse.json(
+        {
+          confirmationRequired: true,
+          detail: 'Manual live trading requires explicit user confirmation.',
+          live_confirmation_text: budLiveConfirmationText,
+          source: 'thoon_bud_trade_gate',
+          status: 428,
+        },
+        { status: 428 },
+      );
+    }
+
     const side = stringFromBody(body, 'side', 'buy').toLowerCase();
     if (side !== 'buy' && side !== 'sell') {
       return NextResponse.json({ detail: 'Trade side must be buy or sell', source: 'thoon_bud_trade_gate' }, { status: 400 });
@@ -52,11 +69,11 @@ export async function POST(request: NextRequest) {
     const expectedPrice = optionalNumber(body.expected_price ?? body.expectedPrice);
     const payload = {
       category,
-      client_order_id: clientOrderId,
+      client_order_id: clientOrderId ?? (liveRequested ? `thoon-live-${randomUUID()}`.slice(0, 64) : undefined),
       exchange,
       expected_price: expectedPrice,
       leverage: numberFromBody(body, 'leverage', 1, 1, 125),
-      live_confirmation: typeof body.live_confirmation === 'string' ? body.live_confirmation : typeof body.liveConfirmation === 'string' ? body.liveConfirmation : undefined,
+      live_confirmation: liveRequested ? budLiveConfirmation(body) : undefined,
       live_trading: liveRequested,
       max_slippage_bps: numberFromBody(body, 'max_slippage_bps', numberFromBody(body, 'maxSlippageBps', 25, 1, 1000), 1, 1000),
       order_type: orderType === 'LIMIT' ? 'LIMIT' : 'MARKET',
@@ -88,6 +105,25 @@ function normalizeCategory(value: string) {
   const normalized = value.toLowerCase();
 
   return categories.has(normalized) ? normalized : 'spot';
+}
+
+function isAutomatedExecution(body: Record<string, unknown>) {
+  const source = stringFromBody(body, 'execution_source', stringFromBody(body, 'executionSource', stringFromBody(body, 'source', 'manual'))).toLowerCase();
+  const actor = stringFromBody(body, 'actor', '').toLowerCase();
+
+  return body.automated === true || body.orchestrated === true || ['agent', 'automation', 'bot', 'orchestrator'].includes(source) || ['agent', 'automation', 'bot', 'orchestrator'].includes(actor);
+}
+
+function hasManualLiveConfirmation(body: Record<string, unknown>) {
+  return body.confirmed === true || body.confirmation === 'confirmed' || body.live_confirmation === budLiveConfirmationText || body.liveConfirmation === budLiveConfirmationText;
+}
+
+function budLiveConfirmation(body: Record<string, unknown>) {
+  if (body.confirmed === true || body.confirmation === 'confirmed') {
+    return budLiveConfirmationText;
+  }
+
+  return typeof body.live_confirmation === 'string' ? body.live_confirmation : typeof body.liveConfirmation === 'string' ? body.liveConfirmation : undefined;
 }
 
 function optionalNumber(value: unknown) {
