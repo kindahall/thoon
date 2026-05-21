@@ -1,249 +1,230 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 
-const routes = [
+type JsonRecord = Record<string, unknown>;
+
+const rebuiltRoutes = [
   '/charts?pair=BTC%2FUSDT',
   '/markets',
   '/watchlist',
-  '/exchanges',
+  '/agents',
+  '/agent',
+  '/backtest',
+  '/strategies',
+  '/bots',
   '/orders',
   '/alerts',
   '/history',
+  '/exchanges',
   '/preferences',
-  '/preferences/appearance',
-  '/preferences/risk-rules',
-  '/agent',
-  '/strategies',
-  '/strategies/new',
-  '/bots',
-  '/bots/new',
-  '/backtest',
-  '/backtest/replay',
 ];
 
-const unsafeButtonPattern =
-  /archive|cancel|clear|close all|confirm live|delete|duplicate|execute|export|launch|live|logout|remove|reset|revoke|run backtest|send test|start|stop|pause/i;
+const removedRoutes = ['/strategies/new', '/strategies/core-lab', '/bots/new', '/backtest/replay', '/top-strategies'];
+const e2eAdminEmail = 'e2e-owner@thoon.local';
+const e2eAdminPassword = 'e2e-admin-password-123';
 
-test('primary routes render and safe buttons respond', async ({ page }) => {
+test.beforeEach(async ({ request }) => {
+  await ensureAuthenticatedIfNeeded(request);
+});
+
+test('rebuilt Thoon/Bud routes render with global Bud state', async ({ page }) => {
   const pageErrors: string[] = [];
-  let totalButtons = 0;
-  let totalSafeClicks = 0;
-
   page.on('pageerror', (error) => {
     pageErrors.push(error.message);
   });
 
-  for (const route of routes) {
-    await page.goto(route);
+  for (const route of rebuiltRoutes) {
+    await gotoAuthenticated(page, route);
     await expect(page.locator('.app-shell')).toBeVisible();
+    await expect(page.locator('.bud-state-strip')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Unlock Thoon' })).toHaveCount(0);
     await expect(page.locator('body')).not.toContainText(/Application error|Internal Server Error|Unhandled Runtime Error/);
-
-    if (route.startsWith('/charts')) {
-      await expect(page.locator('.chart-indicator-readout').first()).toBeVisible();
-      await expect(page.locator('.chart-indicator-readout').first()).not.toContainText(/L\s+\$0(?:\.00)?\b/);
-    }
-
-    const buttons = await page.locator('button:visible').all();
-    totalButtons += buttons.length;
-
-    let routeClicks = 0;
-    for (const button of buttons) {
-      if (routeClicks >= 3) {
-        break;
-      }
-
-      if (!(await button.isEnabled().catch(() => false))) {
-        continue;
-      }
-
-      const label = await buttonLabel(button);
-
-      if (!label || unsafeButtonPattern.test(label)) {
-        continue;
-      }
-
-      await button.scrollIntoViewIfNeeded();
-      await button.click({ timeout: 2500 });
-      await closeTransientSurfaces(page);
-      await page.waitForTimeout(40);
-      routeClicks += 1;
-      totalSafeClicks += 1;
-    }
+    await expect(page.locator('.bud-state-strip')).toContainText(/Bud|Binance|Paper|Live/i);
   }
 
-  expect(totalButtons).toBeGreaterThan(100);
-  expect(totalSafeClicks).toBeGreaterThan(35);
   expect(pageErrors).toEqual([]);
 });
 
-test('core authenticated API contracts remain reachable in test mode', async ({ request }) => {
-  const health = await request.get('/api/health');
-  await expect(health).toBeOK();
-  expect(health.headers()['x-thoon-request-id']).toBeTruthy();
-
-  const metrics = await request.get('/api/observability/metrics');
-  await expect(metrics).toBeOK();
-  const metricsBody = await metrics.json();
-
-  expect(metricsBody.counters.apiRequests).toBeGreaterThan(0);
-  expect(metricsBody.apiLatencyBuckets).toBeTruthy();
-
-  const blockedOrigin = await request.post('/api/alerts', {
-    data: { symbol: 'BTC/USDT' },
-    headers: { origin: 'https://example.invalid' },
-  });
-  expect(blockedOrigin.status()).toBe(403);
+test('retired legacy routes remain removed', async ({ request }) => {
+  for (const route of removedRoutes) {
+    const response = await request.get(route);
+    expect(response.status(), `${route} should stay removed`).toBe(404);
+  }
 });
 
-test('position builder can execute a strategy-sourced manual trade payload', async ({ page }) => {
-  let tradePayload: Record<string, unknown> | undefined;
+test('TradingView ONDO chart clears the loading overlay', async ({ page }) => {
+  await gotoAuthenticated(page, '/charts');
+  const marketPair = page.getByLabel('Market pair');
+  await marketPair.selectOption('ONDO/USDT');
+  await expect(marketPair).toHaveValue('ONDO/USDT');
 
-  await page.route('**/api/trading/execute', async (route) => {
-    tradePayload = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>;
-    await route.fulfill({
-      body: JSON.stringify({ allowed: true, order: { id: 'test-order' } }),
-      contentType: 'application/json',
-      status: 200,
-    });
-  });
+  const tradingViewButton = page.getByRole('button', { name: 'TradingView' });
+  await tradingViewButton.click();
+  await expect(tradingViewButton).toHaveClass(/is-active/);
 
-  await page.goto('/charts?pair=BTC%2FUSDT');
-  await page.getByRole('button', { name: 'Strategie' }).click();
-  await page.getByLabel('Trade strategy').selectOption({ index: 1 });
-
-  await page.locator('.trade-panel input[aria-label="Entry"]').fill('80493');
-  await page.locator('.trade-panel input[aria-label="Stop Loss"]').fill('78800');
-  await page.locator('.trade-panel input[aria-label="Take Profit"]').fill('84600');
-
-  await page.getByRole('button', { name: 'Execute Strategy Paper' }).click();
-  await expect(page.locator('.trade-panel__status')).toContainText(/filled|blocked/i);
-
-  expect(tradePayload?.executionSource).toBe('strategy');
-  expect(typeof tradePayload?.strategyId).toBe('string');
-  expect(tradePayload?.mode).toBe('paper');
+  await expect(page.locator('.tradingview-chart__iframe')).toHaveAttribute('title', /ONDOUSDT/);
+  await expect(page.locator('.tradingview-chart')).toHaveClass(/tradingview-chart--ready/, { timeout: 10_000 });
+  await expect(page.locator('.tradingview-chart__state--loading')).toHaveCount(0);
 });
 
-test('chart analysis tools persist across route changes and can be saved', async ({ page }) => {
-  const note = `analyse persistante ${Date.now()}`;
+test('Bud backend API exposes live status, real Binance backtest and safety gates', async ({ request }) => {
+  const statusResponse = await request.get('/api/bud/status');
+  await expect(statusResponse).toBeOK();
+  const status = await statusResponse.json();
 
-  await page.goto('/charts?pair=BTC%2FUSDT');
-  const entryInput = page.locator('.trade-panel input[aria-label="Entry"]');
-  await entryInput.fill('80600');
-  await expect(entryInput).toHaveValue('80600');
-  await page.locator('.scenario-notes-body textarea').fill(note);
-  await page.waitForFunction(
-    ({ expectedEntry, expectedNote, storageKey }) => {
-      const rawDrafts = window.localStorage.getItem(storageKey);
+  expect(status.source).toBe('thoon_bud_backend');
+  expect(status.status).toBe('online');
+  expect(status.health.status).toBe('ok');
+  expect(status.health.binance_rest).toBe('ok');
+  expect(status.capabilities.supported_exchanges).toEqual(expect.arrayContaining(['binance', 'bybit', 'bitget', 'hyperliquid', 'dydx']));
+  expect(status.capabilities.default_mode).toBe('paper');
+  expect(status.capabilities.live_trading_enabled).toBe(false);
 
-      if (!rawDrafts) {
-        return false;
-      }
-
-      const drafts = JSON.parse(rawDrafts) as Record<string, { draft?: { entry?: number }; notes?: string }>;
-
-      return Object.values(drafts).some((draft) => draft.notes === expectedNote && draft.draft?.entry === expectedEntry);
+  const backtestResponse = await request.post('/api/bud/backtest', {
+    data: {
+      interval: '1h',
+      limit: 240,
+      symbol: 'BTCUSDT',
+      validate_data_quality: true,
+      walk_forward_validate: true,
     },
-    { expectedEntry: 80600, expectedNote: note, storageKey: 'thoon.chartWorkspaceDrafts' },
-  );
+  });
+  await expect(backtestResponse).toBeOK();
+  const backtest = unwrapPayload(await backtestResponse.json());
+  const dataQuality = asRecord(backtest.data_quality);
+  const metrics = asRecord(backtest.metrics);
+  const walkForward = asRecord(backtest.walk_forward);
+  const transactionCosts = asRecord(backtest.transaction_costs);
 
-  await page.locator('.analysis-setups-card .bottom-card-header button').click();
-  await expect(page.locator('.analysis-setups-list')).toContainText('BTC/USDT 15m');
+  expect(backtest.symbol).toBe('BTCUSDT');
+  expect(backtest.rows).toBeGreaterThanOrEqual(240);
+  expect(dataQuality.exchange).toBe('binance');
+  expect(dataQuality.usable_for_backtest).toBe(true);
+  expect(typeof metrics.total_return).toBe('number');
+  expect(metrics).toHaveProperty('sharpe_ratio');
+  expect(metrics).toHaveProperty('max_drawdown');
+  expect(Array.isArray(walkForward.fold_results)).toBe(true);
+  expect(String(transactionCosts.orderbook_source)).toContain('binance');
 
-  await page.goto('/markets');
-  await page.goto('/charts?pair=BTC%2FUSDT');
+  const readinessResponse = await request.get('/api/bud/live-readiness');
+  await expect(readinessResponse).toBeOK();
+  const readiness = unwrapPayload(await readinessResponse.json());
+  const blockers = asArray(readiness.blockers);
 
-  await expect(page.locator('.trade-panel input[aria-label="Entry"]')).toHaveValue('80600');
-  await expect(page.locator('.scenario-notes-body textarea')).toHaveValue(note);
-  await expect(page.locator('.analysis-setups-list')).toContainText('BTC/USDT 15m');
+  expect(readiness.live_ready).toBe(false);
+  expect(blockers.length).toBeGreaterThan(0);
+  expect(blockers.join(' ')).toContain('live_trading_disabled');
+
+  const blockedLivePaper = await request.post('/api/bud/paper', {
+    data: { liveTrading: true, quantity: 0.0001, side: 'buy', symbol: 'BTCUSDT' },
+  });
+  expect(blockedLivePaper.status()).toBe(403);
+  await expect(blockedLivePaper).not.toBeOK();
 });
 
-test('agent chat sends with Enter and keeps Shift Enter for new lines', async ({ page }) => {
-  const message = `Entrée envoie le chat ${Date.now()}`;
-  let deletedMessageId = '';
-  let postedMessage = '';
-  let pollCount = 0;
+test('backtest page can run a real Bud backtest from the UI', async ({ page }) => {
+  await gotoAuthenticated(page, '/backtest');
+  await expect(page.locator('.bud-state-strip')).toBeVisible();
+  await page.getByRole('button', { name: 'Run backtest' }).click();
 
-  await page.route('**/api/agent/chat', async (route) => {
-    if (route.request().method() === 'GET') {
-      pollCount += 1;
-      await route.fulfill({
-        body: JSON.stringify([
-          { content: 'Analyse profonde terminee.', createdAt: new Date().toISOString(), id: 'test-agent-deep', role: 'assistant', status: 'completed' },
-          { content: postedMessage, createdAt: new Date().toISOString(), id: 'test-user-message', role: 'user', status: 'completed' },
-        ]),
-        contentType: 'application/json',
-        status: 200,
-      });
-      return;
-    }
-
-    const payload = JSON.parse(route.request().postData() ?? '{}') as { message?: string };
-    postedMessage = payload.message ?? '';
-    await route.fulfill({
-      body: JSON.stringify({
-        messages: [
-          { content: 'Codex running', createdAt: new Date().toISOString(), id: 'test-agent-deep', role: 'assistant', status: 'running' },
-          { content: postedMessage, createdAt: new Date().toISOString(), id: 'test-user-message', role: 'user', status: 'completed' },
-        ],
-        reply: { content: 'Codex running', createdAt: new Date().toISOString(), id: 'test-agent-deep', role: 'assistant', status: 'running' },
-      }),
-      contentType: 'application/json',
-      status: 200,
-    });
-  });
-  await page.route('**/api/agent/chat/*', async (route) => {
-    if (route.request().method() !== 'DELETE') {
-      await route.continue();
-      return;
-    }
-
-    deletedMessageId = route.request().url().split('/').pop() ?? '';
-    await route.fulfill({
-      body: JSON.stringify({
-        deleted: true,
-        messages: [{ content: 'Analyse profonde terminee.', createdAt: new Date().toISOString(), id: 'test-agent-deep', role: 'assistant', status: 'completed' }],
-      }),
-      contentType: 'application/json',
-      status: 200,
-    });
-  });
-
-  await page.goto('/agent');
-  const textarea = page.locator('.codex-chat-form textarea');
-  await textarea.fill('ligne 1');
-  await textarea.press('Shift+Enter');
-  await expect(textarea).toHaveValue('ligne 1\n');
-
-  await textarea.fill(message);
-  const responsePromise = page.waitForResponse((response) => response.url().includes('/api/agent/chat') && response.request().method() === 'POST');
-  await textarea.press('Enter');
-  await responsePromise;
-
-  expect(postedMessage).toBe(message);
-  await expect(textarea).toHaveValue('');
-  await expect(page.locator('.codex-chat-thread')).toContainText(message);
-  await expect(page.locator('.codex-chat-thread')).toContainText('Analyse profonde terminee.');
-  await expect(page.locator('.codex-chat-thread')).not.toContainText('Reponse instantanee');
-  await page.getByRole('button', { name: 'Delete message' }).first().click();
-  await expect(page.locator('.codex-chat-thread')).not.toContainText(message);
-  expect(deletedMessageId).toBe('test-user-message');
-  expect(pollCount).toBeGreaterThan(0);
+  await expect(page.locator('body')).toContainText('BTCUSDT', { timeout: 90_000 });
+  await expect(page.locator('body')).toContainText('sharpe_ratio', { timeout: 90_000 });
+  await expect(page.locator('body')).toContainText('walk_forward', { timeout: 90_000 });
 });
 
-async function buttonLabel(button: Locator) {
-  const text = await button.innerText().catch(() => '');
-  const aria = await button.getAttribute('aria-label').catch(() => '');
-  const title = await button.getAttribute('title').catch(() => '');
+test('orders page can place a tiny paper trade using a real market price', async ({ page }) => {
+  await gotoAuthenticated(page, '/orders');
+  await expect(page.locator('.bud-state-strip')).toBeVisible();
+  await fillQuantity(page, '0.0001');
+  await page.getByRole('button', { name: 'Paper buy' }).click();
 
-  return `${text} ${aria ?? ''} ${title ?? ''}`.replace(/\s+/g, ' ').trim();
+  await expect(page.locator('body')).toContainText(/Market Price|market_price/i, { timeout: 60_000 });
+  await expect(page.locator('body')).toContainText(/Paper Trades|trades/i, { timeout: 60_000 });
+});
+
+test('legacy API writes return 410 instead of fake success', async ({ request }) => {
+  for (const path of ['/api/agent/actions', '/api/alerts', '/api/backtests', '/api/bots', '/api/strategies']) {
+    const response = await request.post(path, { data: { symbol: 'BTC/USDT' } });
+    const body = await response.text();
+
+    expect(response.status(), `${path} should be retired`).toBe(410);
+    expect(body).toContain('retired');
+    expect(body).toContain('/api/bud');
+  }
+});
+
+async function ensureAuthenticatedIfNeeded(request: APIRequestContext) {
+  const session = await request.get('/api/auth/session');
+
+  if (session.ok()) {
+    const body = await session.json().catch(() => null);
+
+    if (body?.authenticated === true || body?.session?.mode === 'local-disabled') {
+      return;
+    }
+  }
+
+  const login = await request.post('/api/auth/login', {
+    data: {
+      email: e2eAdminEmail,
+      password: e2eAdminPassword,
+    },
+  });
+
+  await expect(login).toBeOK();
 }
 
-async function closeTransientSurfaces(page: Page) {
-  const closeButton = page.locator('.ui-modal button[aria-label="Close"]:visible').first();
+async function gotoAuthenticated(page: Page, route: string) {
+  await page.goto(route);
 
-  if (await closeButton.isVisible().catch(() => false)) {
-    await closeButton.click();
+  if ((await page.getByRole('heading', { name: 'Unlock Thoon' }).count()) === 0) {
     return;
   }
 
-  await page.keyboard.press('Escape').catch(() => undefined);
+  await page.getByLabel('Email').fill(e2eAdminEmail);
+  await page.getByLabel('Password').fill(e2eAdminPassword);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByRole('heading', { name: 'Unlock Thoon' })).toHaveCount(0, { timeout: 15_000 });
+
+  if (!page.url().includes(route.split('?')[0])) {
+    await page.goto(route);
+  }
+}
+
+async function fillQuantity(page: Page, value: string) {
+  const spinbuttons = page.getByRole('spinbutton');
+  const count = await spinbuttons.count();
+  expect(count).toBeGreaterThan(0);
+
+  for (let index = 0; index < count; index += 1) {
+    const input = spinbuttons.nth(index);
+    const label = await input.getAttribute('aria-label').catch(() => '');
+    const currentValue = await input.inputValue().catch(() => '');
+
+    if (label === 'Quantity' || currentValue === '0.001') {
+      await input.fill(value);
+      return;
+    }
+  }
+
+  await spinbuttons.first().fill(value);
+}
+
+function unwrapPayload(value: unknown): JsonRecord {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  return isRecord(value.payload) ? value.payload : value;
+}
+
+function asRecord(value: unknown): JsonRecord {
+  return isRecord(value) ? value : {};
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

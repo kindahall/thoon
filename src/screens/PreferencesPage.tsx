@@ -1,54 +1,40 @@
+'use client';
+
 import {
-  Bell,
-  Bot,
   ChartNoAxesCombined,
+  CheckCircle2,
   ChevronRight,
-  CreditCard,
   Database,
-  Keyboard,
-  LayoutGrid,
-  ListChecks,
-  Palette,
-  PlugZap,
-  ScrollText,
+  KeyRound,
   Shield,
   User,
-  Wrench,
   type LucideIcon,
 } from 'lucide-react';
 import Link from 'next/link';
-import type { CSSProperties } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 
-import { Card, HelpPopover } from '../components/ui';
-import type { Alert, ApiKeyRecord, ExchangeConnection, RiskRules, UserPreferences, UserProfile } from '../types/trading';
+import { Card } from '../components/ui';
+import type { ApiKeyRecord, ExchangeConnection, RiskRules, UserPreferences, UserProfile } from '../types/trading';
 
-const preferenceSections = [
-  { accent: '#26c8ff', href: '/preferences/agent', icon: Bot, label: 'Strategy Agent' },
-  { accent: '#8b7cff', href: '/preferences/profile', icon: User, label: 'Profile' },
-  { accent: '#ff7ac8', href: '/preferences/appearance', icon: Palette, label: 'Appearance' },
-  { accent: '#62e6a8', href: '/preferences/trading-defaults', icon: ChartNoAxesCombined, label: 'Trading Defaults' },
-  { accent: '#ffd45a', href: '/preferences/security', icon: Shield, label: 'Security' },
-  { accent: '#37d5ff', href: '/preferences/notifications', icon: Bell, label: 'Notifications' },
-  { accent: '#ffb86b', href: '/preferences/billing', icon: CreditCard, label: 'Billing & Plan' },
-  { accent: '#64f4d2', href: '/preferences/data-privacy', icon: Database, label: 'Data & Privacy' },
-  { accent: '#ff5f75', href: '/preferences/risk-rules', icon: Shield, label: 'Risk Rules' },
-  { accent: '#62e6a8', href: '/preferences/trade-limits', icon: ListChecks, label: 'Trade Limits' },
-  { accent: '#a78bfa', href: '/preferences/audit-logs', icon: ScrollText, label: 'Audit Logs' },
-  { accent: '#26c8ff', href: '/preferences/layouts', icon: LayoutGrid, label: 'Layouts' },
-  { accent: '#64f4d2', href: '/preferences/keyboard-shortcuts', icon: Keyboard, label: 'Keyboard Shortcuts' },
-  { accent: '#ffb86b', href: '/preferences/advanced', icon: Wrench, label: 'Advanced' },
-];
+type PreferenceGroupId = 'account' | 'trading' | 'security' | 'privacy';
 
-type SummaryCard = {
+type PreferenceGroup = {
   accent: string;
   href: string;
   icon: LucideIcon;
-  rows: Array<{ label: string; tone?: 'positive'; value: string }>;
-  title: string;
+  id: PreferenceGroupId;
+  label: string;
+  rows: PreferenceSelectorRow[];
+};
+
+type PreferenceSelectorRow = {
+  href: string;
+  label: string;
+  tone?: 'positive' | 'warning' | 'neutral';
+  value: string;
 };
 
 type PreferencesPageProps = {
-  alerts: Alert[];
   apiKeys: ApiKeyRecord[];
   exchanges: ExchangeConnection[];
   preferences: UserPreferences;
@@ -56,88 +42,107 @@ type PreferencesPageProps = {
   riskRules: RiskRules;
 };
 
-export function PreferencesPage({ alerts, apiKeys, exchanges, preferences, profile, riskRules }: PreferencesPageProps) {
-  const cards = buildSummaryCards({ alerts, apiKeys, exchanges, preferences, riskRules });
-  const activeBillingPlan = preferences.billingSettings?.planId ? titleCase(preferences.billingSettings.planId) : 'Private';
+export function PreferencesPage({ apiKeys, exchanges, preferences, profile, riskRules }: PreferencesPageProps) {
+  const groups = useMemo(() => buildPreferenceGroups({ apiKeys, exchanges, preferences, profile, riskRules }), [apiKeys, exchanges, preferences, profile, riskRules]);
+  const [selectedGroupId, setSelectedGroupId] = useState<PreferenceGroupId>('account');
+  const selectedGroup = groups.find((group) => group.id === selectedGroupId) ?? groups[0];
+  const SelectedIcon = selectedGroup.icon;
+  const activeKeys = apiKeys.filter((key) => key.status === 'active').length;
 
   return (
-    <section className="preferences-page" aria-label="Preferences workspace">
-      <div className="workspace-header workspace-header--compact">
+    <section className="preferences-page preferences-hub" aria-label="Preferences workspace">
+      <div className="preferences-hub-header">
         <div>
+          <p className="workspace-kicker">Workspace settings</p>
           <h1>Preferences</h1>
-          <p>Manage profile, trading defaults, security and API access.</p>
         </div>
-        <HelpPopover items={['Use sections for detailed settings.', 'Critical changes require confirmation.']} title="Preferences" />
+        <div className="preferences-hub-status" aria-label="Workspace status">
+          <span className="is-cyan">Private</span>
+          <span className="is-green">Paper</span>
+          <span className="is-violet">Secure</span>
+        </div>
       </div>
 
-      <div className="preferences-layout">
-        <Card className="preferences-sidebar">
-          <h2>Preferences</h2>
-          <nav aria-label="Preferences navigation">
-            {preferenceSections.map((section) => {
-              const Icon = section.icon;
+      <div className="preferences-layout preferences-hub-layout">
+        <div className="preferences-hub-selector" aria-label="Preferences categories" role="tablist">
+          {groups.map((group) => {
+            const Icon = group.icon;
+            const selected = group.id === selectedGroup.id;
 
-              return (
-                <Link href={section.href} key={section.href} style={{ '--preference-section-accent': section.accent } as CSSProperties}>
-                  <Icon size={17} />
-                  <span>{section.label}</span>
-                </Link>
-              );
-            })}
-          </nav>
-        </Card>
+            return (
+              <button
+                aria-selected={selected}
+                className={selected ? 'is-active' : undefined}
+                key={group.id}
+                onClick={() => setSelectedGroupId(group.id)}
+                role="tab"
+                style={{ '--preference-section-accent': group.accent } as CSSProperties}
+                type="button"
+              >
+                <Icon size={16} />
+                <span>{group.label}</span>
+              </button>
+            );
+          })}
+        </div>
 
-        <div className="preferences-overview">
-          <Card className="preferences-profile-card">
-            <span className="preferences-avatar">{profile.name.slice(0, 1).toUpperCase()}</span>
-            <div className="preferences-profile-main">
-              <h2>{profile.name}</h2>
-              <span>@{profile.username}</span>
-              <b>{titleCase(profile.tradingExperience)} Trader</b>
+        <div className="preferences-hub-grid">
+          <Card className="preferences-control-panel" style={{ '--preference-section-accent': selectedGroup.accent } as CSSProperties}>
+            <div className="preferences-control-panel__head">
+              <span>
+                <SelectedIcon size={18} />
+              </span>
+              <div>
+                <h2>{selectedGroup.label}</h2>
+                <small>{selectedGroup.rows.length} selectors</small>
+              </div>
+              <Link href={selectedGroup.href}>
+                Open
+                <ChevronRight size={15} />
+              </Link>
             </div>
-            <dl>
-              <div>
-                <dt>Email</dt>
-                <dd>{profile.email}</dd>
-              </div>
-              <div>
-                <dt>Country</dt>
-                <dd>{profile.country}</dd>
-              </div>
-              <div>
-                <dt>Timezone</dt>
-                <dd>{profile.timezone}</dd>
-              </div>
-              <div>
-                <dt>Plan</dt>
-                <dd>{activeBillingPlan}</dd>
-              </div>
-            </dl>
-            <Link href="/preferences/billing">Manage Plan</Link>
+
+            <div className="preferences-selector-list">
+              {selectedGroup.rows.map((row) => (
+                <Link className="preferences-selector-row" href={row.href} key={`${selectedGroup.id}-${row.label}`}>
+                  <span>{row.label}</span>
+                  <strong className={row.tone}>{row.value}</strong>
+                  <ChevronRight size={14} />
+                </Link>
+              ))}
+            </div>
           </Card>
 
-          <div className="preferences-summary">
-            {cards.map((card) => (
-              <PreferenceOverviewCard card={card} key={card.href} />
-            ))}
-          </div>
-
-          <Card className="preferences-data-card">
-            <div className="preferences-summary-card__head">
-              <Database size={18} />
-              <h2>Data & Privacy</h2>
+          <Card className="preferences-snapshot-panel">
+            <div className="preferences-mini-profile">
+              <span className="preferences-avatar preferences-avatar--sm">{profile.name.slice(0, 1).toUpperCase()}</span>
+              <div>
+                <h2>{profile.name}</h2>
+                <span>@{profile.username}</span>
+              </div>
+              <Link href="/preferences/profile">Profile</Link>
             </div>
-            <div className="preferences-data-actions">
-              <div>
-                <strong>Export My Data</strong>
-                <span>Download your account data and activity.</span>
-              </div>
-              <Link href="/preferences/data-privacy">Export Data</Link>
-              <div>
-                <strong>Delete Account</strong>
-                <span>Permanently delete your account and all data.</span>
-              </div>
-              <Link className="is-danger" href="/preferences/data-privacy">Delete Account</Link>
+
+            <div className="preferences-snapshot-grid" aria-label="Workspace snapshot">
+              <SnapshotChip icon={Shield} label="Live" tone={riskRules.confirmLiveOrders ? 'green' : 'amber'} value={riskRules.confirmLiveOrders ? 'Guarded' : 'Manual'} />
+              <SnapshotChip icon={KeyRound} label="Keys" tone={activeKeys ? 'green' : 'neutral'} value={String(activeKeys)} />
+              <SnapshotChip icon={Shield} label="Risk" tone={riskRules.blockOrdersWithoutStop ? 'green' : 'amber'} value={riskRules.blockOrdersWithoutStop ? 'Strict' : 'Manual'} />
+              <SnapshotChip icon={Database} label="Data" tone="violet" value={preferences.density === 'compact' ? 'Compact' : titleCase(preferences.density)} />
+            </div>
+
+            <div className="preferences-quick-links">
+              <Link href="/preferences/security">
+                <CheckCircle2 size={15} />
+                Security
+              </Link>
+              <Link href="/exchanges">
+                <KeyRound size={15} />
+                Exchanges
+              </Link>
+              <Link href="/preferences/data-privacy">
+                <Database size={15} />
+                Privacy
+              </Link>
             </div>
           </Card>
         </div>
@@ -146,121 +151,78 @@ export function PreferencesPage({ alerts, apiKeys, exchanges, preferences, profi
   );
 }
 
-function buildSummaryCards({
-  alerts,
-  apiKeys,
-  exchanges,
-  preferences,
-  riskRules,
-}: Pick<PreferencesPageProps, 'alerts' | 'apiKeys' | 'exchanges' | 'preferences' | 'riskRules'>): SummaryCard[] {
-  const activeAlerts = alerts.filter((alert) => alert.status === 'active').length;
+function SnapshotChip({ icon: Icon, label, tone, value }: { icon: LucideIcon; label: string; tone: 'amber' | 'cyan' | 'green' | 'neutral' | 'violet'; value: string }) {
+  return (
+    <div className={`preferences-snapshot-chip is-${tone}`}>
+      <Icon size={15} />
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function buildPreferenceGroups({ apiKeys, exchanges, preferences, profile, riskRules }: PreferencesPageProps): PreferenceGroup[] {
   const activeKeys = apiKeys.filter((key) => key.status === 'active').length;
   const connectedExchanges = exchanges.filter((exchange) => exchange.status === 'connected').length;
-  const notificationSettings = preferences.notificationSettings as Record<string, boolean> | undefined;
 
   return [
     {
-      href: '/preferences/agent',
-      accent: '#26c8ff',
-      icon: Bot,
+      accent: '#8b7cff',
+      href: '/preferences/profile',
+      icon: User,
+      id: 'account',
+      label: 'Account',
       rows: [
-        { label: 'Mode', value: 'Codex' },
-        { label: 'Live actions', value: riskRules.confirmLiveOrders ? 'Confirmed' : 'Manual' },
-        { label: 'Core strategy', tone: 'positive', value: 'Protected' },
+        { href: '/preferences/profile', label: 'Identity', value: profile.name },
+        { href: '/preferences/profile', label: 'Country', value: profile.country },
+        { href: '/preferences/profile', label: 'Timezone', value: shortTimezone(profile.timezone) },
+        { href: '/preferences/appearance', label: 'Theme', value: titleCase(preferences.theme) },
       ],
-      title: 'Strategy Agent',
     },
     {
-      href: '/preferences/appearance',
-      accent: '#ff7ac8',
-      icon: Palette,
-      rows: [
-        { label: 'Theme', value: titleCase(preferences.theme) },
-        { label: 'Density', value: titleCase(preferences.density) },
-      ],
-      title: 'Appearance',
-    },
-    {
-      href: '/preferences/trading-defaults',
       accent: '#62e6a8',
+      href: '/preferences/trading-defaults',
       icon: ChartNoAxesCombined,
+      id: 'trading',
+      label: 'Trading',
       rows: [
-        { label: 'Default Risk', value: `${preferences.defaultRiskPerTrade.toFixed(2)}%` },
-        { label: 'Default Leverage', value: `${preferences.defaultLeverage}x` },
-        { label: 'Default Order Type', value: titleCase(preferences.orderType) },
-        { label: 'Default Slippage', value: `${preferences.defaultSlippage.toFixed(2)}%` },
+        { href: '/preferences/trading-defaults', label: 'Risk', value: `${preferences.defaultRiskPerTrade.toFixed(2)}%` },
+        { href: '/preferences/trading-defaults', label: 'Leverage', value: `${preferences.defaultLeverage}x` },
+        { href: '/preferences/trading-defaults', label: 'Order', value: titleCase(preferences.orderType) },
+        { href: '/preferences/risk-rules', label: 'Kill switch', tone: riskRules.emergencyKillSwitch ? 'warning' : 'neutral', value: riskRules.emergencyKillSwitch ? 'On' : 'Off' },
       ],
-      title: 'Trading Defaults',
     },
     {
-      href: '/preferences/security',
       accent: '#ffd45a',
+      href: '/preferences/security',
       icon: Shield,
+      id: 'security',
+      label: 'Security',
       rows: [
-        { label: 'Live confirmation', tone: riskRules.confirmLiveOrders ? 'positive' : undefined, value: riskRules.confirmLiveOrders ? 'Enabled' : 'Manual' },
-        { label: 'API keys', tone: activeKeys ? 'positive' : undefined, value: `${activeKeys} active` },
-        { label: 'Kill switch', value: riskRules.emergencyKillSwitch ? 'On' : 'Off' },
+        { href: '/preferences/security', label: 'API keys', tone: activeKeys ? 'positive' : 'neutral', value: `${activeKeys} active` },
+        { href: '/preferences/security', label: 'Live confirm', tone: riskRules.confirmLiveOrders ? 'positive' : 'warning', value: riskRules.confirmLiveOrders ? 'Enabled' : 'Manual' },
+        { href: '/exchanges', label: 'Venues', tone: connectedExchanges ? 'positive' : 'neutral', value: String(connectedExchanges) },
+        { href: '/preferences/audit-logs', label: 'Audit', value: 'Open' },
       ],
-      title: 'Security',
     },
     {
-      href: '/preferences/notifications',
-      accent: '#37d5ff',
-      icon: Bell,
-      rows: [
-        { label: 'Active alerts', tone: activeAlerts ? 'positive' : undefined, value: String(activeAlerts) },
-        { label: 'App notifications', tone: notificationSettings?.app !== false ? 'positive' : undefined, value: notificationSettings?.app === false ? 'Off' : 'Enabled' },
-        { label: 'Webhook alerts', tone: notificationSettings?.webhook !== false ? 'positive' : undefined, value: notificationSettings?.webhook === false ? 'Off' : 'Enabled' },
-      ],
-      title: 'Notifications',
-    },
-    {
-      href: '/exchanges',
       accent: '#64f4d2',
-      icon: PlugZap,
+      href: '/preferences/data-privacy',
+      icon: Database,
+      id: 'privacy',
+      label: 'Privacy',
       rows: [
-        { label: 'Connected venues', tone: connectedExchanges ? 'positive' : undefined, value: String(connectedExchanges) },
-        { label: 'API Keys', value: `${apiKeys.length} stored` },
-        { label: 'Withdrawals', tone: 'positive', value: 'Disabled' },
+        { href: '/preferences/data-privacy', label: 'Export', value: 'Ready' },
+        { href: '/preferences/data-privacy', label: 'Delete', tone: 'warning', value: 'Guarded' },
+        { href: '/preferences/audit-logs', label: 'Audit', value: 'Open' },
+        { href: '/preferences/security', label: 'Secrets', tone: activeKeys ? 'positive' : 'neutral', value: activeKeys ? 'Stored' : 'None' },
       ],
-      title: 'Exchange Hub',
-    },
-    {
-      href: '/preferences/billing',
-      accent: '#ffb86b',
-      icon: CreditCard,
-      rows: [
-        { label: 'Current Plan', value: titleCase(preferences.billingSettings?.planId ?? 'private') },
-        { label: 'Period', value: titleCase(preferences.billingSettings?.billingPeriod ?? 'yearly') },
-        { label: 'Status', tone: preferences.billingSettings?.status === 'active' ? 'positive' : undefined, value: titleCase(preferences.billingSettings?.status ?? 'active') },
-      ],
-      title: 'Billing & Plan',
     },
   ];
 }
 
-function PreferenceOverviewCard({ card }: { card: SummaryCard }) {
-  const Icon = card.icon;
-
-  return (
-    <Link className="preferences-summary-card" href={card.href} style={{ '--preference-section-accent': card.accent } as CSSProperties}>
-      <Card>
-        <div className="preferences-summary-card__head">
-          <Icon size={18} />
-          <h2>{card.title}</h2>
-        </div>
-        <div className="preferences-summary-card__rows">
-          {card.rows.map((row) => (
-            <div key={`${card.href}-${row.label}`}>
-              <span>{row.label}</span>
-              <strong className={row.tone}>{row.value}</strong>
-              <ChevronRight size={14} />
-            </div>
-          ))}
-        </div>
-      </Card>
-    </Link>
-  );
+function shortTimezone(value: string) {
+  return value.length > 13 ? `${value.slice(0, 12)}...` : value;
 }
 
 function titleCase(value: string) {

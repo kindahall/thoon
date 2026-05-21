@@ -35,6 +35,10 @@ Règles Next.js :
 
 ## Règles de design
 
+### Image d'abord
+
+Pour chaque nouvelle page ou refonte UI importante, créer d'abord une image/maquette visuelle, puis coder la page en copiant cette direction graphique dans le design system Thoon.
+
 ### Ne jamais faire
 
 - Ne pas créer une interface remplie de texte.
@@ -65,6 +69,10 @@ rapide à comprendre
 strict sur le risque
 utile à chaque clic
 ```
+
+## Règle Thoonix
+
+Thoonix ne doit pas simuler une réponse avec des messages pré-enregistrés. Le chat peut afficher une progression pendant qu'il travaille, mais la réponse finale doit venir du vrai moteur Thoonix/Codex local ou afficher clairement un blocage vérifiable.
 
 ## Pages principales
 

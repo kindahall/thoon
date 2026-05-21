@@ -19,7 +19,7 @@ async function main() {
   const port = await getFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const tempDataDir = await mkdtemp(join(tmpdir(), 'thoon-staging-'));
-  const nextMode = process.env.THOON_TEST_NEXT_MODE === 'start' && existsSync(join(root, '.next', 'BUILD_ID')) ? 'start' : 'dev';
+  const nextMode = resolveNextMode();
   let serverOutput = '';
   const server = spawn(nextBin, [nextMode, '-H', '127.0.0.1', '-p', String(port)], {
     cwd: root,
@@ -194,13 +194,18 @@ async function assertAuthenticatedApiContracts(baseUrl, cookie) {
   assert(edgeRateLimit?.ok === true, 'Readiness confirms edge rate-limit policy acknowledgement');
   assert(agentCronSecret?.ok === true, 'Readiness confirms agent cron secret protection');
 
-  const blockedCron = await fetch(`${baseUrl}/api/agent/cron`, { headers: { cookie } });
-  assert(blockedCron.status === 401, `Agent cron should require bearer auth when cron secret is configured, got ${blockedCron.status}`);
-  const blockedProgressCron = await fetch(`${baseUrl}/api/agent/progress`, { headers: { cookie } });
-  assert(blockedProgressCron.status === 401, `Agent progress cron should require bearer auth when cron secret is configured, got ${blockedProgressCron.status}`);
-  const cron = await fetch(`${baseUrl}/api/agent/cron`, { headers: { authorization: 'Bearer staging-test-cron-secret-minimum-32-characters' } });
-  const cronBody = await cron.text();
-  assert(cron.status === 200, `Agent cron should run with bearer auth, got ${cron.status}: ${cronBody}`);
+  for (const path of ['/api/agent/cron', '/api/agent/progress', '/api/agent/actions']) {
+    const retired = await fetch(`${baseUrl}${path}`, { headers: { cookie } });
+    const retiredBody = await retired.text();
+
+    assert(retired.status === 410, `${path} should be retired in Thoon/Bud, got ${retired.status}`);
+    assert(retiredBody.includes('/api/bud'), `${path} should point callers to Bud APIs`);
+  }
+
+  const budStatus = await fetch(`${baseUrl}/api/bud/status`, { headers: { cookie } });
+  const budStatusBody = await budStatus.text();
+  assert(budStatus.status === 200, `Bud status should be reachable in authenticated staging, got ${budStatus.status}: ${budStatusBody.slice(0, 300)}`);
+  assert(budStatusBody.includes('thoon_bud_backend'), 'Bud status reports the Bud backend source');
 }
 
 async function postJson(baseUrl, path, body, cookie) {
@@ -245,6 +250,18 @@ function assert(value, message) {
   if (!value) {
     throw new Error(message);
   }
+}
+
+function resolveNextMode() {
+  if (process.env.THOON_TEST_NEXT_MODE === 'dev') {
+    return 'dev';
+  }
+
+  if (process.env.THOON_TEST_NEXT_MODE === 'start' || existsSync(join(root, '.next', 'BUILD_ID'))) {
+    return 'start';
+  }
+
+  return 'dev';
 }
 
 function delay(ms) {

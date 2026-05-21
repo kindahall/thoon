@@ -1,15 +1,10 @@
-import { WatchlistPage } from '../../screens/WatchlistPage';
+import { BudWorkspacePage } from '../../screens/bud/BudWorkspacePage';
+import { getMarketDataSnapshot } from '../../services/market-service';
 
 export const dynamic = 'force-dynamic';
 
-type WatchlistRouteProps = {
-  searchParams?: Promise<{
-    add?: string;
-  }>;
-};
+export default async function WatchlistRoute() {
+  const snapshot = await getMarketDataSnapshot();
 
-export default async function WatchlistRoute({ searchParams }: WatchlistRouteProps) {
-  const params = await searchParams;
-
-  return <WatchlistPage initialAddPair={params?.add} />;
+  return <BudWorkspacePage initialPairs={snapshot.pairs} initialStatus={snapshot.status} page="watchlist" />;
 }

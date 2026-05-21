@@ -44,8 +44,8 @@ type MarketSnapshotPayload = {
 
 const binanceFuturesStreamBaseUrl = 'wss://fstream.binance.com/stream?streams=';
 const binanceSpotStreamBaseUrl = 'wss://stream.binance.com:9443/stream?streams=';
-const liveCommitDelayMs = 200;
-const restTickerRefreshMs = 10_000;
+const liveCommitDelayMs = 1_000;
+const restTickerRefreshMs = 30_000;
 const symbolAliases: Record<string, string> = {
   'RNDR/USDT': 'RENDERUSDT',
 };

@@ -16,7 +16,7 @@ Il combine :
 
 ## Vision
 
-Thoon ne doit pas être une application lourde remplie de texte.  
+Thoon ne doit pas être une application lourde remplie de texte.
 L’interface doit être simple en façade, puissante en profondeur.
 
 ## Stack frontend
@@ -157,6 +157,7 @@ Quand un marqueur est posé sur le graphique, il met à jour automatiquement le 
 - `thoon_roadmap_succes.md` : roadmap produit complète issue de la conversation.
 - `THOON_CODEX_GOALS.md` : objectifs page par page et feature par feature.
 - `THOON_PRODUCTION_READINESS.md` : checklist runtime pour auth, Postgres, live exchange, secrets, CI et monitoring.
+- `ROADMAP_HEDGEFUND_MODULES.md` : roadmap Bud importée dans Thoon avec les gates hedge fund 11 à 22.
 
 ## Production
 
@@ -166,12 +167,25 @@ Avant de passer en réel :
 npm run auth:hash -- "mot-de-passe-long"
 npm run db:migrate
 npm run db:push
+npm run saas:bootstrap
 npm run verify
 ```
 
 L’endpoint `/api/production/readiness` doit répondre `ok: true` avant `THOON_APP_MODE=live-enabled`.
 
+### Trading réel contrôlé
+
+Thoon expose maintenant `/api/bud/trade` comme route serveur unique vers Bud `/trade`. Les ordres paper passent, mais tout payload live est bloqué tant que `/api/bud/hedge-fund-readiness` ne répond pas `liveReady: true`. Les routes Binance, Bybit et Bitget existent côté Bud pour l’exécution signée; Hyperliquid et dYdX restent en lecture/readiness tant que les signers wallet officiels isolés ne sont pas activés.
+
+Les agents non-LLM sont exposés via `/api/strategy-agents/deterministic`. Ils récupèrent des métadonnées publiques TradingView, les soumettent au registre de recherche Thoon et créent des tâches de backtest/paper uniquement. Le test demandé de bot paper 2h passe par `/api/bud/paper-bot-test`: il ouvre une micro-position paper, trace une `PaperTestSession`, puis clôture et mesure le résultat à l’échéance.
+
+La route `/api/wallets/readiness` vérifie Binance, Bybit, Bitget, Hyperliquid et dYdX, les clés de trade, WalletConnect et les wallets injectés/publics. Elle bloque explicitement les DEX live tant que le signer officiel isolé n’est pas en place.
+
 En mode `THOON_DATABASE_PROVIDER=postgres`, lance `npm run db:migrate` puis `npm run db:push` pour créer le snapshot durable. Les mutations API attendent ensuite le miroir Postgres avant de répondre.
+
+Pour le mode SaaS v1, active `THOON_SAAS_MODE=enabled`, configure `DATABASE_URL`, `THOON_ADMIN_EMAIL`, `THOON_ADMIN_PASSWORD_HASH`, puis lance `npm run db:migrate` et `npm run saas:bootstrap`. Le bootstrap crée le workspace owner, sauvegarde l’ancien état dans `thoon_app_state_backups`, puis initialise `workspace_state` sans écraser un workspace déjà créé.
+
+Les plans payants passent par Stripe via `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` et les quatre `STRIPE_PRICE_*`. Free reste local, Pro et Elite utilisent Checkout/Portal, et le live SaaS reste bloqué tant que le workspace n’est pas Elite actif avec validation admin.
 
 `npm run verify` exécute lint, typecheck, build, tests fonctionnels, smoke staging authentifié et smoke navigateur Playwright. La CI GitHub lance aussi `npm audit --omit=dev` et installe Chromium pour le contrôle E2E.
 
@@ -183,11 +197,12 @@ Pour Thoonix en mode agent direct :
 
 ```bash
 THOON_AGENT_AI_PROVIDER=codex
-THOON_AGENT_CODEX_BINARY=/Applications/Codex.app/Contents/Resources/codex
-THOON_AGENT_CODEX_SANDBOX=read-only
+THOON_AGENT_CHAT_MODEL=gpt-5.5
+# Optionnel: laisse vide pour utiliser $CODEX_HOME/auth.json ou ~/.codex/auth.json.
+THOON_AGENT_CODEX_AUTH_FILE=
 ```
 
-En mode `codex`, Thoonix lance le Codex CLI local connecté au forfait ChatGPT/Codex de la machine, sans clé OpenAI API serveur. L’agent stratégie ne doit jamais inventer un résultat. Les crons sauvegardent uniquement des backtests calculés depuis des bougies live strictes; si TradingView ne donne aucune nouvelle piste publique, l’agent crée des stratégies d’innovation séparées puis les teste avant tout classement.
+En mode `codex`, Thoonix utilise le transport OAuth Codex direct vers `https://chatgpt.com/backend-api/codex/responses`, connecté au forfait ChatGPT/Codex de la machine, sans clé OpenAI API serveur et sans relancer `codex exec` à chaque message. Le chat affiche une progression pendant que le vrai moteur Thoonix/Codex travaille; il ne doit pas remplacer une réponse lente ou bloquée par un message pré-enregistré. L’agent stratégie ne doit jamais inventer un résultat. Les crons sauvegardent uniquement des backtests calculés depuis des bougies live strictes; si TradingView ne donne aucune nouvelle piste publique, l’agent crée des stratégies d’innovation séparées puis les teste avant tout classement.
 
 Le MCP TradingView utilisé par Thoonix est enregistré côté Codex sous le nom `tradingview` avec `npx -y tradingview-mcp-server@0.6.1`. Vérification locale :
 
@@ -206,3 +221,6 @@ THOON_AGENT_AI_PROVIDER=openai
 THOON_AGENT_AI_API_KEY=...
 THOON_AGENT_AI_ENDPOINT=responses
 ```
+
+En mode SaaS, chaque workspace peut aussi gérer ses providers depuis `/preferences/agent-connections`.
+Les clés OpenAI ou compatibles sont chiffrées côté serveur et masquées dans l’UI. Le mode Codex Bridge prépare un pairing outbound pour une future app Mac/Tauri ou un worker local, sans exposer de port public.

@@ -9,7 +9,14 @@
     "db:migrate": "node scripts/thoon-db-migrate.mjs",
     "db:pull": "node scripts/thoon-db-pull.mjs",
     "db:push": "node scripts/thoon-db-push.mjs",
+    "backend:venv": "python3 -m venv backend/.venv && backend/.venv/bin/python -m pip install --upgrade pip && backend/.venv/bin/python -m pip install -r backend/requirements-core.txt",
+    "backend:venv:full": "python3.11 -m venv backend/.venv && backend/.venv/bin/python -m pip install --upgrade pip && backend/.venv/bin/python -m pip install -r backend/requirements.txt",
+    "backend:dev": "cd backend && .venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --reload",
+    "saas:bootstrap": "node scripts/thoon-saas-bootstrap.mjs",
     "start": "next start -H 127.0.0.1",
+    "desktop:server": "node scripts/thoon-desktop-dev-server.mjs",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build",
     "test": "node scripts/thoon-functional-tests.mjs",
     "test:staging": "node scripts/thoon-staging-smoke.mjs",
     "test:e2e": "playwright test",
@@ -23,10 +30,11 @@
     "ethers": "^6.16.0",
     "lightweight-charts": "^5.2.0",
     "lucide-react": "^1.14.0",
-    "next": "^16.2.4",
+    "next": "^16.2.6",
     "pg": "^8.20.0",
     "react": "^19.2.5",
-    "react-dom": "^19.2.5"
+    "react-dom": "^19.2.5",
+    "stripe": "^22.1.1"
   },
   "overrides": {
     "postcss": "8.5.14"
@@ -34,6 +42,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.59.1",
+    "@tauri-apps/cli": "^2.11.1",
     "@types/node": "25.6.0",
     "@types/pg": "^8.20.0",
     "@types/react": "^19.2.14",

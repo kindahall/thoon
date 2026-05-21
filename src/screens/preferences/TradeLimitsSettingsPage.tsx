@@ -13,21 +13,11 @@ type TradeLimitsSettingsPageProps = {
   tradeLimits: TradeLimits;
 };
 
-type MarketLimit = {
-  exposure: number;
-  maxSize: number;
-  symbol: string;
-};
-
-const defaultMarketLimits: MarketLimit[] = [
-  { exposure: 12000, maxSize: 9000, symbol: 'BTC/USDT' },
-  { exposure: 9000, maxSize: 6500, symbol: 'ETH/USDT' },
-  { exposure: 4500, maxSize: 3200, symbol: 'SOL/USDT' },
-];
+type MarketLimit = TradeLimits['marketLimits'][number];
 
 export function TradeLimitsSettingsPage({ tradeLimits }: TradeLimitsSettingsPageProps) {
   const [limits, setLimits] = useState(tradeLimits);
-  const [marketLimits, setMarketLimits] = useState(defaultMarketLimits);
+  const [marketLimits, setMarketLimits] = useState(tradeLimits.marketLimits);
   const [status, setStatus] = useState('Ready');
 
   function updateLimit(update: Partial<TradeLimits>) {
@@ -42,8 +32,9 @@ export function TradeLimitsSettingsPage({ tradeLimits }: TradeLimitsSettingsPage
     setStatus('Saving');
 
     try {
-      const savedLimits = await patchJson<TradeLimits>('/api/trade-limits', limits);
+      const savedLimits = await patchJson<TradeLimits>('/api/trade-limits', { ...limits, confirmed: true, marketLimits });
       setLimits(savedLimits);
+      setMarketLimits(savedLimits.marketLimits);
       setStatus('Saved');
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Save failed');
@@ -52,7 +43,7 @@ export function TradeLimitsSettingsPage({ tradeLimits }: TradeLimitsSettingsPage
 
   function resetLimits() {
     setLimits(tradeLimits);
-    setMarketLimits(defaultMarketLimits);
+    setMarketLimits(tradeLimits.marketLimits);
     setStatus('Defaults');
   }
 

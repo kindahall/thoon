@@ -4,7 +4,7 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['.next', 'dist', 'node_modules', 'test-results'],
+    ignores: ['.next', 'dist', 'node_modules', 'src-tauri/target', 'test-results', 'backend/.venv', 'backend/.venv/**'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

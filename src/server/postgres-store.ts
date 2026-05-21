@@ -16,6 +16,7 @@ export type PostgresReadiness = {
   migrationCount: number;
   ok: boolean;
   provider: 'json' | 'postgres';
+  saasReady?: boolean;
 };
 
 export async function mirrorThoonDbToPostgres(db: ThoonDb) {
@@ -70,16 +71,28 @@ export async function checkPostgresReadiness(): Promise<PostgresReadiness> {
     try {
       const migrations = await client.query<{ count: string }>('select count(*)::text as count from thoon_migrations');
       const snapshot = await client.query<{ updated_at: Date }>('select updated_at from thoon_app_state where id = $1', ['default']);
+      const saasTables = await client.query<{ count: string }>(
+        `
+          select count(*)::text as count
+          from information_schema.tables
+          where table_schema = 'public'
+            and table_name in ('users', 'workspaces', 'workspace_members', 'workspace_state', 'subscriptions', 'beta_invites')
+        `,
+      );
       const migrationCount = Number(migrations.rows[0]?.count ?? 0);
       const lastSnapshotAt = snapshot.rows[0]?.updated_at?.toISOString();
+      const saasReady = Number(saasTables.rows[0]?.count ?? 0) >= 6;
+      const snapshotRequired = !env.saasMode;
+      const ok = migrationCount > 0 && saasReady && (!snapshotRequired || Boolean(lastSnapshotAt));
 
       return {
         configured: true,
-        error: migrationCount > 0 && lastSnapshotAt ? undefined : 'Postgres migrations and thoon_app_state/default snapshot are required.',
+        error: ok ? undefined : env.saasMode ? 'Postgres SaaS tables are required. Run npm run db:migrate and npm run saas:bootstrap.' : 'Postgres migrations and thoon_app_state/default snapshot are required.',
         lastSnapshotAt,
         migrationCount,
-        ok: migrationCount > 0 && Boolean(lastSnapshotAt),
+        ok,
         provider: env.databaseProvider,
+        saasReady,
       };
     } finally {
       client.release();
@@ -112,7 +125,7 @@ export function listMigrationFiles(root = process.cwd()) {
     });
 }
 
-function getPool() {
+export function getPostgresPool() {
   const env = getThoonServerEnv();
 
   if (!env.databaseUrl) {
@@ -128,4 +141,8 @@ function getPool() {
   });
 
   return pool;
+}
+
+function getPool() {
+  return getPostgresPool();
 }

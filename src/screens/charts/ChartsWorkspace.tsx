@@ -13,7 +13,6 @@ import {
   Maximize2,
   MousePointer2,
   MoveDiagonal,
-  RotateCcw,
   Save,
   Search,
   Settings2,
@@ -22,20 +21,18 @@ import {
   TrendingDown,
   TrendingUp,
 } from 'lucide-react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 
 import { TradingChart, type ChartDrawing, type ChartDrawingType, type ChartIndicatorConfig, type TradeMarker, type TradeMarkerType } from '../../components/chart/TradingChart';
 import { TradingViewChart } from '../../components/chart/TradingViewChart';
-import { StrategyAgentDrawer } from '../../components/agent/StrategyAgentDrawer';
 import { Badge, Button, Card, ErrorState, HelpPopover, IconButton, InfoButton, Modal, TooltipInfo } from '../../components/ui';
 import { useBinanceLiveMarkets } from '../../hooks/useBinanceLiveMarkets';
 import { apiJson, patchJson, postJson } from '../../services/api-client';
 import { buildRiskOrderInputFromDraft, evaluateRiskEngine, lossPercentFromPnl, type RiskEngineCheck } from '../../services/risk-engine';
 import { getTradingErrorDefinition } from '../../services/trading-error-service';
 import type { Candle, MarketCategory, MarketPair, PositionDraft, Timeframe } from '../../types/market';
-import type { AgentReport, AgentRun, AgentSettings, AgentSuggestion, BacktestReport, Bot as TradingBot, ExchangeConnection, Fill, JournalTrade, Order, OrderExecutionSource, PaperTestSession, Position, RiskRules, Strategy, StrategyVersion, TradeLimits, UserPreferences } from '../../types/trading';
+import type { BacktestReport, Bot as TradingBot, ExchangeConnection, Fill, JournalTrade, Order, OrderExecutionSource, PaperTestSession, Position, RiskRules, Strategy, TradeLimits, UserPreferences } from '../../types/trading';
 import { normalizeCandle, sanitizeCandles } from '../../utils/candles';
 import {
   adxSeries,
@@ -70,11 +67,6 @@ import {
 import { formatCompact, formatCompactUsd, formatPercent, formatUsd } from '../../utils/format';
 
 type ChartsWorkspaceProps = {
-  agentReports: AgentReport[];
-  agentRuns: AgentRun[];
-  agentSettings: AgentSettings;
-  agentSuggestions: AgentSuggestion[];
-  agentVersions: StrategyVersion[];
   backtestReports: BacktestReport[];
   bots: TradingBot[];
   defaultPreferences: UserPreferences;
@@ -209,7 +201,7 @@ type SavedChartSetup = {
   timeframe: Timeframe;
 };
 
-type ChartToolId = 'cursor' | 'line' | 'zone' | 'long' | 'short' | 'alert' | 'indicators' | 'replay';
+type ChartToolId = 'cursor' | 'line' | 'zone' | 'long' | 'short' | 'alert' | 'indicators';
 type ChartEngine = 'thoon' | 'tradingview';
 type ChartMarketType = 'perpetual' | 'spot';
 type ChartRange = (typeof chartRanges)[number];
@@ -217,11 +209,6 @@ type NoteFormat = 'bold' | 'italic' | 'list';
 type TradeExecutionIntent = OrderExecutionSource;
 
 export function ChartsWorkspace({
-  agentReports,
-  agentRuns,
-  agentSettings,
-  agentSuggestions,
-  agentVersions,
   backtestReports,
   bots: _bots,
   defaultPreferences,
@@ -298,6 +285,8 @@ export function ChartsWorkspace({
   const hasHydratedActivePairRef = useRef(false);
   const initialPaperSessionAppliedRef = useRef(false);
   const hydratedSetupKeyRef = useRef<string | null>(null);
+  const latestChartCandlesRef = useRef<Candle[]>([]);
+  const latestCandleRequestIdentityRef = useRef<string | null>(null);
   const setupReloadPairRef = useRef<string | null>(null);
   const previousMarketSymbolRef = useRef(market.symbol);
   const selectedMarkerDefinition = markerDefinitions.find((markerDefinition) => markerDefinition.type === selectedMarkerType);
@@ -346,8 +335,6 @@ export function ChartsWorkspace({
   const chartDataIdentity = `${selectedExchangeId}:${chartMarketType}:${market.symbol}:${timeframe}`;
   const isTradingViewEngine = chartEngine === 'tradingview';
   const selectedMarketDataIsLive = selectedExchange?.id === 'binance' ? isBinanceLive : chartCandleStatus === 'live' && selectedExchangeHasPublicRest;
-  const alertBuilderHref = `/alerts?pair=${encodeURIComponent(market.symbol)}`;
-  const strategyBuilderHref = `/strategies/new?pair=${encodeURIComponent(market.symbol)}`;
   const lastMove = lastCandle.close - previousCandle.close;
   const lastMovePercent = previousCandle.close ? (lastMove / previousCandle.close) * 100 : 0;
   const indicatorReadouts = hasChartCandles ? buildIndicatorReadouts(candles, indicatorConfig) : [];
@@ -499,13 +486,28 @@ export function ChartsWorkspace({
   }, [defaultExchangeId, exchangeConnections, selectedExchangeId]);
 
   useEffect(() => {
+    latestChartCandlesRef.current = chartCandles;
+  }, [chartCandles]);
+
+  useEffect(() => {
     const controller = new AbortController();
     let didCleanup = false;
+    const requestIdentity = chartDataIdentity;
+    const isNewRequestIdentity = latestCandleRequestIdentityRef.current !== requestIdentity;
+    const canRefreshInBackground = !isNewRequestIdentity && latestChartCandlesRef.current.length > 0;
     const timeoutId = window.setTimeout(() => {
       controller.abort();
     }, chartCandleRequestTimeoutMs);
-    setChartCandleStatus('loading');
-    setChartCandles([]);
+
+    latestCandleRequestIdentityRef.current = requestIdentity;
+
+    if (!canRefreshInBackground) {
+      setChartCandleStatus('loading');
+
+      if (isNewRequestIdentity) {
+        setChartCandles([]);
+      }
+    }
 
     apiJson<Candle[]>(`/api/markets/candles?symbol=${encodeURIComponent(market.symbol)}&timeframe=${timeframe}&exchangeId=${encodeURIComponent(selectedExchangeId)}&marketType=${chartMarketType}`, undefined, {
       signal: controller.signal,
@@ -519,6 +521,11 @@ export function ChartsWorkspace({
       })
       .catch(() => {
         if (!didCleanup) {
+          if (canRefreshInBackground && latestChartCandlesRef.current.length > 0) {
+            setChartCandleStatus((currentStatus) => (currentStatus === 'loading' ? 'live' : currentStatus));
+            return;
+          }
+
           setChartCandles([]);
           setChartCandleStatus('fallback');
         }
@@ -532,7 +539,7 @@ export function ChartsWorkspace({
       window.clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [candleRequestNonce, chartMarketType, market.symbol, selectedExchangeId, timeframe]);
+  }, [candleRequestNonce, chartDataIdentity, chartMarketType, market.symbol, selectedExchangeId, timeframe]);
 
   useEffect(() => {
     const isPerpetualChartMarket = chartMarketType !== 'spot';
@@ -823,13 +830,6 @@ export function ChartsWorkspace({
       return;
     }
 
-    if (tool === 'replay') {
-      setSelectedMarkerType(null);
-      setSetupMessage('Opening replay');
-      router.push(`/backtest/replay?pair=${encodeURIComponent(market.symbol)}`);
-      return;
-    }
-
     setSelectedMarkerType(null);
     setSetupMessage(`${toolLabel(tool)} selected`);
   }
@@ -1089,7 +1089,7 @@ export function ChartsWorkspace({
     setSetupMessage('Routing live');
 
     try {
-      const result = await postJson<{ allowed: boolean }>('/api/trading/execute', tradeExecutionPayload('live'));
+      const result = await postJson<{ allowed: boolean }>('/api/trading/execute', { ...tradeExecutionPayload('live'), confirmed: true });
 
       setLiveOrderConfirmationOpen(false);
       setSetupMessage(result.allowed ? (executionIntent === 'strategy' ? 'Strategy live sent' : 'Manual live sent') : 'Live blocked');
@@ -1160,75 +1160,6 @@ export function ChartsWorkspace({
       setSetupMessage(hasCompletePosition ? 'Bracket planned' : 'Entry planned');
     } catch {
       setSetupMessage('Plan not saved');
-    }
-  }
-
-  async function createSetupAlert() {
-    const alertMarker = tradeMarkers.find((marker) => marker.type === 'alert');
-    const value = alertMarker?.price ?? draft.takeProfit ?? market.lastPrice;
-
-    setSetupMessage('Creating alert');
-
-    try {
-      await postJson('/api/alerts', {
-        channel: 'app',
-        condition: draft.direction === 'long' ? 'crosses above' : 'crosses below',
-        symbol: market.symbol,
-        trigger: 'once',
-        type: 'price',
-        value: String(roundPrice(value)),
-      });
-      setSetupMessage('Alert active');
-    } catch (error) {
-      setSetupMessage(error instanceof Error ? error.message : 'Alert failed');
-    }
-  }
-
-  async function convertSetupToStrategy() {
-    if (!hasEntryMarker) {
-      setSetupMessage('Place Entry first');
-      return;
-    }
-
-    setSetupMessage('Converting');
-
-    try {
-      const strategy = await postJson<{ id: string }>('/api/strategies', {
-        entryConditions: [
-          { connector: 'IF', field: 'Entry', id: `entry-${Date.now()}`, operator: draft.direction === 'long' ? 'crosses-above' : 'crosses-below', value: String(roundPrice(draft.entry)) },
-          { connector: 'AND', field: 'Stop Loss', id: `stop-${Date.now()}`, operator: draft.direction === 'long' ? 'greater-than' : 'less-than', value: String(roundPrice(draft.stopLoss)) },
-        ],
-        exitConditions: [
-          { connector: 'IF', field: 'Take Profit', id: `tp-${Date.now()}`, operator: draft.direction === 'long' ? 'greater-than' : 'less-than', value: String(roundPrice(draft.takeProfit)) },
-          { connector: 'OR', field: 'Risk Engine', id: `risk-${Date.now()}`, operator: 'greater-than', value: `${draft.riskPercent}% risk` },
-        ],
-        market: market.symbol,
-        name: `${market.symbol} ${draft.direction} setup`,
-        positionDraft: draft,
-        riskPerTrade: draft.riskPercent,
-        riskSettings: {
-          accountBalance: 25000,
-          maxOpenTrades: tradeLimits.maxOpenPositions,
-          positionSizing: defaultPreferences.positionSizingMethod,
-          rrTarget: riskReward,
-          stopLoss: 'Chart marker',
-          stopRequired: hasStopLossMarker,
-          takeProfit: hasTakeProfitMarker ? 'Chart marker' : 'Manual',
-          trailingStop: isTrailingOn,
-        },
-        setupSnapshot: {
-          drawings: chartDrawings,
-          markers: tradeMarkers,
-          notes: savedSetupNotes,
-        },
-        status: 'draft',
-        timeframe,
-        type: draft.direction === 'long' ? 'trend' : 'mean-reversion',
-      });
-      setSetupMessage('Strategy created');
-      router.push(`/strategies/${strategy.id}`);
-    } catch (error) {
-      setSetupMessage(error instanceof Error ? error.message : 'Convert failed');
     }
   }
 
@@ -1409,11 +1340,9 @@ export function ChartsWorkspace({
           </div>
         </div>
         <div className="cockpit-page-badges" aria-label="Workspace status">
-          <StrategyAgentDrawer context="chart" reports={agentReports} runs={agentRuns} settings={agentSettings} strategyName={`${market.symbol} setup`} suggestions={agentSuggestions} versions={agentVersions.filter((version) => version.marketsTested.includes(market.symbol))} />
           <span className={selectedMarketDataIsLive ? 'cockpit-chip cockpit-chip--positive' : 'cockpit-chip cockpit-chip--warning'}>
             {exchangeMarketStatusLabel(selectedExchange, selectedMarketDataIsLive, hasBinancePrices, chartCandleStatus)}
           </span>
-          <span className="cockpit-chip cockpit-chip--primary">Journal · {journalTrades.length} trades</span>
           <span className="cockpit-chip cockpit-chip--warning">Risk · runtime</span>
           <span className={executionMode === 'live' ? (selectedExchangeCanTrade ? 'cockpit-chip cockpit-chip--positive' : 'cockpit-chip cockpit-chip--negative') : 'cockpit-chip cockpit-chip--warning'}>
             {executionMode === 'live' ? (selectedExchangeCanTrade ? 'Live arme' : 'Live bloque') : 'Paper actif'}
@@ -1594,7 +1523,6 @@ export function ChartsWorkspace({
                 <Tool icon={<TrendingDown size={18} />} isActive={activeChartTool === 'short'} label="Short" onClick={() => handleChartToolSelect('short')} />
                 <Tool icon={<Bell size={18} />} isActive={activeChartTool === 'alert' || selectedMarkerType === 'alert'} label="Alert" onClick={() => handleChartToolSelect('alert')} />
                 <Tool icon={<Activity size={18} />} isActive={indicatorPanelOpen} label="Indicators" onClick={() => handleChartToolSelect('indicators')} />
-                <Tool icon={<RotateCcw size={18} />} isActive={activeChartTool === 'replay'} label="Replay" onClick={() => handleChartToolSelect('replay')} />
               </div>
             ) : null}
 
@@ -1933,37 +1861,9 @@ export function ChartsWorkspace({
           ) : null}
 
           <div className="trade-panel__actions">
-            <Link
-              aria-label="Create setup alert"
-              className="ui-button ui-button--ghost ui-button--sm"
-              href={alertBuilderHref}
-              onClick={(event) => {
-                event.preventDefault();
-                void createSetupAlert();
-              }}
-            >
-              <span className="ui-button__icon">
-                <Bell size={15} />
-              </span>
-              <span>Create Alert</span>
-            </Link>
             <Button icon={<Save size={15} />} onClick={saveSetup} size="sm" variant="ghost">
               Save Setup
             </Button>
-            <Link
-              aria-label="Convert setup to strategy"
-              className="ui-button ui-button--ghost ui-button--sm"
-              href={strategyBuilderHref}
-              onClick={(event) => {
-                event.preventDefault();
-                void convertSetupToStrategy();
-              }}
-            >
-              <span className="ui-button__icon">
-                <FileText size={15} />
-              </span>
-              <span>Convert</span>
-            </Link>
           </div>
 
           <small className="trade-panel__note">Manuel ou strategie: tu peux armer le live quand tu veux, puis le Risk Engine confirme avant envoi.</small>
@@ -2350,8 +2250,6 @@ function toolLabel(tool: ChartToolId) {
       return 'Alert';
     case 'indicators':
       return 'Indicators';
-    case 'replay':
-      return 'Replay';
   }
 }
 

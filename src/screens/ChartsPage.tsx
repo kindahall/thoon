@@ -2,13 +2,10 @@ import { ChartsWorkspace } from './charts/ChartsWorkspace';
 import { listMarketPairs } from '../services/market-service';
 import {
   getRiskRules,
-  getAgentSettings,
   getTradeLimits,
   getUserPreferences,
-  listAgentReports,
-  listAgentRuns,
-  listAgentSuggestions,
-  listBacktestReports,
+  listChartBacktestReports,
+  listChartStrategies,
   listBots,
   listExchangeConnections,
   listJournalTrades,
@@ -16,8 +13,6 @@ import {
   listOrderHistory,
   listPaperTestSessions,
   listPositions,
-  listStrategies,
-  listStrategyVersions,
 } from '../services/thoon-data-service';
 
 type ChartsPageProps = {
@@ -33,12 +28,7 @@ export async function ChartsPage({ initialPair, initialPaperSessionId, initialRe
 
   return (
     <ChartsWorkspace
-      agentReports={listAgentReports()}
-      agentRuns={listAgentRuns()}
-      agentSettings={getAgentSettings()}
-      agentSuggestions={listAgentSuggestions()}
-      agentVersions={listStrategyVersions()}
-      backtestReports={listBacktestReports()}
+      backtestReports={listChartBacktestReports()}
       bots={listBots()}
       defaultPreferences={getUserPreferences()}
       exchangeConnections={listExchangeConnections()}
@@ -55,7 +45,7 @@ export async function ChartsPage({ initialPair, initialPaperSessionId, initialRe
       paperSessions={listPaperTestSessions()}
       positions={listPositions()}
       riskRules={getRiskRules()}
-      strategies={listStrategies()}
+      strategies={listChartStrategies()}
       tradeLimits={getTradeLimits()}
     />
   );

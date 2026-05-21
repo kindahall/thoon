@@ -1,26 +1,34 @@
-import { createHmac, pbkdf2Sync, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import type { NextRequest } from 'next/server';
 
 import { getThoonServerEnv, hasProductionEncryptionKey } from './env';
+import { createPasswordHash, verifyPassword } from './password';
 import { readThoonDb } from './thoon-db';
 
 export const thoonSessionCookieName = 'thoon_session';
+export { createPasswordHash, verifyPassword };
 
 type SessionPayload = {
   email: string;
   expiresAt: string;
   issuedAt: string;
-  role: 'owner';
+  role: SessionRole;
   sessionId: string;
+  userId?: string;
+  workspaceId?: string;
 };
+
+export type SessionRole = 'admin' | 'member' | 'owner';
 
 export type AuthSession = {
   email: string;
   expiresAt: string;
   mode: 'disabled' | 'authenticated';
-  role: 'owner';
+  role: SessionRole;
   sessionId?: string;
+  userId?: string;
+  workspaceId?: string;
 };
 
 export type StoredSession = {
@@ -31,11 +39,9 @@ export type StoredSession = {
   ipAddress: string;
   lastSeenAt: string;
   revokedAt?: string;
-  role: 'owner';
+  role: SessionRole;
   userAgent: string;
 };
-
-const passwordHashPrefix = 'pbkdf2_sha256';
 
 export function isAuthRequired() {
   return getThoonServerEnv().authMode === 'local-required';
@@ -48,32 +54,6 @@ export function getDisabledAuthSession(): AuthSession {
     mode: 'disabled',
     role: 'owner',
   };
-}
-
-export function createPasswordHash(password: string) {
-  const iterations = 310000;
-  const salt = randomBytes(16).toString('base64url');
-  const hash = pbkdf2Sync(password, salt, iterations, 32, 'sha256').toString('base64url');
-
-  return `${passwordHashPrefix}$${iterations}$${salt}$${hash}`;
-}
-
-export function verifyPassword(password: string, storedHash?: string) {
-  if (!storedHash || !storedHash.startsWith(`${passwordHashPrefix}$`)) {
-    return false;
-  }
-
-  const [, rawIterations, salt, expectedHash] = storedHash.split('$');
-  const iterations = Number(rawIterations);
-
-  if (!Number.isInteger(iterations) || iterations < 100000 || !salt || !expectedHash) {
-    return false;
-  }
-
-  const actual = pbkdf2Sync(password, salt, iterations, 32, 'sha256');
-  const expected = Buffer.from(expectedHash, 'base64url');
-
-  return expected.length === actual.length && timingSafeEqual(actual, expected);
 }
 
 export function createSessionCookieValue(session: SessionPayload) {
@@ -97,7 +77,7 @@ export function parseSessionCookieValue(value?: string): SessionPayload | undefi
   try {
     const session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as Partial<SessionPayload>;
 
-    if (!session.email || !session.expiresAt || !session.issuedAt || !session.sessionId || session.role !== 'owner') {
+    if (!session.email || !session.expiresAt || !session.issuedAt || !session.sessionId || !isSessionRole(session.role)) {
       return undefined;
     }
 
@@ -111,7 +91,7 @@ export function parseSessionCookieValue(value?: string): SessionPayload | undefi
   }
 }
 
-export function createLoginSession(email: string) {
+export function createLoginSession(email: string, options: { role?: SessionRole; userId?: string; workspaceId?: string } = {}) {
   const env = getThoonServerEnv();
   const now = new Date();
   const expiresAt = new Date(now.getTime() + env.authSessionDays * 24 * 60 * 60 * 1000);
@@ -119,8 +99,10 @@ export function createLoginSession(email: string) {
     email,
     expiresAt: expiresAt.toISOString(),
     issuedAt: now.toISOString(),
-    role: 'owner',
+    role: options.role ?? 'owner',
     sessionId: `sess-${randomBytes(18).toString('base64url')}`,
+    userId: options.userId,
+    workspaceId: options.workspaceId,
   };
 
   return {
@@ -150,26 +132,32 @@ export function getSessionFromRequest(request: NextRequest): AuthSession | undef
     mode: 'authenticated',
     role: payload.role,
     sessionId: payload.sessionId,
+    userId: payload.userId,
+    workspaceId: payload.workspaceId,
   };
 }
 
 export function sessionCookieOptions(expiresAt: string) {
+  const env = getThoonServerEnv();
+
   return {
     expires: new Date(expiresAt),
     httpOnly: true,
     path: '/',
     sameSite: 'lax' as const,
-    secure: getThoonServerEnv().nodeEnv === 'production',
+    secure: env.authCookieSecure,
   };
 }
 
 export function clearedSessionCookieOptions() {
+  const env = getThoonServerEnv();
+
   return {
     expires: new Date(0),
     httpOnly: true,
     path: '/',
     sameSite: 'lax' as const,
-    secure: getThoonServerEnv().nodeEnv === 'production',
+    secure: env.authCookieSecure,
   };
 }
 
@@ -189,6 +177,10 @@ export function getAuthProductionStatus() {
 
 function signSessionPayload(payload: string) {
   return createHmac('sha256', getThoonServerEnv().authSessionSecret).update(payload).digest('base64url');
+}
+
+function isSessionRole(value: unknown): value is SessionRole {
+  return value === 'owner' || value === 'admin' || value === 'member';
 }
 
 function constantTimeStringEqual(left: string, right: string) {

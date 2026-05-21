@@ -1,6 +1,6 @@
 'use client';
 
-import { Bell, Filter, LineChart, Plus, Search, Star } from 'lucide-react';
+import { Filter, LineChart, Search, Star } from 'lucide-react';
 import Link from 'next/link';
 import { useMemo, useState, type CSSProperties } from 'react';
 
@@ -102,7 +102,7 @@ export function MarketsPage({ favoriteSymbols: initialFavoriteSymbols, initialOv
           </div>
           <span className="market-action-status" aria-live="polite">{actionStatus}</span>
           <HelpPopover
-            items={['Open a pair on Charts.', 'Add pairs to Watchlist or Strategy.', 'Create alerts from any row.']}
+            items={['Open a pair on Charts.', 'Favorites stay local until the watchlist is rebuilt.', 'Trading decisions use real backend data only.']}
             title="Markets"
           />
         </div>
@@ -322,12 +322,6 @@ function MarketRow({
         <button aria-label={favorite ? `Remove ${pair.symbol} from watchlist` : `Add ${pair.symbol} to watchlist`} onClick={() => onToggleFavorite(pair.symbol)} title={favorite ? 'Remove from watchlist' : 'Add to watchlist'} type="button">
           <Star className={favorite ? 'is-favorite' : undefined} size={15} />
         </button>
-        <Link aria-label={`Create strategy for ${pair.symbol}`} href={`/strategies/new?pair=${pairParam}`} title="Add to strategy">
-          <Plus size={15} />
-        </Link>
-        <Link aria-label={`Create alert for ${pair.symbol}`} href={`/alerts?pair=${pairParam}`} title="Create alert">
-          <Bell size={15} />
-        </Link>
       </span>
     </div>
   );

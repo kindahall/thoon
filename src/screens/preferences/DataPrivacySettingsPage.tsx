@@ -22,17 +22,18 @@ import { useState, type ReactNode } from 'react';
 import { PreferencesSectionNav } from '../../components/preferences/PreferencesSectionNav';
 import { Badge, Button, Card, HelpPopover, Modal } from '../../components/ui';
 import { patchJson, postJson } from '../../services/api-client';
-import type { AuditEvent } from '../../types/trading';
+import type { AuditEvent, UserPreferences } from '../../types/trading';
 
 type DataPrivacySettingsPageProps = {
   auditLogs: AuditEvent[];
+  preferences: UserPreferences;
 };
 
 type PrivacyAction = 'export-data' | 'download-report' | 'delete-account' | null;
 
-export function DataPrivacySettingsPage({ auditLogs }: DataPrivacySettingsPageProps) {
-  const [analyticsConsent, setAnalyticsConsent] = useState(true);
-  const [personalizedExperience, setPersonalizedExperience] = useState(true);
+export function DataPrivacySettingsPage({ auditLogs, preferences }: DataPrivacySettingsPageProps) {
+  const [analyticsConsent, setAnalyticsConsent] = useState(preferences.analyticsConsent ?? true);
+  const [personalizedExperience, setPersonalizedExperience] = useState(preferences.personalizedExperience ?? true);
   const [action, setAction] = useState<PrivacyAction>(null);
   const [status, setStatus] = useState('Ready');
 
@@ -67,8 +68,8 @@ export function DataPrivacySettingsPage({ auditLogs }: DataPrivacySettingsPagePr
         URL.revokeObjectURL(href);
         setStatus('Downloaded');
       } else {
-        await postJson('/api/security/action', { action });
-        setStatus('Deletion request logged');
+        await postJson('/api/security/action', { action, confirmed: true });
+        setStatus('Deletion workflow required');
       }
 
       setAction(null);

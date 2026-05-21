@@ -3,8 +3,6 @@
 import {
   BadgePercent,
   BarChart3,
-  ChevronDown,
-  Gauge,
   RotateCcw,
   Save,
   Shield,
@@ -14,10 +12,10 @@ import {
   Wallet,
   Zap,
 } from 'lucide-react';
-import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 
 import { PreferencesSectionNav } from '../../components/preferences/PreferencesSectionNav';
-import { Button, Card, HelpPopover, InfoButton } from '../../components/ui';
+import { Badge, Button, Card, HelpPopover } from '../../components/ui';
 import { patchJson } from '../../services/api-client';
 import type { UserPreferences } from '../../types/trading';
 
@@ -29,28 +27,80 @@ type Preset = {
   id: UserPreferences['quickPreset'];
   icon: ReactNode;
   label: string;
+  shortLabel: string;
   values: Partial<UserPreferences>;
 };
 
+type TradingTabId = 'risk' | 'execution' | 'protection' | 'account' | 'presets';
+
+type TradingTone = 'cyan' | 'green' | 'orange' | 'pink' | 'violet' | 'yellow';
+
+type SelectOption = {
+  label: string;
+  value: string;
+};
+
 const presets: Preset[] = [
-  { id: 'scalping', icon: <Zap size={16} />, label: 'Scalping', values: { defaultLeverage: 5, defaultRiskPerTrade: 0.5, defaultSlippage: 0.3, quickPreset: 'scalping' } },
-  { id: 'day-trading', icon: <Target size={16} />, label: 'Day Trading', values: { defaultLeverage: 3, defaultRiskPerTrade: 1, defaultSlippage: 0.5, quickPreset: 'day-trading' } },
-  { id: 'swing-trading', icon: <TrendingUp size={16} />, label: 'Swing Trading', values: { defaultLeverage: 2, defaultRiskPerTrade: 1.25, defaultSlippage: 0.8, quickPreset: 'swing-trading' } },
-  { id: 'position-trading', icon: <BarChart3 size={16} />, label: 'Position Trading', values: { defaultLeverage: 1, defaultRiskPerTrade: 0.75, defaultSlippage: 1, quickPreset: 'position-trading' } },
-  { id: 'custom', icon: <SlidersHorizontal size={16} />, label: 'Custom', values: { quickPreset: 'custom' } },
+  { id: 'scalping', icon: <Zap size={16} />, label: 'Scalping', shortLabel: 'Scalp', values: { defaultLeverage: 5, defaultRiskPerTrade: 0.5, defaultSlippage: 0.3, quickPreset: 'scalping' } },
+  { id: 'day-trading', icon: <Target size={16} />, label: 'Day Trading', shortLabel: 'Day', values: { defaultLeverage: 3, defaultRiskPerTrade: 1, defaultSlippage: 0.5, quickPreset: 'day-trading' } },
+  { id: 'swing-trading', icon: <TrendingUp size={16} />, label: 'Swing Trading', shortLabel: 'Swing', values: { defaultLeverage: 2, defaultRiskPerTrade: 1.25, defaultSlippage: 0.8, quickPreset: 'swing-trading' } },
+  { id: 'position-trading', icon: <BarChart3 size={16} />, label: 'Position Trading', shortLabel: 'Position', values: { defaultLeverage: 1, defaultRiskPerTrade: 0.75, defaultSlippage: 1, quickPreset: 'position-trading' } },
+  { id: 'custom', icon: <SlidersHorizontal size={16} />, label: 'Custom', shortLabel: 'Custom', values: { quickPreset: 'custom' } },
+];
+
+const tradingTabs: Array<{
+  id: TradingTabId;
+  icon: ReactNode;
+  label: string;
+  tone: TradingTone;
+}> = [
+  { id: 'risk', icon: <BadgePercent size={15} />, label: 'Risk', tone: 'orange' },
+  { id: 'execution', icon: <Zap size={15} />, label: 'Execution', tone: 'green' },
+  { id: 'protection', icon: <Shield size={15} />, label: 'Protection', tone: 'pink' },
+  { id: 'account', icon: <Wallet size={15} />, label: 'Account', tone: 'cyan' },
+  { id: 'presets', icon: <SlidersHorizontal size={15} />, label: 'Presets', tone: 'violet' },
+];
+
+const riskOptions: SelectOption[] = [
+  { label: '0.50%', value: '0.5' },
+  { label: '1.00%', value: '1' },
+  { label: '1.25%', value: '1.25' },
+  { label: '2.00%', value: '2' },
+];
+
+const leverageOptions: SelectOption[] = [
+  { label: '1x', value: '1' },
+  { label: '2x', value: '2' },
+  { label: '3x', value: '3' },
+  { label: '5x', value: '5' },
+  { label: '10x', value: '10' },
+];
+
+const slippageOptions: SelectOption[] = [
+  { label: '0.30%', value: '0.3' },
+  { label: '0.50%', value: '0.5' },
+  { label: '0.80%', value: '0.8' },
+  { label: '1.00%', value: '1' },
 ];
 
 export function TradingDefaultsSettingsPage({ preferences }: TradingDefaultsSettingsPageProps) {
+  const [activeTab, setActiveTab] = useState<TradingTabId>('risk');
   const [defaults, setDefaults] = useState(preferences);
   const [previewDirection, setPreviewDirection] = useState<'long' | 'short'>('long');
   const [takeProfitEnabled, setTakeProfitEnabled] = useState(true);
   const [stopLossEnabled, setStopLossEnabled] = useState(true);
-  const [previewStatus, setPreviewStatus] = useState('Preview ready');
+  const [previewStatus, setPreviewStatus] = useState('Ready');
   const [saveStatus, setSaveStatus] = useState('Ready');
   const estimatedSize = useMemo(() => (0.0015 * (defaults.defaultRiskPerTrade / 1)).toFixed(4), [defaults.defaultRiskPerTrade]);
+  const activeTabConfig = tradingTabs.find((tab) => tab.id === activeTab) ?? tradingTabs[0];
 
   function updateDefaults(values: Partial<UserPreferences>) {
     setDefaults((current) => ({ ...current, ...values }));
+  }
+
+  function resetDefaults() {
+    setDefaults(preferences);
+    setSaveStatus('Ready');
   }
 
   async function saveDefaults() {
@@ -69,295 +119,391 @@ export function TradingDefaultsSettingsPage({ preferences }: TradingDefaultsSett
     <section className="trading-defaults-page" aria-label="Trading defaults settings">
       <div className="workspace-header workspace-header--compact">
         <div>
+          <p className="workspace-kicker">Preferences</p>
           <h1>Trading Defaults</h1>
-          <p>Configure how orders and positions behave by default.</p>
         </div>
         <div className="workspace-header__right">
-          <Button icon={<RotateCcw size={15} />} size="sm" variant="ghost" onClick={() => setDefaults(preferences)}>
+          <Badge tone="warning">Risk</Badge>
+          <Badge tone="positive">Paper</Badge>
+          <Badge tone="primary">Compact</Badge>
+          <Button icon={<RotateCcw size={15} />} size="sm" variant="ghost" onClick={resetDefaults}>
             Reset
           </Button>
           <Button icon={<Save size={15} />} onClick={saveDefaults} size="sm" variant="primary">
-            Save changes
+            Save
           </Button>
-          <HelpPopover items={['Defaults feed the Position Builder.', 'Live orders still require risk confirmation.']} title="Trading Defaults" />
+          <HelpPopover items={['Defaults feed new orders.', 'Live still asks confirmation.']} title="Trading Defaults" />
         </div>
       </div>
 
       <div className="preferences-layout">
         <PreferencesSectionNav active="trading-defaults" />
 
-        <div className="trading-defaults-layout">
-          <div className="trading-defaults-main">
-            <div className="trading-defaults-head">
-              <div>
-                <h2>Trading Defaults</h2>
-                <p>Default behavior for new orders and position setups.</p>
-              </div>
-            </div>
-
-            <div className="trading-settings-grid">
-              <TradingSettingCard icon={<BadgePercent size={17} />} info="Risk used by new position drafts." title="Default Risk per Trade">
-                <select className="trading-select" value={String(defaults.defaultRiskPerTrade)} onChange={(event) => updateDefaults({ defaultRiskPerTrade: Number(event.target.value) })}>
-                  <option value="0.5">0.50%</option>
-                  <option value="1">1.00%</option>
-                  <option value="1.25">1.25%</option>
-                  <option value="2">2.00%</option>
-                </select>
-                <RangeControl maxLabel="5%" minLabel="0.1%" value={defaults.defaultRiskPerTrade} />
-              </TradingSettingCard>
-
-              <TradingSettingCard icon={<Gauge size={17} />} info="Maximum leverage prefilled in the order panel." title="Default Leverage">
-                <select className="trading-select" value={String(defaults.defaultLeverage)} onChange={(event) => updateDefaults({ defaultLeverage: Number(event.target.value) })}>
-                  <option value="1">1x</option>
-                  <option value="2">2x</option>
-                  <option value="3">3x</option>
-                  <option value="5">5x</option>
-                  <option value="10">10x</option>
-                </select>
-                <RangeControl maxLabel="100x" minLabel="1x" value={defaults.defaultLeverage} />
-              </TradingSettingCard>
-
-              <TradingSettingCard icon={<SlidersHorizontal size={17} />} info="Order type selected when a new order opens." title="Default Order Type">
-                <select className="trading-select" value={defaults.orderType} onChange={(event) => updateDefaults({ orderType: event.target.value as UserPreferences['orderType'] })}>
-                  <option value="limit">Limit</option>
-                  <option value="market">Market</option>
-                  <option value="stop">Stop</option>
-                </select>
-              </TradingSettingCard>
-
-              <TradingSettingCard icon={<BarChart3 size={17} />} info="Market type used by new setups." title="Preferred Market Type">
-                <div className="segmented-options">
-                  {(['spot', 'perpetual', 'futures'] as const).map((type) => (
-                    <button className={defaults.preferredMarketType === type ? 'is-active' : undefined} key={type} onClick={() => updateDefaults({ preferredMarketType: type })} type="button">
-                      {marketTypeLabel(type)}
-                    </button>
-                  ))}
-                </div>
-              </TradingSettingCard>
-
-              <TradingSettingCard icon={<BadgePercent size={17} />} info="Maximum accepted slippage for default orders." title="Default Slippage">
-                <select className="trading-select" value={String(defaults.defaultSlippage)} onChange={(event) => updateDefaults({ defaultSlippage: Number(event.target.value) })}>
-                  <option value="0.3">0.30%</option>
-                  <option value="0.5">0.50%</option>
-                  <option value="0.8">0.80%</option>
-                  <option value="1">1.00%</option>
-                </select>
-                <RangeControl maxLabel="5%" minLabel="0%" value={defaults.defaultSlippage} />
-              </TradingSettingCard>
-
-              <TradingSettingCard icon={<Target size={17} />} info="How take-profits are prefilled." title="Take-Profit Mode">
-                <select className="trading-select" value={defaults.takeProfitMode} onChange={(event) => updateDefaults({ takeProfitMode: event.target.value as UserPreferences['takeProfitMode'] })}>
-                  <option value="tp-limit">TP Limit</option>
-                  <option value="tp-market">TP Market</option>
-                  <option value="scale-out">Scale out</option>
-                </select>
-              </TradingSettingCard>
-
-              <TradingSettingCard icon={<Shield size={17} />} info="Stop-loss mode required before live execution." title="Stop-Loss Mode">
-                <select className="trading-select" value={defaults.stopLossMode} onChange={(event) => updateDefaults({ stopLossMode: event.target.value as UserPreferences['stopLossMode'] })}>
-                  <option value="sl-market">SL Market</option>
-                  <option value="sl-limit">SL Limit</option>
-                </select>
-              </TradingSettingCard>
-
-              <TradingSettingCard icon={<Target size={17} />} info="Default multi-target behavior." title="Multi-TP Behavior">
-                <select className="trading-select" value={defaults.multiTpBehavior} onChange={(event) => updateDefaults({ multiTpBehavior: event.target.value as UserPreferences['multiTpBehavior'] })}>
-                  <option value="single-target">Single target</option>
-                  <option value="partial-take-profits">Partial Take Profits</option>
-                  <option value="equal-ladder">Equal ladder</option>
-                </select>
-              </TradingSettingCard>
-
-              <TradingSettingCard icon={<Shield size={17} />} info="Moves stop to break-even after a rule is met." title="Break-Even Automation">
-                <div className="setting-inline">
-                  <button className={`switch ${defaults.breakEvenAutomation ? 'is-on' : ''}`} aria-label="Break-even automation" onClick={() => updateDefaults({ breakEvenAutomation: !defaults.breakEvenAutomation })} type="button" />
-                  <select className="trading-select" value={defaults.breakEvenRule} onChange={(event) => updateDefaults({ breakEvenRule: event.target.value as UserPreferences['breakEvenRule'] })}>
-                    <option value="off">Off</option>
-                    <option value="move-to-be-at-1r">Move to BE at 1R</option>
-                    <option value="move-to-be-at-tp1">Move to BE at TP1</option>
-                  </select>
-                </div>
-              </TradingSettingCard>
-
-              <TradingSettingCard icon={<TrendingUp size={17} />} info="Trailing stop defaults for new positions." title="Trailing Stop Defaults">
-                <div className="setting-inline">
-                  <button className={`switch ${defaults.trailingStopEnabled ? 'is-on' : ''}`} aria-label="Trailing stop" onClick={() => updateDefaults({ trailingStopEnabled: !defaults.trailingStopEnabled })} type="button" />
-                  <select className="trading-select" value={String(defaults.trailingStopTrailAtr)} onChange={(event) => updateDefaults({ trailingStopTrailAtr: Number(event.target.value) })}>
-                    <option value="1">1.00 ATR</option>
-                    <option value="1.5">1.50 ATR</option>
-                    <option value="2">2.00 ATR</option>
-                  </select>
-                </div>
-              </TradingSettingCard>
-
-              <TradingSettingCard icon={<Wallet size={17} />} info="Position sizing method used by the builder." title="Position Sizing Method">
-                <select className="trading-select" value={defaults.positionSizingMethod} onChange={(event) => updateDefaults({ positionSizingMethod: event.target.value as UserPreferences['positionSizingMethod'] })}>
-                  <option value="risk-percent">Risk % of Equity</option>
-                  <option value="fixed-usdt">Fixed USDT</option>
-                  <option value="fixed-size">Fixed Size</option>
-                </select>
-                <label className="compact-input-label">
-                  Risk %
-                  <input value={`${defaults.defaultRiskPerTrade.toFixed(2)}%`} readOnly />
-                </label>
-              </TradingSettingCard>
-
-              <TradingSettingCard icon={<Wallet size={17} />} info="Default execution venue. API keys stay server-side." title="Default Account / Exchange">
-                <select className="trading-select" value={defaults.defaultExchange} onChange={(event) => updateDefaults({ defaultExchange: event.target.value })}>
-                  <option value="Paper">Paper</option>
-                  <option value="Binance">Binance</option>
-                  <option value="Bybit">Bybit</option>
-                  <option value="OKX">OKX</option>
-                  <option value="dYdX">dYdX</option>
-                  <option value="Hyperliquid">Hyperliquid</option>
-                  <option value="1inch">1inch</option>
-                </select>
-                <select className="trading-select" value={defaults.defaultAccount} onChange={(event) => updateDefaults({ defaultAccount: event.target.value })}>
-                  <option value="Main Account">Main Account</option>
-                  <option value="Paper Account">Paper Account</option>
-                  <option value="Bot Sandbox">Bot Sandbox</option>
-                </select>
-              </TradingSettingCard>
-            </div>
-
-            <Card className="quick-presets-card">
-              <div>
-                <h2>Quick Presets</h2>
-                <p>Load a complete set of defaults.</p>
-              </div>
-              <div className="quick-presets-row">
-                {presets.map((preset) => (
-                  <button className={defaults.quickPreset === preset.id ? 'is-active' : undefined} key={preset.id} onClick={() => updateDefaults(preset.values)} type="button">
-                    {preset.icon}
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-            </Card>
+        <div className="trading-clean-main">
+          <div className="trading-clean-tabs" role="tablist" aria-label="Trading defaults sections">
+            {tradingTabs.map((tab) => (
+              <button
+                aria-selected={activeTab === tab.id}
+                className={`trading-clean-tab is-${tab.tone}${activeTab === tab.id ? ' is-active' : ''}`}
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                role="tab"
+                type="button"
+              >
+                {tab.icon}
+                {tab.label}
+              </button>
+            ))}
           </div>
 
-          <aside className="order-preview-card" aria-label="Order panel preview">
-            <div>
-              <h2>Order Panel Preview</h2>
-              <p>Defaults in the order panel.</p>
+          <div className="trading-clean-grid">
+            <div className="trading-clean-left">
+              <Card className="trading-clean-summary">
+                <div className="trading-clean-avatar">TD</div>
+                <div className="trading-clean-name">
+                  <h2>Defaults</h2>
+                  <span>New orders</span>
+                  <div>
+                    <Badge tone="primary">{presetLabel(defaults.quickPreset)}</Badge>
+                    <Badge tone="positive">{marketTypeLabel(defaults.preferredMarketType)}</Badge>
+                  </div>
+                </div>
+                <div className="trading-clean-metrics">
+                  <TradingMetric label="Risk" value={`${defaults.defaultRiskPerTrade.toFixed(2)}%`} />
+                  <TradingMetric label="Leverage" value={`${defaults.defaultLeverage}x`} />
+                  <TradingMetric label="Order" value={orderTypeLabel(defaults.orderType)} />
+                  <TradingMetric label="Slippage" value={`${defaults.defaultSlippage.toFixed(2)}%`} />
+                </div>
+              </Card>
+
+              <Card className={`trading-clean-panel is-${activeTabConfig.tone}`}>
+                <div className="trading-clean-panel-head">
+                  <div>
+                    {activeTabConfig.icon}
+                    <h2>{activeTabConfig.label}</h2>
+                  </div>
+                  <Badge tone={saveStatus === 'Saved' || saveStatus === 'Ready' ? 'positive' : saveStatus === 'Saving' ? 'warning' : 'neutral'}>{saveStatus}</Badge>
+                </div>
+
+                {activeTab === 'risk' ? (
+                  <div className="trading-selector-grid">
+                    <TradingSelectField label="Risk" options={riskOptions} tone="orange" value={String(defaults.defaultRiskPerTrade)} onChange={(value) => updateDefaults({ defaultRiskPerTrade: Number(value) })} />
+                    <TradingSelectField label="Leverage" options={leverageOptions} tone="green" value={String(defaults.defaultLeverage)} onChange={(value) => updateDefaults({ defaultLeverage: Number(value) })} />
+                    <TradingSelectField label="Slippage" options={slippageOptions} value={String(defaults.defaultSlippage)} onChange={(value) => updateDefaults({ defaultSlippage: Number(value) })} />
+                    <TradingSelectField
+                      label="Sizing"
+                      options={[
+                        { label: 'Risk %', value: 'risk-percent' },
+                        { label: 'Fixed USDT', value: 'fixed-usdt' },
+                        { label: 'Fixed Size', value: 'fixed-size' },
+                      ]}
+                      value={defaults.positionSizingMethod}
+                      onChange={(value) => updateDefaults({ positionSizingMethod: value as UserPreferences['positionSizingMethod'] })}
+                    />
+                    <ToggleSelectField
+                      checked={defaults.breakEvenAutomation}
+                      label="Break-even"
+                      onToggle={() => updateDefaults({ breakEvenAutomation: !defaults.breakEvenAutomation })}
+                      options={[
+                        { label: 'Off', value: 'off' },
+                        { label: 'At 1R', value: 'move-to-be-at-1r' },
+                        { label: 'At TP1', value: 'move-to-be-at-tp1' },
+                      ]}
+                      tone="pink"
+                      value={defaults.breakEvenRule}
+                      onChange={(value) => updateDefaults({ breakEvenRule: value as UserPreferences['breakEvenRule'] })}
+                    />
+                    <ToggleSelectField
+                      checked={defaults.trailingStopEnabled}
+                      label="Trailing"
+                      onToggle={() => updateDefaults({ trailingStopEnabled: !defaults.trailingStopEnabled })}
+                      options={[
+                        { label: '1.00 ATR', value: '1' },
+                        { label: '1.50 ATR', value: '1.5' },
+                        { label: '2.00 ATR', value: '2' },
+                      ]}
+                      value={String(defaults.trailingStopTrailAtr)}
+                      onChange={(value) => updateDefaults({ trailingStopTrailAtr: Number(value) })}
+                    />
+                  </div>
+                ) : null}
+
+                {activeTab === 'execution' ? (
+                  <div className="trading-selector-grid">
+                    <SegmentField
+                      label="Direction"
+                      options={[
+                        { label: 'Long', value: 'long' },
+                        { label: 'Short', value: 'short' },
+                      ]}
+                      tone="green"
+                      value={previewDirection}
+                      onChange={(value) => setPreviewDirection(value as 'long' | 'short')}
+                    />
+                    <SegmentField
+                      label="Order"
+                      options={[
+                        { label: 'Limit', value: 'limit' },
+                        { label: 'Market', value: 'market' },
+                        { label: 'Stop', value: 'stop' },
+                      ]}
+                      value={defaults.orderType}
+                      onChange={(value) => updateDefaults({ orderType: value as UserPreferences['orderType'] })}
+                    />
+                    <SegmentField
+                      label="Market"
+                      options={[
+                        { label: 'Spot', value: 'spot' },
+                        { label: 'Perp', value: 'perpetual' },
+                        { label: 'Futures', value: 'futures' },
+                      ]}
+                      tone="cyan"
+                      value={defaults.preferredMarketType}
+                      onChange={(value) => updateDefaults({ preferredMarketType: value as UserPreferences['preferredMarketType'] })}
+                    />
+                    <TradingSelectField
+                      label="Take Profit"
+                      options={[
+                        { label: 'TP Limit', value: 'tp-limit' },
+                        { label: 'TP Market', value: 'tp-market' },
+                        { label: 'Scale out', value: 'scale-out' },
+                      ]}
+                      tone="orange"
+                      value={defaults.takeProfitMode}
+                      onChange={(value) => updateDefaults({ takeProfitMode: value as UserPreferences['takeProfitMode'] })}
+                    />
+                    <TradingSelectField
+                      label="Multi-TP"
+                      options={[
+                        { label: 'Single', value: 'single-target' },
+                        { label: 'Partial', value: 'partial-take-profits' },
+                        { label: 'Ladder', value: 'equal-ladder' },
+                      ]}
+                      tone="violet"
+                      value={defaults.multiTpBehavior}
+                      onChange={(value) => updateDefaults({ multiTpBehavior: value as UserPreferences['multiTpBehavior'] })}
+                    />
+                    <TradingSelectField
+                      label="Stop Loss"
+                      options={[
+                        { label: 'SL Market', value: 'sl-market' },
+                        { label: 'SL Limit', value: 'sl-limit' },
+                      ]}
+                      tone="pink"
+                      value={defaults.stopLossMode}
+                      onChange={(value) => updateDefaults({ stopLossMode: value as UserPreferences['stopLossMode'] })}
+                    />
+                  </div>
+                ) : null}
+
+                {activeTab === 'protection' ? (
+                  <div className="trading-selector-grid">
+                    <ToggleValue label="Take Profit" checked={takeProfitEnabled} tone="green" value={takeProfitLabel(defaults.takeProfitMode)} onToggle={() => setTakeProfitEnabled((current) => !current)} />
+                    <ToggleValue label="Stop Loss" checked={stopLossEnabled} tone="pink" value={stopLossLabel(defaults.stopLossMode)} onToggle={() => setStopLossEnabled((current) => !current)} />
+                    <ToggleValue label="Break-even" checked={defaults.breakEvenAutomation} tone="violet" value={defaults.breakEvenAutomation ? 'On' : 'Off'} onToggle={() => updateDefaults({ breakEvenAutomation: !defaults.breakEvenAutomation })} />
+                    <ToggleValue label="Trailing" checked={defaults.trailingStopEnabled} value={`${defaults.trailingStopTrailAtr} ATR`} onToggle={() => updateDefaults({ trailingStopEnabled: !defaults.trailingStopEnabled })} />
+                    <TradingValue label="Live" tone="orange" value="Confirm" />
+                    <TradingValue label="Mode" tone="cyan" value="Paper first" />
+                  </div>
+                ) : null}
+
+                {activeTab === 'account' ? (
+                  <div className="trading-selector-grid">
+                    <TradingSelectField
+                      label="Exchange"
+                      options={['Paper', 'Binance', 'Bybit', 'OKX', 'dYdX', 'Hyperliquid', '1inch'].map((value) => ({ label: value, value }))}
+                      tone="cyan"
+                      value={defaults.defaultExchange}
+                      onChange={(value) => updateDefaults({ defaultExchange: value })}
+                    />
+                    <TradingSelectField
+                      label="Account"
+                      options={['Main Account', 'Paper Account', 'Bot Sandbox'].map((value) => ({ label: value, value }))}
+                      value={defaults.defaultAccount}
+                      onChange={(value) => updateDefaults({ defaultAccount: value })}
+                    />
+                    <TradingValue label="Currency" value="USDT" />
+                    <TradingValue label="Est. size" tone="green" value={`${estimatedSize} BTC`} />
+                    <TradingValue label="Builder" tone="violet" value="Enabled" />
+                    <TradingValue label="Save state" tone={saveStatus === 'Saved' ? 'green' : 'orange'} value={saveStatus} />
+                  </div>
+                ) : null}
+
+                {activeTab === 'presets' ? (
+                  <div className="trading-preset-clean-grid">
+                    {presets.map((preset) => (
+                      <button className={defaults.quickPreset === preset.id ? 'is-active' : undefined} key={preset.id} onClick={() => updateDefaults(preset.values)} type="button">
+                        {preset.icon}
+                        <span>{preset.shortLabel}</span>
+                        <strong>{presetSummary(preset.id)}</strong>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </Card>
             </div>
 
-            <div className="order-preview-shell">
-              <div className="segmented-options order-preview-direction">
-                <button className={previewDirection === 'long' ? 'is-active' : undefined} onClick={() => setPreviewDirection('long')} type="button">Long</button>
-                <button className={previewDirection === 'short' ? 'is-active' : undefined} onClick={() => setPreviewDirection('short')} type="button">Short</button>
-              </div>
-
-              <div className="order-type-tabs">
-                {(['limit', 'market', 'stop'] as const).map((type) => (
-                  <button className={defaults.orderType === type ? 'is-active' : undefined} key={type} onClick={() => updateDefaults({ orderType: type })} type="button">
-                    {orderTypeLabel(type)}
+            <div className="trading-clean-side">
+              <Card className="trading-clean-preview">
+                <h2>Preview</h2>
+                <div className="trading-clean-accent-line" />
+                <div className="trading-clean-direction">
+                  <button className={previewDirection === 'long' ? 'is-active' : undefined} onClick={() => setPreviewDirection('long')} type="button">
+                    Long
                   </button>
-                ))}
-              </div>
+                  <button className={previewDirection === 'short' ? 'is-active' : undefined} onClick={() => setPreviewDirection('short')} type="button">
+                    Short
+                  </button>
+                </div>
+                <PreviewRow label="Type" value={orderTypeLabel(defaults.orderType)} />
+                <PreviewRow label="Size" value={`${estimatedSize} BTC`} />
+                <PreviewRow label="Risk" value={`${defaults.defaultRiskPerTrade.toFixed(2)}% / ${defaults.defaultLeverage}x`} />
+                <PreviewRow label="TP / SL" value={takeProfitEnabled || stopLossEnabled ? 'On' : 'Off'} />
+                <Button className="trading-clean-execute" onClick={() => setPreviewStatus(`${previewDirection === 'long' ? 'Buy' : 'Sell'} checked`)} variant="primary">
+                  {previewDirection === 'long' ? 'Buy' : 'Sell'} BTC/USDT
+                </Button>
+              </Card>
 
-              <label>
-                Price (USDT)
-                <span>
-                  67,347.60
-                  <ChevronDown size={14} />
-                </span>
-              </label>
+              <Card className="trading-clean-status">
+                <h2>Status</h2>
+                <TradingStatusRow label="Preview" tone="cyan" value={previewStatus} />
+                <TradingStatusRow label="Live" tone="orange" value="Confirm" />
+                <TradingStatusRow label="Save" tone={saveStatus === 'Saved' || saveStatus === 'Ready' ? 'green' : 'orange'} value={saveStatus} />
+              </Card>
 
-              <label>
-                Size
-                <span>
-                  {estimatedSize} BTC
-                  <ChevronDown size={14} />
-                </span>
-              </label>
-
-              <div className="preview-leverage">
-                <strong>{defaults.defaultLeverage}x</strong>
-                <RangeControl maxLabel="100x" minLabel="1x" value={defaults.defaultLeverage} />
-              </div>
-
-              <div className="preview-rule">
-                <span>Take Profit</span>
-                <button className={`switch ${takeProfitEnabled ? 'is-on' : ''}`} aria-label="Take Profit enabled" onClick={() => setTakeProfitEnabled((current) => !current)} type="button" />
-              </div>
-              <div className="preview-rule-grid">
-                <span>{takeProfitLabel(defaults.takeProfitMode)}</span>
-                <span>{defaults.multiTpBehavior === 'partial-take-profits' ? '2 levels' : '1 level'}</span>
-              </div>
-
-              <div className="preview-rule">
-                <span>Stop Loss</span>
-                <button className={`switch ${stopLossEnabled ? 'is-on' : ''}`} aria-label="Stop Loss enabled" onClick={() => setStopLossEnabled((current) => !current)} type="button" />
-              </div>
-              <div className="preview-rule-grid">
-                <span>{stopLossLabel(defaults.stopLossMode)}</span>
-                <span>{defaults.breakEvenAutomation ? 'BE at 1R' : 'BE off'}</span>
-              </div>
-
-              <div className="preview-flags">
-                <span>Break-even</span>
-                <button className={`switch ${defaults.breakEvenAutomation ? 'is-on' : ''}`} aria-label="Preview break-even" onClick={() => updateDefaults({ breakEvenAutomation: !defaults.breakEvenAutomation })} type="button" />
-                <span>Trailing</span>
-                <button className={`switch ${defaults.trailingStopEnabled ? 'is-on' : ''}`} aria-label="Preview trailing stop" onClick={() => updateDefaults({ trailingStopEnabled: !defaults.trailingStopEnabled })} type="button" />
-              </div>
-
-              <Button className="execute-button" onClick={() => setPreviewStatus(`${previewDirection === 'long' ? 'Buy' : 'Sell'} preview checked`)} variant="primary">
-                {previewDirection === 'long' ? 'Buy' : 'Sell'} BTC/USDT
-              </Button>
-
-              <small>{previewStatus} · Est. liq. 60,123.45 USDT</small>
+              <Card className="trading-clean-actions">
+                <h2>Actions</h2>
+                <div>
+                  <button className="is-green" onClick={() => void saveDefaults()} type="button">
+                    Save
+                  </button>
+                  <button className="is-orange" onClick={resetDefaults} type="button">
+                    Reset
+                  </button>
+                  <button className="is-cyan" onClick={() => setPreviewStatus('Preview checked')} type="button">
+                    Preview
+                  </button>
+                  <button className="is-violet" onClick={() => setActiveTab('presets')} type="button">
+                    Preset
+                  </button>
+                </div>
+              </Card>
             </div>
-
-            <Card className="defaults-apply-card">
-              <strong>Defaults apply to</strong>
-              <span>New orders</span>
-              <span>Bots & strategies</span>
-              <small>{saveStatus}</small>
-            </Card>
-          </aside>
+          </div>
         </div>
       </div>
     </section>
   );
 }
 
-type TradingSettingCardProps = {
-  children: ReactNode;
-  icon: ReactNode;
-  info: string;
-  title: string;
-};
-
-function TradingSettingCard({ children, icon, info, title }: TradingSettingCardProps) {
+function TradingMetric({ label, value }: { label: string; value: string }) {
   return (
-    <Card className="trading-setting-card">
-      <div className="trading-setting-card__title">
-        {icon}
-        <span>{title}</span>
-        <InfoButton content={info} label={`${title} info`} />
-      </div>
-      {children}
-    </Card>
+    <div className="trading-clean-metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
   );
 }
 
-type RangeControlProps = {
-  maxLabel: string;
-  minLabel: string;
-  value: number;
-};
-
-function RangeControl({ maxLabel, minLabel, value }: RangeControlProps) {
-  const progress = Math.min(100, Math.max(8, value * 12));
-
+function TradingSelectField({ label, onChange, options, tone, value }: { label: string; onChange: (value: string) => void; options: SelectOption[]; tone?: TradingTone; value: string }) {
   return (
-    <div className="trading-range" style={{ '--range-progress': `${progress}%` } as CSSProperties}>
-      <span />
-      <div>
-        <small>{minLabel}</small>
-        <small>{maxLabel}</small>
+    <label className={`trading-selector${tone ? ` is-${tone}` : ''}`}>
+      <span>{label}</span>
+      <select onChange={(event) => onChange(event.target.value)} value={value}>
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function ToggleSelectField({
+  checked,
+  label,
+  onChange,
+  onToggle,
+  options,
+  tone,
+  value,
+}: {
+  checked: boolean;
+  label: string;
+  onChange: (value: string) => void;
+  onToggle: () => void;
+  options: SelectOption[];
+  tone?: TradingTone;
+  value: string;
+}) {
+  return (
+    <div className={`trading-selector${tone ? ` is-${tone}` : ''}`}>
+      <span>{label}</span>
+      <div className="trading-toggle-select">
+        <button aria-label={`${label} toggle`} className={`switch ${checked ? 'is-on' : ''}`} onClick={onToggle} type="button" />
+        <select onChange={(event) => onChange(event.target.value)} value={value}>
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
       </div>
+    </div>
+  );
+}
+
+function SegmentField({ label, onChange, options, tone, value }: { label: string; onChange: (value: string) => void; options: SelectOption[]; tone?: TradingTone; value: string }) {
+  return (
+    <div className={`trading-selector trading-selector--segment${tone ? ` is-${tone}` : ''}`}>
+      <span>{label}</span>
+      <div>
+        {options.map((option) => (
+          <button className={value === option.value ? 'is-active' : undefined} key={option.value} onClick={() => onChange(option.value)} type="button">
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ToggleValue({ checked, label, onToggle, tone, value }: { checked: boolean; label: string; onToggle: () => void; tone?: TradingTone; value: string }) {
+  return (
+    <div className={`trading-selector${tone ? ` is-${tone}` : ''}`}>
+      <span>{label}</span>
+      <div className="trading-value-toggle">
+        <strong>{value}</strong>
+        <button aria-label={`${label} toggle`} className={`switch ${checked ? 'is-on' : ''}`} onClick={onToggle} type="button" />
+      </div>
+    </div>
+  );
+}
+
+function TradingValue({ label, tone, value }: { label: string; tone?: TradingTone; value: string }) {
+  return (
+    <div className={`trading-selector${tone ? ` is-${tone}` : ''}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function PreviewRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="trading-preview-row">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function TradingStatusRow({ label, tone, value }: { label: string; tone: TradingTone; value: string }) {
+  return (
+    <div className={`trading-status-row is-${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
@@ -368,6 +514,30 @@ function marketTypeLabel(type: UserPreferences['preferredMarketType']) {
 
 function orderTypeLabel(type: UserPreferences['orderType']) {
   return type === 'limit' ? 'Limit' : type === 'market' ? 'Market' : 'Stop';
+}
+
+function presetLabel(preset: UserPreferences['quickPreset']) {
+  return presets.find((item) => item.id === preset)?.label ?? 'Custom';
+}
+
+function presetSummary(preset: UserPreferences['quickPreset']) {
+  if (preset === 'scalping') {
+    return '0.5% / 5x';
+  }
+
+  if (preset === 'day-trading') {
+    return '1% / 3x';
+  }
+
+  if (preset === 'swing-trading') {
+    return '1.25% / 2x';
+  }
+
+  if (preset === 'position-trading') {
+    return '0.75% / 1x';
+  }
+
+  return 'Manual';
 }
 
 function takeProfitLabel(mode: UserPreferences['takeProfitMode']) {

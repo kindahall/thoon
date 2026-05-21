@@ -34,7 +34,7 @@ type ConfirmationKind = 'password' | 'backup-codes' | 'deactivate' | 'delete-acc
 export function SecuritySettingsPage({ apiKeys, auditLogs, exchanges, riskRules }: SecuritySettingsPageProps) {
   const [confirmation, setConfirmation] = useState<ConfirmationKind>(null);
   const [status, setStatus] = useState('Ready');
-  const activeSessions = 3;
+  const activeSessions = auditLogs.filter((log) => log.action.toLowerCase().includes('login') && log.status === 'success').length;
   const connectedExchanges = exchanges.filter((exchange) => exchange.status === 'connected').length;
   const activeApiKeys = apiKeys.filter((keyRecord) => keyRecord.status === 'active').length;
   const latestAudit = auditLogs[0];
@@ -47,7 +47,7 @@ export function SecuritySettingsPage({ apiKeys, auditLogs, exchanges, riskRules 
     setStatus('Confirming');
 
     try {
-      await postJson('/api/security/action', { action: confirmation });
+      await postJson('/api/security/action', { action: confirmation, confirmed: true });
       setStatus('Confirmed');
       setConfirmation(null);
     } catch (error) {
@@ -84,7 +84,7 @@ export function SecuritySettingsPage({ apiKeys, auditLogs, exchanges, riskRules 
 
           <Card className="security-status-card">
             <SecurityStatus icon={<ShieldCheck size={24} />} label="Protected" value={riskRules.confirmLiveOrders ? 'Live confirmations on' : 'Review confirmations'} />
-            <SecurityStatus icon={<LockKeyhole size={24} />} label="2FA Enabled" tone="positive" value="Authenticator active" />
+            <SecurityStatus icon={<LockKeyhole size={24} />} label="2FA" value="Not configured" />
             <SecurityStatus icon={<Monitor size={24} />} label={String(activeSessions)} value="Active sessions" />
             <SecurityStatus icon={<Clock3 size={24} />} label="Last login" value={latestAudit ? 'May 5, 2026 · 09:02' : 'No recent login'} />
           </Card>
@@ -92,8 +92,8 @@ export function SecuritySettingsPage({ apiKeys, auditLogs, exchanges, riskRules 
           <div className="security-card-grid">
             <SecurityPanel title="Authentication">
               <SecurityRow action="Change" icon={<LockKeyhole size={18} />} label="Password" onAction={() => setConfirmation('password')} value="Update account password" />
-              <SecurityRow badgeTone="positive" icon={<ShieldCheck size={18} />} label="Two-Factor Authentication" status="Enabled" value="Extra account protection" />
-              <SecurityRow badgeTone="positive" icon={<KeyRound size={18} />} label="Authenticator App" status="Configured" value="Manage authenticator app" />
+              <SecurityRow badgeTone="neutral" icon={<ShieldCheck size={18} />} label="Two-Factor Authentication" status="Not configured" value="Extra account protection" />
+              <SecurityRow badgeTone="neutral" icon={<KeyRound size={18} />} label="Authenticator App" status="Not configured" value="Manage authenticator app" />
               <SecurityRow action="View" icon={<Grid2X2 size={18} />} label="Backup Codes" onAction={() => setConfirmation('backup-codes')} value="View recovery codes" />
             </SecurityPanel>
 

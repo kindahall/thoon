@@ -1,5 +1,5 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import { JIMMY_LEGACY_STRATEGY_IDS, JIMMY_STRATEGY_ID } from '../config/jimmy-strategy';
 import { defaultAgentSettings } from '../config/strategy-agent-defaults';
@@ -48,8 +48,13 @@ import { getThoonServerEnv } from './env';
 import type { EncryptedPayload } from './crypto';
 import type { StoredSession } from './auth';
 import { mirrorThoonDbToPostgres } from './postgres-store';
+import { getThoonRequestContext, setThoonRequestContextDb } from './thoon-request-context';
+import { writeWorkspaceState } from './workspace-state-store';
 
 let pendingPostgresMirror: Promise<void> | undefined;
+let cachedThoonDb: { dataFile: string; db: ThoonDb; mtimeMs: number; size: number } | undefined;
+export const maxBacktestReportRecords = 500;
+const maxCorruptDbBackups = 5;
 
 export type SavedSetupRecord = {
   chartHeight?: number;
@@ -168,6 +173,12 @@ export function createSeedDb(): ThoonDb {
 }
 
 export function readThoonDb(): ThoonDb {
+  const requestContext = getThoonRequestContext();
+
+  if (requestContext?.mode === 'saas' && requestContext.db) {
+    return requestContext.db;
+  }
+
   const { dataFile } = getThoonServerEnv();
 
   if (!existsSync(dataFile)) {
@@ -178,9 +189,15 @@ export function readThoonDb(): ThoonDb {
   }
 
   try {
+    const stats = statSync(dataFile);
+
+    if (cachedThoonDb && cachedThoonDb.dataFile === dataFile && cachedThoonDb.mtimeMs === stats.mtimeMs && cachedThoonDb.size === stats.size) {
+      return cachedThoonDb.db;
+    }
+
     const parsed = JSON.parse(readFileSync(dataFile, 'utf8')) as Partial<ThoonDb>;
 
-    return sanitizeDbForAppMode(migrateDb(parsed));
+    return cacheThoonDb(dataFile, sanitizeDbForAppMode(migrateDb(parsed)));
   } catch {
     if (shouldFailClosedOnDbCorruption()) {
       throw new Error(`Thoon data file is corrupt: ${dataFile}. Refusing to reset state in protected runtime.`);
@@ -195,16 +212,29 @@ export function readThoonDb(): ThoonDb {
 }
 
 export function writeThoonDb(db: ThoonDb) {
-  const { dataFile } = getThoonServerEnv();
+  const requestContext = getThoonRequestContext();
   const nextDb = { ...db, updatedAt: new Date().toISOString() };
+
+  if (requestContext?.mode === 'saas' && requestContext.workspace?.id) {
+    setThoonRequestContextDb(nextDb);
+    pendingPostgresMirror = writeWorkspaceState(requestContext.workspace.id, nextDb).catch((error) => {
+      console.error('Workspace Postgres write failed', error);
+      throw error;
+    });
+    void pendingPostgresMirror.catch(() => undefined);
+    return;
+  }
+
+  const { dataFile } = getThoonServerEnv();
   const tempFile = `${dataFile}.tmp`;
 
   mkdirSync(dirname(dataFile), { mode: 0o700, recursive: true });
   chmodBestEffort(dirname(dataFile), 0o700);
-  writeFileSync(tempFile, `${JSON.stringify(nextDb, null, 2)}\n`);
+  writeFileSync(tempFile, `${JSON.stringify(nextDb)}\n`);
   chmodBestEffort(tempFile, 0o600);
   renameSync(tempFile, dataFile);
   chmodBestEffort(dataFile, 0o600);
+  cacheThoonDb(dataFile, nextDb);
   pendingPostgresMirror = mirrorThoonDbToPostgres(nextDb).catch((error) => {
     console.error('Postgres mirror failed', error);
     throw error;
@@ -219,6 +249,18 @@ export function updateThoonDb<T>(updater: (db: ThoonDb) => T): T {
   writeThoonDb(db);
 
   return result;
+}
+
+function cacheThoonDb(dataFile: string, db: ThoonDb) {
+  const stats = statSync(dataFile);
+  cachedThoonDb = {
+    dataFile,
+    db,
+    mtimeMs: stats.mtimeMs,
+    size: stats.size,
+  };
+
+  return db;
 }
 
 export async function flushPendingPostgresMirror() {
@@ -251,7 +293,7 @@ function migrateDb(db: Partial<ThoonDb>): ThoonDb {
     agentSettingsRecord: migrateAgentSettings(db.agentSettingsRecord, seed.agentSettingsRecord),
     agentSuggestionRecords: mergeSeedRecords(seed.agentSuggestionRecords, db.agentSuggestionRecords).filter((record) => visibleStrategyIds.has(record.strategyId) && !isRemovedSeedAgentRecord(record.id)),
     apiKeySecrets: db.apiKeySecrets ?? {},
-    backtestReportRecords: mergeSeedRecords(seed.backtestReportRecords, db.backtestReportRecords).filter((record) => isTrustedBacktestReportRecord(record, visibleStrategyIds)),
+    backtestReportRecords: limitBacktestReports(mergeSeedRecords(seed.backtestReportRecords, db.backtestReportRecords).filter((record) => isTrustedBacktestReportRecord(record, visibleStrategyIds))),
     botLogRecords: stripLegacyBotLogs(db.botLogRecords),
     botRecords: normalizeBotRecords(db.botRecords ?? seed.botRecords, visibleStrategyIds),
     exchangeRecords: mergeExchangeRecords(seed.exchangeRecords, db.exchangeRecords),
@@ -263,12 +305,14 @@ function migrateDb(db: Partial<ThoonDb>): ThoonDb {
     paperTestSessionRecords: normalizePaperTestSessions(db.paperTestSessionRecords, visibleStrategyIds),
     plannedOrderRecords: stripSeedRecords(plannedOrders, db.plannedOrderRecords),
     positionRecords: stripSeedRecords(positions, db.positionRecords),
+    riskRulesRecord: migrateRiskRules(db.riskRulesRecord, seed.riskRulesRecord),
     savedSetupRecords: db.savedSetupRecords ?? [],
     sessionRecords: db.sessionRecords ?? [],
     strategyRecords,
     strategyResearchRecords,
     strategyVersionRecords: mergeSeedRecords(seed.strategyVersionRecords, db.strategyVersionRecords).filter((record) => visibleStrategyIds.has(record.strategyId)),
     schemaVersion: 1,
+    tradeLimitsRecord: migrateTradeLimits(db.tradeLimitsRecord, seed.tradeLimitsRecord),
     userPreferencesRecord: migrateUserPreferences(db.userPreferencesRecord, seed.userPreferencesRecord),
     walletRecords: mergeSeedRecords(seed.walletRecords, db.walletRecords),
     walletSecrets: db.walletSecrets ?? {},
@@ -377,6 +421,13 @@ function isTrustedBacktestReportRecord(record: BacktestReport, visibleStrategyId
     Array.isArray(record.monthlyReturns) &&
     Array.isArray(record.trades)
   );
+}
+
+function limitBacktestReports(records: BacktestReport[]) {
+  return records
+    .slice()
+    .sort((left, right) => new Date(right.generatedAt ?? 0).getTime() - new Date(left.generatedAt ?? 0).getTime())
+    .slice(0, maxBacktestReportRecords);
 }
 
 function isTrustedBacktestEngine(engine: BacktestReport['engine']) {
@@ -584,6 +635,66 @@ function migrateUserPreferences(dbPreferences: UserPreferences | undefined, seed
   };
 }
 
+function migrateRiskRules(dbRules: RiskRules | undefined, seedRules: RiskRules): RiskRules {
+  if (!dbRules) {
+    return seedRules;
+  }
+
+  return {
+    ...seedRules,
+    ...dbRules,
+    allowedTradingDays: normalizeTradingDays((dbRules as Partial<RiskRules>).allowedTradingDays, seedRules.allowedTradingDays),
+    allowedTradingSessionEnd: normalizeTradingTime((dbRules as Partial<RiskRules>).allowedTradingSessionEnd, seedRules.allowedTradingSessionEnd),
+    allowedTradingSessionStart: normalizeTradingTime((dbRules as Partial<RiskRules>).allowedTradingSessionStart, seedRules.allowedTradingSessionStart),
+  };
+}
+
+function migrateTradeLimits(dbLimits: TradeLimits | undefined, seedLimits: TradeLimits): TradeLimits {
+  if (!dbLimits) {
+    return seedLimits;
+  }
+
+  return {
+    ...seedLimits,
+    ...dbLimits,
+    marketLimits: normalizeMarketTradeLimits((dbLimits as Partial<TradeLimits>).marketLimits, seedLimits.marketLimits),
+  };
+}
+
+function normalizeTradingDays(value: unknown, fallback: RiskRules['allowedTradingDays']): RiskRules['allowedTradingDays'] {
+  const allowed = new Set<RiskRules['allowedTradingDays'][number]>(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']);
+
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  const days = value.filter((day): day is RiskRules['allowedTradingDays'][number] => allowed.has(day as RiskRules['allowedTradingDays'][number]));
+
+  return days.length > 0 ? Array.from(new Set(days)) : fallback;
+}
+
+function normalizeTradingTime(value: unknown, fallback: string) {
+  return typeof value === 'string' && /^\d{2}:\d{2}$/.test(value) ? value : fallback;
+}
+
+function normalizeMarketTradeLimits(value: unknown, fallback: TradeLimits['marketLimits']): TradeLimits['marketLimits'] {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  const limits = value
+    .filter((item): item is Record<string, unknown> => item !== null && typeof item === 'object')
+    .map((item) => ({
+      exposure: boundedNumber(item.exposure, 0, 1_000_000_000, 0),
+      maxSize: boundedNumber(item.maxSize, 0, 1_000_000_000, 0),
+      symbol: typeof item.symbol === 'string' ? item.symbol.slice(0, 40) : '',
+    }))
+    .filter((item) => item.symbol.length > 0)
+    .slice(0, 50);
+
+  return limits.length > 0 ? limits : fallback;
+}
+
 function sanitizeDbForAppMode(db: ThoonDb): ThoonDb {
   if (getThoonServerEnv().appMode === 'live-enabled') {
     return db;
@@ -610,8 +721,30 @@ function renameCorruptDb(dataFile: string) {
     const corruptFile = `${dataFile}.corrupt.${Date.now()}`;
     renameSync(dataFile, corruptFile);
     chmodBestEffort(corruptFile, 0o600);
+    pruneCorruptDbBackups(dataFile);
   } catch {
     // Best effort only; the caller will still recreate a seed DB.
+  }
+}
+
+function pruneCorruptDbBackups(dataFile: string) {
+  const directory = dirname(dataFile);
+  const prefix = `${dataFile.split('/').pop()}.corrupt.`;
+
+  try {
+    const backups = readdirSync(directory)
+      .filter((fileName) => fileName.startsWith(prefix))
+      .map((fileName) => {
+        const filePath = join(directory, fileName);
+        return { filePath, mtimeMs: statSync(filePath).mtimeMs };
+      })
+      .sort((left, right) => right.mtimeMs - left.mtimeMs);
+
+    for (const backup of backups.slice(maxCorruptDbBackups)) {
+      unlinkSync(backup.filePath);
+    }
+  } catch {
+    // Best effort only; backup pruning must not hide the original corruption handling.
   }
 }
 

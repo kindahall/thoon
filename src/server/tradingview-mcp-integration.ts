@@ -20,6 +20,7 @@ export type TradingViewMcpProfile = {
 export function getTradingViewMcpProfile(): TradingViewMcpProfile {
   const env = getThoonServerEnv();
   const configPath = join(homedir(), '.codex', 'config.toml');
+  const displayConfigPath = '~/.codex/config.toml';
   const configured = isTradingViewMcpConfigured(configPath, env.tradingViewMcpName);
   const command = [env.tradingViewMcpCommand, ...env.tradingViewMcpArgs].join(' ');
 
@@ -31,11 +32,11 @@ export function getTradingViewMcpProfile(): TradingViewMcpProfile {
       'Protected/private scripts must stay concept-only unless the user provides code or the script is clearly open-source/public.',
     ],
     command,
-    configPath,
+    configPath: displayConfigPath,
     configured,
     diagnostics: configured
-      ? [`Codex MCP server "${env.tradingViewMcpName}" is present in ${configPath}.`, `Expected stdio command: ${command}.`]
-      : [`Codex MCP server "${env.tradingViewMcpName}" is missing from ${configPath}.`, `Add [mcp_servers.${env.tradingViewMcpName}] command="${env.tradingViewMcpCommand}" args=${JSON.stringify(env.tradingViewMcpArgs)}.`],
+      ? [`Codex MCP server "${env.tradingViewMcpName}" is present in ${displayConfigPath}.`, `Expected stdio command: ${command}.`]
+      : [`Codex MCP server "${env.tradingViewMcpName}" is missing from ${displayConfigPath}.`, `Add [mcp_servers.${env.tradingViewMcpName}] command="${env.tradingViewMcpCommand}" args=${JSON.stringify(env.tradingViewMcpArgs)}.`],
     importPath: [
       'Use Codex MCP for exact TradingView symbol discovery and TA summaries.',
       'Open Thoon charts or TradingView chart URLs when a visual chart review is needed.',

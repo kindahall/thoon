@@ -2,10 +2,10 @@
 
 import { CheckCircle2, KeyRound, LineChart, Link2, PlugZap, Plus, ShieldCheck, WalletCards } from 'lucide-react';
 import Link from 'next/link';
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import { Badge, Button, Card, Modal } from '../components/ui';
-import { postJson } from '../services/api-client';
+import { apiJson, postJson } from '../services/api-client';
 import type { ApiKeyRecord, ExchangeConnection, WalletConnection } from '../types/trading';
 
 type ExchangeHubPageProps = {
@@ -89,6 +89,7 @@ export function ExchangeHubPage({ apiKeys, exchanges, wallets }: ExchangeHubPage
   const [walletModalMode, setWalletModalMode] = useState<WalletModalMode>('connect');
   const [walletModalOpen, setWalletModalOpen] = useState(false);
   const [walletForm, setWalletForm] = useState<WalletForm>(emptyWalletForm);
+  const [walletReadiness, setWalletReadiness] = useState<Record<string, unknown> | null>(null);
   const [walletStatus, setWalletStatus] = useState('Ready');
   const cexVenues = useMemo(() => exchanges.filter((exchange) => (exchange.venueType ?? 'cex') === 'cex'), [exchanges]);
   const dexVenues = useMemo(() => exchanges.filter((exchange) => exchange.venueType === 'dex'), [exchanges]);
@@ -98,6 +99,11 @@ export function ExchangeHubPage({ apiKeys, exchanges, wallets }: ExchangeHubPage
   const selectedCex = cexVenues.find((exchange) => exchange.id === apiKeyForm.exchangeId) ?? cexVenues[0];
   const selectedPreferredDex = dexVenues.find((exchange) => exchange.id === walletForm.exchangeId) ?? dexVenues[0];
   const selectedDexGuide = dexConnectionGuide(selectedPreferredDex);
+  const liveReady = readPath(walletReadiness, ['liveReady']) === true;
+
+  useEffect(() => {
+    void refreshWalletReadiness();
+  }, []);
 
   function focusApiExchange(exchange: ExchangeConnection) {
     setActiveVenueType('cex');
@@ -128,6 +134,7 @@ export function ExchangeHubPage({ apiKeys, exchanges, wallets }: ExchangeHubPage
         setApiKeyRecords((currentKeys) => currentKeys.map((keyRecord) => (keyRecord.exchangeId === result.exchange.id && keyRecord.status === 'testing' ? { ...keyRecord, status: 'active' } : keyRecord)));
       }
       setApiKeyStatus(result.ok ? `${result.exchange.name} OK` : `${result.exchange.name} key`);
+      void refreshWalletReadiness();
     } catch (error) {
       setApiKeyStatus(error instanceof Error ? error.message : 'Test failed');
     }
@@ -154,6 +161,7 @@ export function ExchangeHubPage({ apiKeys, exchanges, wallets }: ExchangeHubPage
       setApiKeyRecords((currentKeys) => [nextKey, ...currentKeys]);
       setApiKeyForm({ ...emptyApiKeyForm, exchangeId: apiKeyForm.exchangeId });
       setApiKeyStatus('Saved');
+      void refreshWalletReadiness();
     } catch (error) {
       setApiKeyStatus(error instanceof Error ? error.message : 'Save failed');
     }
@@ -221,6 +229,7 @@ export function ExchangeHubPage({ apiKeys, exchanges, wallets }: ExchangeHubPage
         action: walletModalMode === 'create' ? 'create-wallet' : 'connect-wallet',
         address: walletForm.address,
         chain: walletForm.chain,
+        confirmed: walletModalMode === 'create',
         exchangeId: walletForm.exchangeId,
         label: walletForm.label,
         network: walletForm.network,
@@ -230,8 +239,18 @@ export function ExchangeHubPage({ apiKeys, exchanges, wallets }: ExchangeHubPage
       setWalletStatus(walletModalMode === 'create' ? 'Wallet created' : 'Wallet connected');
       setWalletModalOpen(false);
       setWalletForm({ ...emptyWalletForm, exchangeId: walletForm.exchangeId, network: walletForm.network });
+      void refreshWalletReadiness();
     } catch (error) {
       setWalletStatus(error instanceof Error ? error.message : 'Wallet action failed');
+    }
+  }
+
+  async function refreshWalletReadiness() {
+    try {
+      const response = await apiJson<Record<string, unknown>>('/api/wallets/readiness');
+      setWalletReadiness(asRecord(readPath(response, ['payload'])));
+    } catch (error) {
+      setWalletStatus(error instanceof Error ? error.message : 'Wallet readiness unavailable');
     }
   }
 
@@ -263,7 +282,7 @@ export function ExchangeHubPage({ apiKeys, exchanges, wallets }: ExchangeHubPage
         <ExchangeMetric icon={<KeyRound size={18} />} label="CEX" tone="cex" value={`${cexVenues.length}`} />
         <ExchangeMetric icon={<PlugZap size={18} />} label="DEX" tone="dex" value={`${dexVenues.length}`} />
         <ExchangeMetric icon={<WalletCards size={18} />} label="Wallets" tone="wallet" value={`${connectedWallets.length}`} />
-        <ExchangeMetric icon={<ShieldCheck size={18} />} label="Risk" tone="risk" value="Lock" />
+        <ExchangeMetric icon={<ShieldCheck size={18} />} label="Live" tone="risk" value={liveReady ? 'Ready' : 'Blocked'} />
       </div>
 
       <div className="exchange-hub-layout">
@@ -419,6 +438,7 @@ export function ExchangeHubPage({ apiKeys, exchanges, wallets }: ExchangeHubPage
               </div>
             </Card>
           )}
+          <WalletReadinessCard data={walletReadiness} onRefresh={() => void refreshWalletReadiness()} />
         </aside>
       </div>
 
@@ -494,6 +514,51 @@ function ExchangeMetric({ icon, label, tone, value }: { icon: ReactNode; label: 
         <strong>{value}</strong>
         <small>{label}</small>
       </div>
+    </Card>
+  );
+}
+
+function WalletReadinessCard({ data, onRefresh }: { data: Record<string, unknown> | null; onRefresh: () => void }) {
+  const liveReady = readPath(data, ['liveReady']) === true;
+  const venues = asArray(readPath(data, ['venues']));
+  const summary = asRecord(readPath(data, ['summary']));
+  const walletConnect = asRecord(readPath(data, ['walletConnect']));
+
+  return (
+    <Card className="wallet-readiness-card">
+      <div className="wallet-control-head">
+        <div>
+          <h2>Live Route Checks</h2>
+        </div>
+        <Badge tone={liveReady ? 'positive' : 'warning'}>{liveReady ? 'ready' : 'blocked'}</Badge>
+      </div>
+      <div className="readiness-item">
+        <ShieldCheck size={16} />
+        <span>{formatReadinessValue(readPath(summary, ['readyVenues']))} / {formatReadinessValue(readPath(summary, ['targetVenues']))} venues</span>
+        <Badge tone={liveReady ? 'positive' : 'warning'}>{liveReady ? 'pass' : 'gate'}</Badge>
+      </div>
+      <div className="readiness-item">
+        <Link2 size={16} />
+        <span>WalletConnect</span>
+        <Badge tone={readPath(walletConnect, ['status']) === 'configured' ? 'positive' : 'warning'}>{formatReadinessValue(readPath(walletConnect, ['status']))}</Badge>
+      </div>
+      <div className="wallet-list">
+        {venues.slice(0, 5).map((venue) => (
+          <div className="wallet-row" key={String(readPath(venue, ['id']))}>
+            <span>
+              {readPath(venue, ['venueType']) === 'dex' ? <WalletCards size={16} /> : <KeyRound size={16} />}
+            </span>
+            <div>
+              <strong>{formatReadinessValue(readPath(venue, ['name']))}</strong>
+              <small>{formatReadinessValue(readPath(venue, ['liveExecutionPath']))}</small>
+            </div>
+            <Badge tone={readPath(venue, ['ready']) === true ? 'positive' : 'warning'}>{formatReadinessValue(readPath(venue, ['status']))}</Badge>
+          </div>
+        ))}
+      </div>
+      <Button icon={<PlugZap size={15} />} onClick={onRefresh} size="sm" variant="ghost">
+        Check routes
+      </Button>
     </Card>
   );
 }
@@ -576,6 +641,40 @@ function compactAddress(address: string) {
   }
 
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function readPath(value: unknown, path: string[]) {
+  let current: unknown = value;
+
+  for (const key of path) {
+    if (typeof current !== 'object' || current === null || Array.isArray(current)) {
+      return undefined;
+    }
+
+    current = (current as Record<string, unknown>)[key];
+  }
+
+  return current;
+}
+
+function formatReadinessValue(value: unknown) {
+  if (typeof value === 'number') {
+    return String(value);
+  }
+
+  if (typeof value === 'boolean') {
+    return value ? 'yes' : 'no';
+  }
+
+  return typeof value === 'string' && value ? value : 'n/a';
 }
 
 function exchangeName(exchanges: ExchangeConnection[], exchangeId: string) {

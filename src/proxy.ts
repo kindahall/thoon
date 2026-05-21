@@ -15,10 +15,6 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  if (isAuthorizedCronRequest(request)) {
-    return NextResponse.next();
-  }
-
   const hasValidSession = await verifySessionCookie(request.cookies.get(thoonSessionCookieName)?.value);
 
   if (hasValidSession && (await verifyStoredSession(request))) {
@@ -41,19 +37,7 @@ export const config = {
 };
 
 function isPublicPath(pathname: string) {
-  return pathname === '/login' || pathname.startsWith('/api/auth') || pathname.startsWith('/_next') || pathname === '/favicon.ico' || pathname === '/thoon-mark.svg';
-}
-
-function isAuthorizedCronRequest(request: NextRequest) {
-  return (
-    isAgentCronPath(request.nextUrl.pathname) &&
-    Boolean(process.env.THOON_CRON_SECRET) &&
-    request.headers.get('authorization') === `Bearer ${process.env.THOON_CRON_SECRET}`
-  );
-}
-
-function isAgentCronPath(pathname: string) {
-  return pathname === '/api/agent/cron' || pathname === '/api/agent/progress';
+  return pathname === '/login' || pathname.startsWith('/api/auth') || pathname === '/api/webhooks/stripe' || pathname.startsWith('/_next') || pathname === '/favicon.ico' || pathname === '/thoon-mark.svg';
 }
 
 function isAuthRequiredAtEdge() {
@@ -62,7 +46,7 @@ function isAuthRequiredAtEdge() {
   }
 
   if (process.env.THOON_AUTH_MODE === 'local-disabled') {
-    return false;
+    return process.env.NODE_ENV === 'production';
   }
 
   return process.env.NODE_ENV === 'production';
@@ -116,10 +100,10 @@ async function verifySessionCookie(value?: string) {
 
     return Boolean(
       session.email &&
-        session.expiresAt &&
+      session.expiresAt &&
         session.issuedAt &&
         session.sessionId &&
-        session.role === 'owner' &&
+        (session.role === 'owner' || session.role === 'admin' || session.role === 'member') &&
         new Date(session.expiresAt).getTime() > Date.now(),
     );
   } catch {

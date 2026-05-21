@@ -8,813 +8,217 @@ import { join } from 'node:path';
 const root = process.cwd();
 const nextBin = join(root, 'node_modules', '.bin', 'next');
 const tests = [];
-const functionalCronSecret = 'functional-test-cron-secret-minimum-32-characters';
+const testAdminEmail = 'e2e-owner@thoon.local';
+const testAdminPassword = 'e2e-admin-password-123';
+const testAdminPasswordHash = 'pbkdf2_sha256$310000$2mnroyUR4Tucq8tmE_FvHg$P4vCeukoNKLuLEpqHgvcq0E2zGBSS7W8OrhGnI-WrA8';
 
-test('layout and primary pages render', async ({ fetchPage }) => {
+test('Thoon/Bud primary pages render with global Bud state', async ({ fetchPage, rawRequest }) => {
   const pages = [
     ['/charts', 'Charts'],
     ['/markets', 'Markets'],
     ['/watchlist', 'Watchlist'],
+    ['/agents', 'Agents'],
+    ['/agent', 'Agents'],
+    ['/backtest', 'Backtest'],
+    ['/strategies', 'Strategies'],
+    ['/bots', 'Bots'],
     ['/orders', 'Orders'],
     ['/alerts', 'Alerts'],
-    ['/history', 'Trade Journal'],
+    ['/history', 'History'],
+    ['/exchanges', 'Exchanges'],
     ['/preferences', 'Preferences'],
-    ['/preferences/agent', 'Strategy Agent'],
-    ['/preferences/appearance', 'Appearance'],
-    ['/preferences/exchange-api', 'Exchange &amp; API'],
-    ['/preferences/risk-rules', 'Risk Rules'],
-    ['/agent', 'Strategy Agent'],
-    ['/strategies', 'Strategies'],
-    ['/strategies/core-lab', 'Jimmy Strategy Lab'],
-    ['/strategies/new', 'Create Strategy'],
-    ['/bots', 'Bots'],
-    ['/bots/new', 'Create Bot'],
-    ['/backtest', 'Backtest'],
-    ['/backtest/replay', 'Paper Testing'],
   ];
 
   for (const [path, expected] of pages) {
     const html = await fetchPage(path);
-    assertIncludes(html, 'app-shell', `${path} renders layout`);
+    assertIncludes(html, 'app-shell', `${path} renders the app shell`);
+    assertIncludes(html, 'bud-state-strip', `${path} renders global Bud status`);
     assertIncludes(html, expected, `${path} renders ${expected}`);
   }
-});
 
-test('strategy agent renders, protects core strategy and exposes Codex research mode', async ({ apiRequest, fetchPage, readSource }) => {
-  const agent = await fetchPage('/agent');
-  assertIncludes(agent, 'Strategy Agent', 'Agent dashboard renders');
-  assertIncludes(agent, 'AI Provider', 'Agent dashboard shows provider');
-
-  const preferences = await fetchPage('/preferences/agent');
-  assertIncludes(preferences, 'Autonomy', 'Agent preferences render autonomy');
-  assertIncludes(preferences, 'Permissions', 'Agent preferences render permissions');
-
-  const appLayoutSource = await readSource('src/layouts/AppLayout.tsx');
-  assertIncludes(appLayoutSource, '/api/agent/settings', 'Topbar autonomy status reads persisted agent settings');
-  assertIncludes(appLayoutSource, 'toggleAgentAutonomy', 'Topbar autonomy badge can be toggled');
-  assertIncludes(appLayoutSource, 'topbar-autonomy-toggle', 'Topbar autonomy state is an action, not static text');
-
-  const agentSettingsSource = await readSource('src/screens/preferences/AgentSettingsPage.tsx');
-  assertIncludes(agentSettingsSource, 'commitDraft', 'Agent preference buttons persist through API commits');
-  assertIncludes(agentSettingsSource, "patchJson<AgentSettings>('/api/agent/settings'", 'Agent preferences save to the backend');
-
-  const coreLab = await fetchPage('/strategies/core-lab');
-  assertIncludes(coreLab, 'Original Protected', 'Core Lab protects original');
-  assertIncludes(coreLab, 'jimmy', 'Jimmy Lab renders protected Pine strategy');
-
-  const status = await apiRequest('/api/agent/ai/status');
-  const statusBody = await status.text();
-  assertStatus(status, 200, 'Agent AI status endpoint is available');
-  assertIncludes(statusBody, 'codex', 'Agent uses Codex research provider by default');
-
-  const action = await apiRequest('/api/agent/actions', {
-    body: JSON.stringify({ action: 'analyze_strategy', strategyId: 'strat-jimmy' }),
-    headers: { 'content-type': 'application/json' },
-    method: 'POST',
-  });
-  const actionBody = await action.text();
-  assertStatus(action, 200, 'Agent analyze action runs');
-  assertIncludes(actionBody, 'codex', 'Agent action uses Codex provider');
-  assertIncludes(actionBody, 'sweep', 'Agent action proposes aggressive strategy research');
-
-  const research = await apiRequest('/api/agent/actions', {
-    body: JSON.stringify({ action: 'research_tradingview', query: 'crypto trix strategy', strategyId: 'strat-jimmy' }),
-    headers: { 'content-type': 'application/json' },
-    method: 'POST',
-  });
-  const researchBody = await research.text();
-  assertStatus(research, 200, 'Agent TradingView research action runs');
-  const researchJson = JSON.parse(researchBody);
-  const researchRecord = researchJson.result.records[0];
-  const researchStrategyId = strategyIdFromResearchRecord(researchRecord);
-  const researchTitleNeedle = researchRecord.title.split('>')[0].trim();
-  assertIncludes(researchBody, 'tradingview.com/script', 'TradingView research stores sourced public script URLs');
-  assertIncludes(researchBody, 'concepts', 'TradingView research stores concepts, not synthetic performance numbers');
-
-  const strategiesAfterResearch = await fetchPage('/strategies');
-  assertIncludes(strategiesAfterResearch, researchTitleNeedle, 'TradingView research appears in Strategies as a candidate');
-  assertIncludes(strategiesAfterResearch, 'TradingView concept', 'Strategies labels research candidates as concept adaptations');
-
-  const backtestAfterResearch = await fetchPage(`/backtest?strategyId=${encodeURIComponent(researchStrategyId)}`);
-  assertIncludes(backtestAfterResearch, researchTitleNeedle, 'TradingView research appears in Backtest strategy selector');
-  assertIncludes(normalizeReactHtml(backtestAfterResearch), 'Thoon concept adaptation', 'Backtest labels TradingView candidates as adapted concepts');
-
-  const researchBacktest = await apiRequest('/api/backtests', {
-    body: JSON.stringify({
-      fees: 0.06,
-      initialCapital: 10000,
-      period: '30D',
-      slippage: 0.02,
-      strategyId: researchStrategyId,
-      symbol: 'BTC/USDT',
-      timeframe: '1h',
-    }),
-    headers: { 'content-type': 'application/json' },
-    method: 'POST',
-  });
-  const researchBacktestBody = await researchBacktest.text();
-  const researchBacktestJson = JSON.parse(researchBacktestBody);
-  assertStatus(researchBacktest, 201, 'TradingView research candidate can run a real adapted backtest');
-  assertEqual(researchBacktestJson.engine, 'thoon-concept-candle-engine', 'Research candidate uses the Thoon concept candle engine');
-  assert(researchBacktestJson.executionSettings && typeof researchBacktestJson.executionSettings.stopLossEnabled === 'boolean', 'Research candidate report stores execution settings');
-  assertIncludes(researchBacktestBody, '"source":"calculated"', 'Research candidate backtest is calculated, not seeded');
-
-  const aiSource = await readSource('src/server/strategy-agent-ai.ts');
-  assertIncludes(aiSource, 'callCodexProvider', 'Codex provider exists server-side');
-  assertIncludes(aiSource, '/responses', 'OpenAI Responses provider remains available');
-  assertIncludes(aiSource, '/chat/completions', 'OpenAI-compatible chat provider remains available');
-  const researchSource = await readSource('src/server/tradingview-research.ts');
-  assertIncludes(researchSource, 'fetchHtml', 'TradingView research fetches public pages server-side');
-  assertIncludes(researchSource, 'PROTECTED SOURCE SCRIPT', 'Protected scripts are handled as concept-only records');
-
-  const jimmyConfigSource = await readSource('src/config/jimmy-strategy.ts');
-  const strategiesSource = await readSource('src/seed-data/strategies.ts');
-  const botsSource = await readSource('src/seed-data/bots.ts');
-  const agentDefaultsSource = await readSource('src/config/strategy-agent-defaults.ts');
-  const thoonDbSource = await readSource('src/server/thoon-db.ts');
-  assertIncludes(jimmyConfigSource, 'strat-jimmy', 'jimmy strategy is seeded');
-  assertIncludes(strategiesSource, 'JIMMY_STRATEGY_NAME', 'jimmy strategy has canonical name');
-  assertIncludes(strategiesSource, 'export const backtestReports: BacktestReport[] = []', 'Backtest reports are not seeded with synthetic results');
-  assertIncludes(botsSource, 'export const bots: Bot[] = []', 'Bots are not seeded with synthetic PnL');
-  assertIncludes(agentDefaultsSource, 'must never fabricate performance', 'Agent defaults forbid synthetic performance');
-  assertIncludes(thoonDbSource, 'agentSuggestionRecords: []', 'Agent suggestions are not seeded with synthetic recommendations');
-  const legacySeedFolder = `src/${'mo'}${'ck'}-data`;
-  assert(!existsSync(join(root, legacySeedFolder)), 'Legacy synthetic seed folder has been removed');
-
-  const drawerSource = await readSource('src/components/agent/StrategyAgentDrawer.tsx');
-  assertIncludes(drawerSource, 'confirmationRequired', 'Agent drawer handles confirmation-required responses');
-  assertIncludes(drawerSource, 'research_tradingview', 'Agent drawer exposes TradingView public research action');
-  assertIncludes(drawerSource, 'write_journal_note', 'Agent drawer exposes journal note action');
-
-  const agentDashboardSource = await readSource('src/screens/agent/AgentDashboardPage.tsx');
-  assertIncludes(agentDashboardSource, 'Best Backtested Strategies', 'Agent dashboard ranks best backtested strategies');
-  assertIncludes(agentDashboardSource, 'Paper Test Recommendations', 'Agent dashboard exposes confirmable paper-test recommendations');
-  assertIncludes(agentDashboardSource, 'Strategy Feedback', 'Agent dashboard exposes strategy feedback reports');
-  assertIncludes(agentDashboardSource, 'buildAutonomousTasks', 'Agent dashboard generates an autonomous validation queue');
-  assertIncludes(agentDashboardSource, 'Cron goal', 'Agent dashboard exposes cron-style goals');
-  assertIncludes(agentDashboardSource, 'Kronos Weight', 'Agent dashboard exposes Kronos learning weight');
-
-  const agentCron = await readJsonResponse(
-    await apiRequest('/api/agent/cron', {
-      body: JSON.stringify({}),
-      headers: { authorization: `Bearer ${functionalCronSecret}`, 'content-type': 'application/json' },
-      method: 'POST',
-    }),
-    'Agent cron planning returns JSON',
-  );
-  assert(agentCron.backtests && typeof agentCron.backtests.requested === 'number', 'Agent cron returns real backtest execution stats');
-  assert(agentCron.kronosLearning && typeof agentCron.kronosLearning.profile?.confidenceWeight === 'number', 'Agent cron returns Kronos learning stats');
-  assert(typeof agentCron.innovationsCreated === 'number', 'Agent cron returns innovation count');
-  const agentCronGet = await readJsonResponse(await apiRequest('/api/agent/cron', { headers: { authorization: `Bearer ${functionalCronSecret}` } }), 'Agent cron GET planning returns JSON for platform schedules');
-  assert(agentCronGet.backtests && typeof agentCronGet.backtests.requested === 'number', 'Agent cron GET returns real backtest execution stats');
-
-  const agentProgress = await readJsonResponse(await apiRequest('/api/agent/progress', { headers: { authorization: `Bearer ${functionalCronSecret}` } }), 'Agent progress cron returns JSON');
-  assert(agentProgress.report && Array.isArray(agentProgress.report.summary), 'Agent progress cron writes a strategy feedback report');
-});
-
-test('navigation links carry pair and strategy params', async ({ fetchPage, readSource }) => {
-  const watchlist = await fetchPage('/watchlist');
-  assertIncludes(watchlist, 'No tracked pairs', 'Watchlist starts empty without seeded pairs');
-  assertIncludes(watchlist, '/markets', 'Empty watchlist links to real market selection');
-
-  const markets = await fetchPage('/markets');
-  assertIncludes(markets, '/charts?pair=BTC%2FUSDT', 'Markets opens BTC on chart');
-  assertIncludes(markets, '/charts?pair=SOL%2FUSDT', 'Markets opens the selected row symbol on chart');
-  assertIncludes(markets, 'Tracked Pairs', 'Markets reports tracked local pairs instead of synthetic global active crypto count');
-  const marketsSource = await readSource('src/screens/MarketsPage.tsx');
-  assertIncludes(marketsSource, "postJson('/api/watchlists'", 'Markets mutates watchlist through the API');
-
-  const strategy = await fetchPage('/strategies/strat-jimmy');
-  assertIncludes(strategy, '/backtest?strategyId=strat-jimmy', 'Strategy opens backtest');
-  assertIncludes(strategy, '/bots/new?strategyId=strat-jimmy', 'Strategy creates bot');
-
-  const backtest = await fetchPage('/backtest?strategyId=strat-jimmy');
-  assertIncludes(backtest, '/backtest/replay?pair=BTC%2FUSDT&amp;strategyId=strat-jimmy', 'Backtest opens paper test');
-  assertIncludes(backtest, '/bots/new?strategyId=strat-jimmy&amp;pair=BTC%2FUSDT', 'Backtest creates bot');
-});
-
-test('chart trading controls and risk engine hooks are present', async ({ fetchPage, readSource }) => {
-  const chart = await fetchPage('/charts?pair=BTC%2FUSDT');
-  assertIncludes(chart, 'Trade Markers', 'Trade markers render');
-  assertIncludes(chart, 'Entry', 'Entry marker renders');
-  assertIncludes(chart, 'Stop Loss', 'Stop loss marker renders');
-  assertIncludes(chart, 'R/R', 'Position builder shows risk reward');
-  assertIncludes(chart, 'Save Setup', 'Save setup action renders');
-  assertIncludes(chart, 'Linked trade markers', 'Position builder exposes marker sync status');
-  assertIncludes(chart, '/strategies/new?pair=BTC%2FUSDT', 'Chart converts setup to strategy');
-  assertIncludes(chart, '/alerts?pair=BTC%2FUSDT', 'Chart creates alert');
-
-  const chartSource = await readSource('src/screens/charts/ChartsWorkspace.tsx');
-  assertIncludes(chartSource, 'evaluateRiskEngine', 'Position Builder uses Risk Engine');
-  assertIncludes(chartSource, 'setLiveOrderConfirmationOpen(true)', 'Live order opens confirmation');
-  assertIncludes(chartSource, 'syncDraftWithMarker', 'Trade markers update the draft');
-  assertIncludes(chartSource, 'buildMarkerSyncRows', 'Position Builder renders marker sync rows');
-  assertIncludes(chartSource, "upsertMarker('tp2'", 'TP2 field writes a real chart marker');
-  assertIncludes(chartSource, 'ChartCandleState', 'Chart renders a loading/unavailable state while public candles load');
-  assertIncludes(chartSource, 'setChartCandles([])', 'Chart does not show local candles while changing pairs');
-  assertIncludes(chartSource, 'syncLastCandleToTicker', 'Chart last candle follows the live ticker without replacing the candle window');
-  assertIncludes(chartSource, 'marketType=${chartMarketType}', 'Chart requests candles for the same market type used by the visible chart');
-  assertIncludes(chartSource, "chartMarketType !== 'spot'", 'Spot websocket ticks do not overwrite perpetual chart candles');
-  assertIncludes(chartSource, 'resolveChartMarketType', 'Chart market type is resolved before syncing Thoon and TradingView');
-  assertIncludes(chartSource, 'Confirm Live Order', 'Live confirmation modal exists');
-  assert(!chartSource.includes('updateChartCandleWithLivePrice'), 'Live ticks do not rewrite the visible candle window');
-  assert(!chartSource.includes('setChartCandles(market.candles)'), 'Chart never swaps in seeded local candles during public-candle loading');
-
-  const chartsPageSource = await readSource('src/screens/ChartsPage.tsx');
-  assertIncludes(chartsPageSource, "key={initialPair ?? 'stored-pair'}", 'Chart workspace remounts when a market action opens a different pair');
-
-  const tradingChartSource = await readSource('src/components/chart/TradingChart.tsx');
-  assertIncludes(tradingChartSource, 'dataWindowIdentity', 'Chart fits only when the candle window changes');
-  assert(!tradingChartSource.includes('scrollToRealTime'), 'Chart does not auto-scroll after passive live updates');
-
-  const tradingViewSource = await readSource('src/components/chart/TradingViewChart.tsx');
-  assertIncludes(tradingViewSource, 'external-embedding/embed-widget-advanced-chart.js', 'TradingView uses the official Advanced Chart Widget embed');
-  assertIncludes(tradingViewSource, 'tradingview-widget-container__widget', 'TradingView mounts into the official widget container');
-  assertIncludes(tradingViewSource, 'TradingView indisponible', 'TradingView has a dark fallback state when the external widget is unavailable');
-  assertIncludes(tradingViewSource, "return `${prefix}:${base}${quote}PERP`", 'Binance perpetual symbols use the TradingView PERP format');
-
-  const binanceMarketSource = await readSource('src/server/exchanges/binance-market-data.ts');
-  assertIncludes(binanceMarketSource, '/fapi/v1/klines', 'Binance perpetual chart candles use the futures public kline endpoint');
-  assertIncludes(binanceMarketSource, 'binanceFuturesMarketBaseUrl', 'Binance futures candles are configured separately from spot candles');
-
-  const riskEngineSource = await readSource('src/services/risk-engine.ts');
-  assertIncludes(riskEngineSource, 'stopLossPrice > 0', 'Risk Engine rejects zero stop-loss');
-  assertIncludes(riskEngineSource, "errorCode: 'missing-stop-loss'", 'Risk Engine reports missing stop-loss');
-});
-
-test('bot, strategy, backtest and paper flows expose functional states', async ({ apiRequest, fetchPage, readSource }) => {
-  const bot = await fetchPage('/bots/new');
-  assertIncludes(bot, 'Create Bot', 'Create bot renders');
-  assertIncludes(bot, 'Launch Bot', 'Bot launch action renders');
-
-  const botSource = await readSource('src/screens/bots/NewBotPage.tsx');
-  assertIncludes(botSource, 'evaluateRiskEngine', 'Create Bot uses Risk Engine');
-  assertIncludes(botSource, 'Confirm Live Bot', 'Live bot confirmation exists');
-  assertIncludes(botSource, 'disabled={liveBlockers.length > 0}', 'Live bot confirm is blocked by blockers');
-  assertIncludes(botSource, 'BotValidationGateCard', 'Create Bot exposes backtest validation before launch');
-  assertIncludes(botSource, 'buildBotValidationGate', 'Create Bot ranks out-of-sample backtest readiness');
-  assertIncludes(botSource, 'launchBlockedByValidation', 'Create Bot blocks launch when validation fails');
-
-  const strategySource = await readSource('src/screens/strategies/NewStrategyPage.tsx');
-  assertIncludes(strategySource, "setStatus('Saved')", 'Strategy builder has save state');
-  assertIncludes(strategySource, 'Risk Engine', 'Strategy preview displays risk engine state');
-
-  const run = await apiRequest('/api/backtests', {
-    body: JSON.stringify({
-      fees: 0.06,
-      initialCapital: 10000,
-      executionSettings: {
-        directionMode: 'both',
-        leverage: 3,
-        marketType: 'perpetual',
-        positionCapPct: 100,
-        riskPerTradePct: 0.8,
-        stopLossAtr: 1.5,
-        stopLossEnabled: true,
-        takeProfitEnabled: true,
-        takeProfitR: 2,
-        trailingStopAtr: 2,
-        trailingStopEnabled: true,
-      },
-      period: '90D',
-      slippage: 0.02,
-      strategyId: 'strat-jimmy',
-      symbol: 'BTC/USDT',
-      timeframe: '1h',
-    }),
-    headers: { 'content-type': 'application/json' },
-    method: 'POST',
-  });
-  const runBody = await run.text();
-  const runJson = JSON.parse(runBody);
-  assertStatus(run, 201, 'Backtest run returns calculated report');
-  assertIncludes(runBody, '"source":"calculated"', 'Backtest report is calculated, not seeded');
-  assertIncludes(runBody, '"trades"', 'Backtest report includes trade list');
-  assertEqual(runJson.engine, 'jimmy-pine-v5-candle-engine', 'Backtest report stores the real engine identity');
-  assert(runJson.executionSettings, 'Backtest report stores execution settings');
-  assertEqual(runJson.executionSettings.leverage, 3, 'Backtest report stores leverage from the execution model');
-  assertEqual(runJson.executionSettings.marketType, 'perpetual', 'Backtest report stores market type');
-  assert(runJson.dataWindow?.candleChecksum, 'Backtest report stores candle checksum provenance');
-  assert(Array.isArray(runJson.equityCurve) && runJson.equityCurve.length > 0, 'Backtest report stores calculated equity curve');
-  assert(Array.isArray(runJson.drawdownCurve) && runJson.drawdownCurve.length > 0, 'Backtest report stores calculated drawdown curve');
-  assert(!runJson.trades.some((trade) => trade.exitReason === 'session-end'), 'Backtest does not close open positions artificially at session end');
-
-  const backtestSource = await readSource('src/screens/backtest/BacktestPage.tsx');
-  assertIncludes(backtestSource, 'Backtest running', 'Backtest button exposes a running state');
-  assertIncludes(backtestSource, 'Backtest blocked', 'Backtest UI exposes blocked state');
-  assertIncludes(backtestSource, 'isTrustedBacktestReport', 'Backtest UI rejects incomplete report data');
-  assertIncludes(backtestSource, 'sort((left, right) => new Date(right.exitTime)', 'Trades are displayed newest first');
-  assertIncludes(backtestSource, 'TradeDetailPanel', 'Trade rows expose a detail panel');
-  assertIncludes(backtestSource, 'exportBacktestReport', 'Save Report exports the current calculated report');
-  assertIncludes(backtestSource, 'URL.createObjectURL', 'Save Report creates a real downloadable report');
-  assertIncludes(backtestSource, 'backtest-actions-card__status', 'Bottom backtest actions expose local action status');
-  assertIncludes(backtestSource, 'actionOnClick={() => void runBacktest()}', 'Empty backtest state runs a real backtest action');
-  assertIncludes(backtestSource, 'backtestPresetStorageKey', 'Backtest presets persist locally');
-  assertIncludes(backtestSource, 'setAdvancedPanelOpen', 'Backtest filters open a real detail panel');
-  assertIncludes(backtestSource, 'backtest-execution-grid', 'Backtest exposes execution settings inputs');
-  assertIncludes(backtestSource, 'Agent Paper Verdict', 'Backtest page shows the agent paper-test verdict');
-  assertIncludes(backtestSource, 'PaperTestRecommendationActions', 'Backtest page can confirm a recommended paper test');
-  assertIncludes(backtestSource, 'sameExecutionSettings', 'Backtest results are scoped to execution settings');
-  assertIncludes(backtestSource, 'setLeverage', 'Backtest input changes leverage');
-  assertIncludes(backtestSource, 'setStopLossEnabled', 'Backtest input can enable or disable stop loss');
-  assertIncludes(backtestSource, 'setTrailingStopEnabled', 'Backtest input can enable or disable trailing stop');
-
-  const backtest = await fetchPage('/backtest?strategyId=strat-jimmy');
-  assertIncludes(backtest, 'Equity Curve', 'Backtest displays results');
-  assertIncludes(backtest, 'Net Profit', 'Backtest displays net profit');
-  assertIncludes(backtest, 'Candles Used', 'Backtest displays candle count');
-  assertIncludes(backtest, 'Risk / Trade', 'Backtest renders execution model inputs');
-
-  const replay = await fetchPage('/backtest/replay');
-  assertIncludes(replay, 'Timeframe', 'Paper testing displays chart timeframe');
-  assertIncludes(replay, 'Unlinked Replay', 'Paper testing distinguishes untracked replay from validation sessions');
-  assertIncludes(replay, 'Closed trades are saved to the real journal', 'Paper testing explains how strategy confirmation advances');
-
-  const replaySource = await readSource('src/screens/backtest/ReplayPaperPage.tsx');
-  assertIncludes(replaySource, 'Agent Paper Validation Session', 'Paper testing can show a tracked agent validation session');
-  assertIncludes(replaySource, '/api/paper-tests/', 'Paper testing persists session progress');
-  assertIncludes(replaySource, '/api/journal', 'Paper testing records closed paper trades in the journal');
-  assertIncludes(replay, 'Data Window', 'Paper testing displays replay data dates');
-  assertIncludes(replay, 'Current Candle', 'Paper testing displays the current candle timestamp');
-  assertIncludes(replay, 'Hidden From', 'Paper testing displays hidden future start');
-  assertIncludes(replay, 'Paper Trade Log', 'Paper testing displays log');
-  assertIncludes(replay, 'Buy', 'Paper testing can open a buy trade');
-});
-
-test('preferences, secrets, empty states and error states are protected', async ({ fetchPage, readSource }) => {
-  const appearance = await fetchPage('/preferences/appearance');
-  assertIncludes(appearance, 'Save changes', 'Preferences expose save action');
-  assertIncludes(appearance, 'Light', 'Theme controls render');
-  assertIncludes(appearance, 'Dark', 'Theme controls render');
-
-  const exchange = await fetchPage('/preferences/exchange-api');
-  assertIncludes(exchange, 'type="password"', 'API form masks secrets');
-  assertIncludes(exchange, '/preferences/audit-logs?event=api', 'API page links audit logs');
-
-  const emptyStateSource = await readSource('src/components/ui/EmptyState.tsx');
-  assertIncludes(emptyStateSource, 'ui-state', 'Empty state component exists');
-  assertIncludes(emptyStateSource, 'actionOnClick', 'Empty state primary action can run a real callback');
-
-  const errorStateSource = await readSource('src/components/ui/ErrorState.tsx');
-  assertIncludes(errorStateSource, 'ui-state--error', 'Error state component exists');
-
-  const profile = await fetchPage('/preferences/profile');
-  assertIncludes(profile, 'Account Details', 'Profile page renders editable account details');
-  assertIncludes(profile, '/preferences/appearance', 'Profile page links to preference sections');
-
-  const profileSource = await readSource('src/screens/preferences/ProfileSettingsPage.tsx');
-  assertIncludes(profileSource, 'PreferencesSectionNav active="profile"', 'Profile page uses the validated preferences layout');
-  assertIncludes(profileSource, 'profile-settings-hero', 'Profile page renders a full-width profile header');
-
-  const riskRules = await fetchPage('/preferences/risk-rules');
-  assertIncludes(riskRules, 'Block Order Test', 'Risk Rules exposes block order modal trigger');
-});
-
-test('api mutations return controlled errors and block cross-origin writes', async ({ apiRequest }) => {
-  const missingAlert = await apiRequest('/api/alerts/not-real', {
-    body: JSON.stringify({ status: 'paused' }),
-    headers: { 'content-type': 'application/json' },
-    method: 'PATCH',
-  });
-  const missingAlertBody = await missingAlert.text();
-
-  assertStatus(missingAlert, 404, 'Missing alert returns 404');
-  assertIncludes(missingAlertBody, 'Alert not found', 'Missing alert returns JSON error');
-
-  const blockedOrigin = await apiRequest('/api/alerts', {
-    body: JSON.stringify({ symbol: 'BTC/USDT' }),
-    headers: { 'content-type': 'application/json', origin: 'https://example.invalid' },
-    method: 'POST',
-  });
-  const blockedOriginBody = await blockedOrigin.text();
-
-  assertStatus(blockedOrigin, 403, 'Cross-origin mutation returns 403');
-  assertIncludes(blockedOriginBody, 'Cross-origin mutation blocked', 'Cross-origin mutation returns JSON error');
-
-  const blockedFetchSite = await apiRequest('/api/alerts', {
-    body: JSON.stringify({ symbol: 'BTC/USDT' }),
-    headers: { 'content-type': 'application/json', 'sec-fetch-site': 'cross-site' },
-    method: 'POST',
-  });
-  const blockedFetchSiteBody = await blockedFetchSite.text();
-
-  assertStatus(blockedFetchSite, 403, 'Cross-site browser mutation returns 403');
-  assertIncludes(blockedFetchSiteBody, 'Cross-site mutation blocked', 'Cross-site browser mutation returns JSON error');
-
-  const riskBefore = await readJsonResponse(await apiRequest('/api/risk-rules'), 'Risk rules read before invalid patch returns JSON');
-  const patchedRisk = await readJsonResponse(
-    await apiRequest('/api/risk-rules', {
-      body: JSON.stringify({ __proto__: { polluted: true }, maxRiskPerTrade: 'not-a-number', unknownRoot: true }),
-      headers: { 'content-type': 'application/json' },
-      method: 'PATCH',
-    }),
-    'Risk rules patch with unexpected keys returns JSON',
-  );
-  assertEqual(patchedRisk.maxRiskPerTrade, riskBefore.maxRiskPerTrade, 'Risk rules reject invalid numeric values');
-  assert(!('unknownRoot' in patchedRisk), 'Risk rules ignore unexpected patch keys');
-});
-
-test('api resources and product actions are wired end-to-end', async ({ apiRequest, baseUrl, fetchPage }) => {
-  const unique = `qa-${Date.now()}`;
-  const localEquivalentOrigin = (() => {
-    const url = new URL(baseUrl);
-
-    return `${url.protocol}//localhost:${url.port}`;
-  })();
-
-  const health = await apiRequest('/api/health');
-  assertStatus(health, 200, 'Health endpoint is available');
-  const healthBody = await readJsonResponse(health, 'Health endpoint returns JSON');
-  assert(Array.isArray(healthBody.resources), 'Health endpoint exposes API resources');
-  for (const resource of ['POST /api/trading/execute', 'GET|POST /api/backtests', 'GET|POST|PATCH|DELETE /api/bots', 'GET|POST /api/setups']) {
-    assert(healthBody.resources.includes(resource), `Health resource index includes ${resource}`);
+  for (const path of ['/strategies/new', '/strategies/core-lab', '/bots/new', '/backtest/replay', '/top-strategies']) {
+    const response = await rawRequest(path);
+    assertStatus(response, 404, `${path} stays removed from the rebuilt Thoon/Bud surface`);
   }
-
-  const markets = await readJsonResponse(await apiRequest('/api/markets'), 'Markets endpoint returns JSON');
-  assert(Array.isArray(markets.pairs) && markets.pairs.length > 0, 'Markets endpoint returns pairs');
-
-  const candles = await readJsonResponse(await apiRequest('/api/markets/candles?symbol=BTC%2FUSDT&timeframe=1h&exchangeId=binance'), 'Candles endpoint returns JSON');
-  assert(Array.isArray(candles) && candles.length >= 40, 'Candles endpoint returns enough candles for tests');
-
-  const localhostWatchAdd = await apiRequest('/api/watchlists', {
-    body: JSON.stringify({ action: 'add-pair', listId: 'favorites', symbol: 'XRP/USDT' }),
-    headers: { 'content-type': 'application/json', origin: localEquivalentOrigin },
-    method: 'POST',
-  });
-  assertStatus(localhostWatchAdd, 200, 'Equivalent localhost origin can mutate local API');
-  const watchAddBody = await readJsonResponse(localhostWatchAdd, 'Watchlist add returns JSON');
-  assert(watchAddBody.pairSymbols.includes('XRP/USDT'), 'Watchlist add persists pair');
-
-  const watchRemove = await apiRequest('/api/watchlists', {
-    body: JSON.stringify({ action: 'remove-pair', listId: 'favorites', symbol: 'XRP/USDT' }),
-    headers: { 'content-type': 'application/json' },
-    method: 'POST',
-  });
-  assertStatus(watchRemove, 200, 'Watchlist remove succeeds');
-  const watchRemoveBody = await readJsonResponse(watchRemove, 'Watchlist remove returns JSON');
-  assert(!watchRemoveBody.pairSymbols.includes('XRP/USDT'), 'Watchlist remove persists removal');
-
-  const alert = await readJsonResponse(
-    await apiRequest('/api/alerts', {
-      body: JSON.stringify({ channel: 'app', condition: 'above', symbol: 'BTC/USDT', trigger: 'once', type: 'price', value: '90000' }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    }),
-    'Alert creation returns JSON',
-  );
-  assert(alert.id && alert.symbol === 'BTC/USDT', 'Alert creation persists symbol');
-  const pausedAlert = await readJsonResponse(
-    await apiRequest(`/api/alerts/${encodeURIComponent(alert.id)}`, {
-      body: JSON.stringify({ status: 'paused' }),
-      headers: { 'content-type': 'application/json' },
-      method: 'PATCH',
-    }),
-    'Alert patch returns JSON',
-  );
-  assertEqual(pausedAlert.status, 'paused', 'Alert status patch persists');
-  const deletedAlert = await readJsonResponse(await apiRequest(`/api/alerts/${encodeURIComponent(alert.id)}`, { method: 'DELETE' }), 'Alert delete returns JSON');
-  assertEqual(deletedAlert.deleted, true, 'Alert delete removes alert');
-
-  const setup = await readJsonResponse(
-    await apiRequest('/api/setups', {
-      body: JSON.stringify({
-        draft: { direction: 'long', entry: 65000, size: 0.05, stopLoss: 64000, takeProfit: 68000 },
-        id: `setup-${unique}`,
-        name: `QA setup ${unique}`,
-        pair: 'BTC/USDT',
-        timeframe: '1h',
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    }),
-    'Setup save returns JSON',
-  );
-  assertEqual(setup.id, `setup-${unique}`, 'Setup save persists explicit id');
-
-  const strategy = await readJsonResponse(
-    await apiRequest('/api/strategies', {
-      body: JSON.stringify({ market: 'BTC/USDT', name: `QA Strategy ${unique}`, riskPerTrade: 0.5, status: 'draft', timeframe: '1h', type: 'trend' }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    }),
-    'Strategy creation returns JSON',
-  );
-  assert(strategy.id && strategy.name.includes(unique), 'Strategy creation persists record');
-  const activeStrategy = await readJsonResponse(
-    await apiRequest(`/api/strategies/${encodeURIComponent(strategy.id)}`, {
-      body: JSON.stringify({ status: 'active' }),
-      headers: { 'content-type': 'application/json' },
-      method: 'PATCH',
-    }),
-    'Strategy patch returns JSON',
-  );
-  assertEqual(activeStrategy.status, 'active', 'Strategy patch persists status');
-  assertEqual(activeStrategy.id, strategy.id, 'Strategy patch keeps the requested strategy id');
-
-  const strategyList = await readJsonResponse(await apiRequest('/api/strategies'), 'Strategy list returns JSON');
-  assert(strategyList.some((record) => record.id === strategy.id && record.name === strategy.name), 'Strategy list keeps custom strategy name and id');
-
-  const backtestWithCustomStrategy = await fetchPage('/backtest');
-  assertIncludes(backtestWithCustomStrategy, strategy.name, 'Backtest strategy selector includes custom strategy names');
-
-  const blockedCustomBacktest = await apiRequest('/api/backtests', {
-    body: JSON.stringify({
-      fees: 0.06,
-      initialCapital: 10000,
-      period: '30D',
-      slippage: 0.02,
-      strategyId: strategy.id,
-      symbol: 'BTC/USDT',
-      timeframe: '1h',
-    }),
-    headers: { 'content-type': 'application/json' },
-    method: 'POST',
-  });
-  const blockedCustomBacktestBody = await blockedCustomBacktest.text();
-  assertStatus(blockedCustomBacktest, 422, 'Custom strategy without executable engine is blocked instead of synthesized');
-  assertIncludes(blockedCustomBacktestBody, strategy.name, 'Blocked custom strategy backtest names the selected strategy');
-
-  const duplicatedStrategy = await readJsonResponse(
-    await apiRequest(`/api/strategies/${encodeURIComponent(strategy.id)}/duplicate`, {
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    }),
-    'Strategy duplicate returns JSON',
-  );
-  assert(duplicatedStrategy.id !== strategy.id && duplicatedStrategy.name.includes('Copy'), 'Strategy duplicate creates a separate draft');
-
-  const bot = await readJsonResponse(
-    await apiRequest('/api/bots', {
-      body: JSON.stringify({ allocatedCapital: 2500, exchange: 'Paper', mode: 'paper', name: `QA Bot ${unique}`, riskPerTrade: 0.5, status: 'draft', strategyId: strategy.id, symbol: 'BTC/USDT' }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    }),
-    'Bot creation returns JSON',
-  );
-  assert(bot.id && bot.mode === 'paper', 'Bot creation persists paper bot');
-  assertEqual(bot.strategyId, strategy.id, 'Bot creation keeps the selected strategy id');
-  const blockedBotLaunch = await apiRequest('/api/bots', {
-    body: JSON.stringify({ allocatedCapital: 2500, exchange: 'Paper', mode: 'paper', name: `QA Blocked Bot ${unique}`, riskPerTrade: 0.5, status: 'running', strategyId: strategy.id, symbol: 'BTC/USDT' }),
-    headers: { 'content-type': 'application/json' },
-    method: 'POST',
-  });
-  const blockedBotLaunchBody = await blockedBotLaunch.text();
-  assertStatus(blockedBotLaunch, 403, 'Bot launch without validated backtest is blocked server-side');
-  assertIncludes(blockedBotLaunchBody, 'Bot launch blocked', 'Blocked bot launch explains validation gate');
-  const invalidBotAction = await apiRequest(`/api/bots/${encodeURIComponent(bot.id)}/action`, {
-    body: JSON.stringify({ action: 'launch-the-moon' }),
-    headers: { 'content-type': 'application/json' },
-    method: 'POST',
-  });
-  assertStatus(invalidBotAction, 400, 'Invalid bot action is rejected');
-  const blockedStart = await apiRequest(`/api/bots/${encodeURIComponent(bot.id)}/action`, {
-    body: JSON.stringify({ action: 'start' }),
-    headers: { 'content-type': 'application/json' },
-    method: 'POST',
-  });
-  const blockedStartBody = await blockedStart.text();
-  assertStatus(blockedStart, 403, 'Bot start without validated backtest is blocked server-side');
-  assertIncludes(blockedStartBody, 'Bot launch blocked', 'Blocked bot start explains validation gate');
-  const pausedBot = await readJsonResponse(
-    await apiRequest(`/api/bots/${encodeURIComponent(bot.id)}/action`, {
-      body: JSON.stringify({ action: 'pause' }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    }),
-    'Bot pause action returns JSON',
-  );
-  assertEqual(pausedBot.status, 'paused', 'Bot pause action persists paused status');
-  const stoppedBot = await readJsonResponse(
-    await apiRequest(`/api/bots/${encodeURIComponent(bot.id)}`, {
-      body: JSON.stringify({ status: 'stopped' }),
-      headers: { 'content-type': 'application/json' },
-      method: 'PATCH',
-    }),
-    'Bot patch returns JSON',
-  );
-  assertEqual(stoppedBot.status, 'stopped', 'Bot patch persists stopped status');
-
-  const plannedOrder = await readJsonResponse(
-    await apiRequest('/api/orders', {
-      body: JSON.stringify({ exchange: 'Paper', id: `plan-${unique}`, price: 65000, side: 'buy', size: 0.01, status: 'planned', symbol: 'BTC/USDT', type: 'limit' }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    }),
-    'Planned order returns JSON',
-  );
-  assertEqual(plannedOrder.id, `plan-${unique}`, 'Planned order persists explicit id');
-  const invalidOrderUpdate = await apiRequest(`/api/orders/${encodeURIComponent(plannedOrder.id)}`, {
-    body: JSON.stringify({ status: 'open' }),
-    headers: { 'content-type': 'application/json' },
-    method: 'PATCH',
-  });
-  assertStatus(invalidOrderUpdate, 400, 'Unsupported order update is rejected');
-  const cancelledOrder = await readJsonResponse(
-    await apiRequest(`/api/orders/${encodeURIComponent(plannedOrder.id)}`, {
-      body: JSON.stringify({ status: 'cancelled' }),
-      headers: { 'content-type': 'application/json' },
-      method: 'PATCH',
-    }),
-    'Order cancel returns JSON',
-  );
-  assertEqual(cancelledOrder.status, 'cancelled', 'Order cancel persists cancelled status');
-
-  const paperTrade = await readJsonResponse(
-    await apiRequest('/api/trading/execute', {
-      body: JSON.stringify({
-        draft: { direction: 'long', entry: 65000, riskPercent: 0.5, size: 0.01, stopLoss: 64000, takeProfit: 68000 },
-        exchangeName: 'Paper',
-        mode: 'paper',
-        symbol: 'BTC/USDT',
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    }),
-    'Paper trade execution returns JSON',
-  );
-  assertEqual(paperTrade.allowed, true, 'Paper trade passes risk engine');
-  assertEqual(paperTrade.order.status, 'filled', 'Paper trade creates a filled order');
-
-  const journalTrade = await readJsonResponse(
-    await apiRequest('/api/journal', {
-      body: JSON.stringify({ lessons: 'QA cleanup entry', notes: unique, pnl: 12.5, rMultiple: 0.4, side: 'long', source: 'manual', symbol: 'BTC/USDT', tag: 'qa' }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    }),
-    'Journal creation returns JSON',
-  );
-  assert(journalTrade.id && journalTrade.notes === unique, 'Journal creation persists note');
-
-  const profile = await readJsonResponse(await apiRequest('/api/profile'), 'Profile endpoint returns JSON');
-  const patchedProfile = await readJsonResponse(
-    await apiRequest('/api/profile', {
-      body: JSON.stringify({ timezone: profile.timezone }),
-      headers: { 'content-type': 'application/json' },
-      method: 'PATCH',
-    }),
-    'Profile patch returns JSON',
-  );
-  assertEqual(patchedProfile.timezone, profile.timezone, 'Profile patch persists existing timezone');
-
-  const preferences = await readJsonResponse(await apiRequest('/api/preferences'), 'Preferences endpoint returns JSON');
-  const patchedPreferences = await readJsonResponse(
-    await apiRequest('/api/preferences', {
-      body: JSON.stringify({ theme: preferences.preferences.theme }),
-      headers: { 'content-type': 'application/json' },
-      method: 'PATCH',
-    }),
-    'Preferences patch returns JSON',
-  );
-  assertEqual(patchedPreferences.theme, preferences.preferences.theme, 'Preferences patch persists theme');
-
-  const riskRules = await readJsonResponse(await apiRequest('/api/risk-rules'), 'Risk rules endpoint returns JSON');
-  const patchedRiskRules = await readJsonResponse(
-    await apiRequest('/api/risk-rules', {
-      body: JSON.stringify({ maxRiskPerTrade: riskRules.maxRiskPerTrade }),
-      headers: { 'content-type': 'application/json' },
-      method: 'PATCH',
-    }),
-    'Risk rules patch returns JSON',
-  );
-  assertEqual(patchedRiskRules.maxRiskPerTrade, riskRules.maxRiskPerTrade, 'Risk rules patch persists max risk');
-
-  const tradeLimits = await readJsonResponse(await apiRequest('/api/trade-limits'), 'Trade limits endpoint returns JSON');
-  const patchedTradeLimits = await readJsonResponse(
-    await apiRequest('/api/trade-limits', {
-      body: JSON.stringify({ maxOrdersPerDay: tradeLimits.maxOrdersPerDay }),
-      headers: { 'content-type': 'application/json' },
-      method: 'PATCH',
-    }),
-    'Trade limits patch returns JSON',
-  );
-  assertEqual(patchedTradeLimits.maxOrdersPerDay, tradeLimits.maxOrdersPerDay, 'Trade limits patch persists max orders');
-
-  const exchanges = await readJsonResponse(await apiRequest('/api/exchanges'), 'Exchanges endpoint returns JSON');
-  const exchangeId = exchanges.exchanges?.[0]?.id;
-  assert(exchangeId, 'Exchanges endpoint returns at least one exchange');
-  const exchangeTest = await readJsonResponse(
-    await apiRequest('/api/exchanges/test', {
-      body: JSON.stringify({ exchangeId }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    }),
-    'Exchange test returns JSON',
-  );
-  assertEqual(exchangeTest.liveNetworkChecked, false, 'Exchange test stays local without pretending a live credential check');
-
-  const apiKeyResponse = await apiRequest('/api/exchanges/api-keys', {
-    body: JSON.stringify({ apiKey: `key-${unique}`, apiSecret: `secret-${unique}`, exchangeId, label: `QA key ${unique}`, permissions: ['read'] }),
-    headers: { 'content-type': 'application/json' },
-    method: 'POST',
-  });
-  const apiKeyBody = await readJsonResponse(apiKeyResponse, 'API key creation returns JSON');
-  if (apiKeyResponse.status === 201) {
-    assert(apiKeyBody.maskedKey && !JSON.stringify(apiKeyBody).includes(`secret-${unique}`), 'API key response masks secrets');
-    const revokedKey = await readJsonResponse(await apiRequest(`/api/exchanges/api-keys/${encodeURIComponent(apiKeyBody.id)}`, { method: 'DELETE' }), 'API key delete returns JSON');
-    assertEqual(revokedKey.status, 'disabled', 'API key revoke disables key');
-  } else {
-    assertStatus(apiKeyResponse, 500, 'API key storage fails closed when encryption is not production-ready');
-    assertIncludes(apiKeyBody.error, 'THOON_ENCRYPTION_KEY', 'API key storage explains encryption requirement');
-  }
-
-  const agentBacktest = await readJsonResponse(
-    await apiRequest('/api/agent/actions', {
-      body: JSON.stringify({ action: 'run_backtest', strategyId: 'strat-jimmy' }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    }),
-    'Agent backtest action returns JSON',
-  );
-  assertEqual(agentBacktest.ok, true, 'Agent run_backtest completes');
-  assertEqual(agentBacktest.result.report.source, 'calculated', 'Agent run_backtest uses calculated backtest engine');
-  assert(agentBacktest.result.report.candleCount >= 40, 'Agent run_backtest stores candle count');
-  assert(Array.isArray(agentBacktest.result.report.trades), 'Agent run_backtest stores trade rows');
-
-  const liveAgent = await readJsonResponse(
-    await apiRequest('/api/agent/actions', {
-      body: JSON.stringify({ action: 'execute_live_trade', strategyId: 'strat-jimmy' }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    }),
-    'Agent live action returns JSON',
-  );
-  assertEqual(liveAgent.ok, false, 'Agent live action is blocked');
-  assert(liveAgent.decision.blockers.join(' ').includes('forbidden'), 'Agent live action explains forbidden permission');
-
-  await readJsonResponse(await apiRequest(`/api/journal/${encodeURIComponent(journalTrade.id)}`, { method: 'DELETE' }), 'Journal cleanup returns JSON');
-  await readJsonResponse(await apiRequest(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'DELETE' }), 'Bot cleanup returns JSON');
-  await readJsonResponse(await apiRequest(`/api/strategies/${encodeURIComponent(duplicatedStrategy.id)}`, { method: 'DELETE' }), 'Duplicated strategy cleanup returns JSON');
-  await readJsonResponse(await apiRequest(`/api/strategies/${encodeURIComponent(strategy.id)}`, { method: 'DELETE' }), 'Strategy cleanup returns JSON');
 });
 
-test('production gates expose auth, readiness and observability contracts', async ({ apiRequest, fetchPage, readSource }) => {
-  const login = await fetchPage('/login');
-  assertIncludes(login, 'Unlock Thoon', 'Login page renders production auth entry');
+test('Bud backend status, capabilities and safety gates are live', async ({ apiRequest }) => {
+  const status = await readJsonResponse(await apiRequest('/api/bud/status'), 'Bud status returns JSON');
+  assertEqual(status.source, 'thoon_bud_backend', 'Bud status source is explicit');
+  assertEqual(status.status, 'online', 'Bud backend is online');
+  assertEqual(status.health?.status, 'ok', 'Bud backend health is ok');
+  assertEqual(status.health?.binance_rest, 'ok', 'Binance REST health is ok');
+  assert(status.capabilities?.supported_exchanges?.includes('binance'), 'Binance is supported');
+  assert(status.capabilities?.supported_exchanges?.includes('bybit'), 'Bybit is supported');
+  assert(status.capabilities?.supported_exchanges?.includes('bitget'), 'Bitget is supported');
+  assert(status.capabilities?.supported_exchanges?.includes('hyperliquid'), 'Hyperliquid is supported');
+  assert(status.capabilities?.supported_exchanges?.includes('dydx'), 'dYdX is supported');
+  assertEqual(status.capabilities?.default_mode, 'paper', 'Paper trading is the default mode');
+  assertEqual(status.capabilities?.live_trading_enabled, false, 'Live trading is blocked by default');
 
-  const session = await apiRequest('/api/auth/session');
-  const sessionBody = await session.text();
-  assertStatus(session, 200, 'Local session endpoint is available');
-  assertIncludes(sessionBody, 'local-disabled', 'Session endpoint exposes local-disabled mode');
+  const processStatus = await readJsonResponse(await apiRequest('/api/bud/process'), 'Bud process status returns JSON');
+  assert(processStatus.payload?.running === true, 'Bud backend process is running');
+  assert(processStatus.payload?.pid || processStatus.payload?.managed === false, 'Bud backend exposes a process id when managed or reports an external running process');
 
-  const readiness = await apiRequest('/api/production/readiness');
-  const readinessBody = await readiness.text();
-  assertStatus(readiness, 503, 'Production readiness fails until prod env is configured');
-  assertIncludes(readinessBody, 'THOON_AUTH_MODE=local-required', 'Readiness explains auth requirement');
-  assertIncludes(readinessBody, 'DATABASE_URL', 'Readiness explains database requirement');
+  const killSwitch = unwrapPayload(await readJsonResponse(await apiRequest('/api/bud/kill-switch'), 'Kill switch status returns JSON'));
+  assertEqual(killSwitch.active, false, 'Kill switch is clear before tests');
 
-  const metrics = await apiRequest('/api/observability/metrics');
-  const metricsBody = await metrics.text();
-  assertStatus(metrics, 200, 'Metrics endpoint is available');
-  assertIncludes(metricsBody, 'apiRequests', 'Metrics endpoint exposes API counters');
-  assert(metrics.headers.get('x-thoon-request-id'), 'API responses include a request id');
-  assertIncludes(metricsBody, 'apiLatencyBuckets', 'Metrics endpoint exposes latency buckets');
+  const readiness = unwrapPayload(await readJsonResponse(await apiRequest('/api/bud/live-readiness'), 'Live readiness returns JSON'));
+  assertEqual(readiness.live_ready, false, 'Live readiness remains blocked without production credentials');
+  assert(Array.isArray(readiness.blockers) && readiness.blockers.length > 0, 'Live readiness explains blockers');
+  assert(readiness.blockers.some((blocker) => String(blocker).includes('live_trading_disabled')), 'Live readiness includes disabled live trading blockers');
 
-  const liveExecutorSource = await readSource('src/server/exchanges/live-executor.ts');
-  assertIncludes(liveExecutorSource, '/api/v3/order/test', 'Live executor defaults to signed test endpoint');
-  assertIncludes(liveExecutorSource, '/api/v3/order', 'Live executor supports real Binance endpoint');
-  assertIncludes(liveExecutorSource, "request.apiKey.status !== 'active'", 'Live executor rejects non-active API keys');
+  const hedgeFund = unwrapPayload(await readJsonResponse(await apiRequest('/api/bud/hedge-fund-readiness'), 'Hedge fund readiness returns JSON'));
+  assertEqual(hedgeFund.liveReady, false, 'Hedge fund readiness remains blocked until institutional gates pass');
+  assertEqual(hedgeFund.roadmap, 'ROADMAP_HEDGEFUND_MODULES.md', 'Hedge fund readiness points to the imported roadmap');
+  assert(Array.isArray(hedgeFund.gates) && hedgeFund.gates.length === 12, 'Hedge fund readiness checks the 12 final roadmap gates');
+  assert(Array.isArray(hedgeFund.blockers) && hedgeFund.blockers.length > 0, 'Hedge fund readiness exposes blocking evidence');
 
-  const proxySource = await readSource('src/proxy.ts');
-  assertIncludes(proxySource, 'verifySessionCookie', 'Proxy validates session cookie content');
-  assertIncludes(proxySource, 'crypto.subtle', 'Proxy verifies signed cookies at the edge');
-  assertIncludes(proxySource, 'isAuthorizedCronRequest', 'Proxy allows scheduled agent cron only with bearer secret');
+  const walletReadiness = unwrapPayload(await readJsonResponse(await apiRequest('/api/wallets/readiness'), 'Wallet readiness returns JSON'));
+  assertEqual(walletReadiness.liveReady, false, 'Wallet and DEX readiness remains blocked without signers and production gates');
+  assert(Array.isArray(walletReadiness.venues) && walletReadiness.venues.length >= 5, 'Wallet readiness checks CEX and DEX target venues');
+  assert(walletReadiness.blockers.includes('walletconnect_sdk_not_installed') || walletReadiness.walletConnect?.status, 'WalletConnect status is explicit');
 
-  const loginSource = await readSource('src/screens/LoginPage.tsx');
-  assertIncludes(loginSource, 'safeNextPath', 'Login redirects are constrained to local paths');
-  assertIncludes(loginSource, "value.startsWith('//')", 'Login rejects protocol-relative redirects');
+  const deterministicAgents = unwrapPayload(await readJsonResponse(await apiRequest('/api/strategy-agents/deterministic'), 'Deterministic agents status returns JSON'));
+  assert(Array.isArray(deterministicAgents.agents) && deterministicAgents.agents.length === 2, 'Two deterministic non-LLM TradingView agents are registered');
+});
 
-  const authSource = await readSource('src/server/auth.ts');
-  assertIncludes(authSource, 'constantTimeStringEqual', 'Server session signatures use constant-time comparison');
-  assertIncludes(authSource, 'timingSafeEqual', 'Server auth uses timing-safe equality');
+test('Bud backtest uses real Binance candles, costs and walk-forward validation', async ({ apiRequest }) => {
+  const response = await apiRequest('/api/bud/backtest', {
+    body: JSON.stringify({
+      interval: '1h',
+      limit: 240,
+      symbol: 'BTCUSDT',
+      validate_data_quality: true,
+      walk_forward_validate: true,
+    }),
+    headers: { 'content-type': 'application/json' },
+    method: 'POST',
+  });
+  const report = unwrapPayload(await readJsonResponse(response, 'Bud backtest returns JSON'));
 
-  const apiRouteSource = await readSource('src/app/api/[...path]/route.ts');
-  assertIncludes(apiRouteSource, 'flushPendingPostgresMirror', 'Mutations wait for durable Postgres mirror when configured');
-  assertIncludes(apiRouteSource, "record.status === 'active'", 'Live order routing requires active API keys');
-  assertIncludes(apiRouteSource, 'checkRateLimit', 'Mutation endpoint has in-process throttling');
-  assertIncludes(apiRouteSource, 'rateLimitHeaders', 'Rate-limited responses expose standard headers');
-  assertIncludes(apiRouteSource, 'patchRiskRules', 'Risk rules patching is allowlisted');
-  assertIncludes(apiRouteSource, 'Enable THOON_AUTH_MODE=local-required before storing exchange API keys.', 'Production API key storage requires auth');
-  assertIncludes(apiRouteSource, 'cronAuthorizationState', 'Agent cron requires bearer authorization when configured');
-  assertIncludes(apiRouteSource, 'getBotLaunchValidationBlocker', 'Bot running state is guarded by validated backtests server-side');
+  assertStatus(response, 200, 'Bud backtest succeeds');
+  assertEqual(report.symbol, 'BTCUSDT', 'Backtest symbol is normalized');
+  assertEqual(report.interval, '1h', 'Backtest interval is preserved');
+  assert(report.rows >= 240, 'Backtest uses requested historical rows');
+  assertEqual(report.data_quality?.exchange, 'binance', 'Backtest provenance is Binance');
+  assertEqual(report.data_quality?.usable_for_backtest, true, 'Backtest data quality is usable');
+  assert(report.metrics && typeof report.metrics.total_return === 'number', 'Backtest metrics are calculated');
+  assert(report.metrics && 'sharpe_ratio' in report.metrics, 'Backtest exposes Sharpe');
+  assert(report.metrics && 'max_drawdown' in report.metrics, 'Backtest exposes drawdown');
+  assert(report.walk_forward && Array.isArray(report.walk_forward.fold_results), 'Walk-forward folds are calculated');
+  assert(String(report.transaction_costs?.orderbook_source ?? '').includes('binance'), 'Transaction costs use a real Binance order book source');
+});
 
-  const envSource = await readSource('src/server/env.ts');
-  assertIncludes(envSource, 'loginRateLimitMax', 'Login rate limit is environment-configurable');
-  assertIncludes(envSource, 'mutationRateLimitMax', 'Mutation rate limit is environment-configurable');
-  assertIncludes(envSource, 'edgeRateLimitPolicy', 'Production readiness tracks edge/WAF throttling');
-  assertIncludes(envSource, 'cronSecret', 'Agent cron secret is environment-configurable');
+test('Bud research registry is persisted in PostgreSQL and returns real evaluations', async ({ apiRequest }) => {
+  const registry = unwrapPayload(await readJsonResponse(await apiRequest('/api/bud/research?limit=10'), 'Bud research registry returns JSON'));
 
-  const readinessSource = await readSource('src/server/readiness.ts');
-  assertIncludes(readinessSource, 'runtime-rate-limit', 'Readiness checks runtime rate limiting');
-  assertIncludes(readinessSource, 'edge-rate-limit', 'Readiness checks edge rate-limit acknowledgement');
-  assertIncludes(readinessSource, 'agent-cron-secret', 'Readiness checks scheduled agent cron protection');
+  assert(Array.isArray(registry.runs), 'Research registry returns runs');
+  assert(Array.isArray(registry.strategies), 'Research registry returns strategies');
+  assert(Array.isArray(registry.evaluations), 'Research registry returns evaluations');
+  assert(registry.runs.length >= 1, 'At least one research run is stored');
+  assert(registry.strategies.length >= 1, 'At least one evaluated strategy is stored');
+  assert(registry.evaluations.length >= 1, 'At least one evaluation is stored');
+});
 
-  const vercelSource = await readSource('vercel.json');
-  assertIncludes(vercelSource, '/api/agent/cron', 'Vercel cron wakes the Strategy Agent planner');
-  assertIncludes(vercelSource, '0 * * * *', 'Agent cron is scheduled hourly');
+test('Bud paper execution is based on live market price and live order paths are blocked', async ({ apiRequest }) => {
+  const blockedLive = await apiRequest('/api/bud/paper', {
+    body: JSON.stringify({ liveTrading: true, quantity: 0.0001, side: 'buy', symbol: 'BTCUSDT' }),
+    headers: { 'content-type': 'application/json' },
+    method: 'POST',
+  });
+  const blockedLiveBody = await blockedLive.text();
+  assertStatus(blockedLive, 403, 'Paper route blocks live trading payloads');
+  assertIncludes(blockedLiveBody, 'only allows paper trading', 'Live payload block is explicit');
 
-  const ciSource = await readSource('.github/workflows/ci.yml');
-  assertIncludes(ciSource, 'npm run verify', 'CI runs the full verification chain');
-  assertIncludes(ciSource, 'playwright install', 'CI installs browser dependencies for E2E');
+  const blockedLiveTrade = await apiRequest('/api/bud/trade', {
+    body: JSON.stringify({ exchange: 'binance', live_trading: true, paper_trading: false, quantity: 0.0001, side: 'buy', symbol: 'BTCUSDT' }),
+    headers: { 'content-type': 'application/json' },
+    method: 'POST',
+  });
+  const blockedLiveTradeBody = await blockedLiveTrade.text();
+  assertStatus(blockedLiveTrade, 403, 'Bud trade route blocks live trading until hedge fund gates pass');
+  assertIncludes(blockedLiveTradeBody, 'hedge fund readiness', 'Bud live trade gate explains readiness block');
+
+  const paperTradeResponse = await apiRequest('/api/bud/trade', {
+    body: JSON.stringify({
+      client_order_id: `thoon-trade-functional-${Date.now()}`,
+      exchange: 'binance',
+      paper_trading: true,
+      quantity: 0.0001,
+      side: 'buy',
+      symbol: 'BTCUSDT',
+    }),
+    headers: { 'content-type': 'application/json' },
+    method: 'POST',
+  });
+  const paperTrade = unwrapPayload(await readJsonResponse(paperTradeResponse, 'Bud paper trade route returns JSON'));
+  assertStatus(paperTradeResponse, 200, 'Bud trade route can place a paper order');
+  assertEqual(paperTrade.mode, 'paper', 'Bud trade route keeps paper mode by default');
+
+  const orderResponse = await apiRequest('/api/bud/paper', {
+    body: JSON.stringify({
+      client_order_id: `thoon-functional-${Date.now()}`,
+      quantity: 0.0001,
+      side: 'buy',
+      symbol: 'BTCUSDT',
+    }),
+    headers: { 'content-type': 'application/json' },
+    method: 'POST',
+  });
+  const order = unwrapPayload(await readJsonResponse(orderResponse, 'Paper order returns JSON'));
+  assertStatus(orderResponse, 200, 'Paper order succeeds');
+  assert(String(order.symbol ?? order.order?.symbol ?? '').includes('BTC'), 'Paper order keeps the requested symbol');
+  assert(Number(order.price ?? order.execution_price ?? order.order?.price ?? 0) > 0, 'Paper order uses a real positive market price');
+
+  const paper = unwrapPayload(await readJsonResponse(await apiRequest('/api/bud/paper?symbol=BTCUSDT&limit=5'), 'Paper state returns JSON'));
+  assert(paper.state?.position?.market_price > 0, 'Paper state marks to a live market price');
+  assert(Array.isArray(paper.trades), 'Paper state returns trade history');
+
+  const paperBotTests = unwrapPayload(await readJsonResponse(await apiRequest('/api/bud/paper-bot-test'), 'Paper bot runner returns JSON'));
+  assert(Array.isArray(paperBotTests.sessions), 'Paper bot runner exposes paper sessions');
+});
+
+test('Legacy Thoon APIs are retired instead of pretending to work', async ({ apiRequest }) => {
+  const retiredPaths = ['/api/agent/actions', '/api/alerts', '/api/backtests', '/api/bots', '/api/strategies'];
+
+  for (const path of retiredPaths) {
+    const response = await apiRequest(path, {
+      body: JSON.stringify({ symbol: 'BTC/USDT' }),
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    });
+    const body = await response.text();
+
+    assertStatus(response, 410, `${path} is retired`);
+    assertIncludes(body, 'retired', `${path} explains retirement`);
+    assertIncludes(body, '/api/bud', `${path} points to Bud APIs`);
+  }
+});
+
+test('Source wiring points rebuilt pages to Bud and avoids client-side exchange secrets', async ({ readSource }) => {
+  const budWorkspace = await readSource('src/screens/bud/BudWorkspacePage.tsx');
+  assertIncludes(budWorkspace, '/api/bud/orchestrate', 'Agents use Bud orchestration route');
+  assertIncludes(budWorkspace, '/api/bud/backtest', 'Backtest page uses Bud backtest route');
+  assertIncludes(budWorkspace, '/api/bud/research', 'Strategies page uses Bud research route');
+  assertIncludes(budWorkspace, '/api/bud/paper', 'Orders page uses Bud paper route');
+  assertIncludes(budWorkspace, '/api/bud/paper-bot-test', 'Bots page can start a 2h paper bot test');
+  assertIncludes(budWorkspace, '/api/bud/live-readiness', 'Bots and alerts use Bud readiness route');
+  assertIncludes(budWorkspace, '/api/bud/hedge-fund-readiness', 'Strategies and bots use hedge fund readiness route');
+  assertIncludes(budWorkspace, '/api/strategy-agents/deterministic', 'Strategies page uses deterministic non-LLM agents');
+  assertIncludes(budWorkspace, 'Hedge Fund Readiness', 'Strategies and bots render hedge fund readiness status');
+
+  const exchangeHub = await readSource('src/screens/ExchangeHubPage.tsx');
+  assertIncludes(exchangeHub, '/api/wallets/readiness', 'Exchange hub checks wallet and DEX execution readiness');
+
+  const tradeRoute = await readSource('src/app/api/bud/trade/route.ts');
+  assertIncludes(tradeRoute, 'getHedgeFundReadiness', 'Bud trade route gates live trading with hedge fund readiness');
+
+  const stateStrip = await readSource('src/components/bud/BudStateStrip.tsx');
+  assertIncludes(stateStrip, '/api/bud/status', 'Global Bud strip reads Bud status');
+  assertIncludes(stateStrip, '/api/bud/kill-switch', 'Global Bud strip reads kill-switch status');
+  assert(!stateStrip.includes('API_SECRET'), 'Bud state strip does not expose exchange secrets');
+  assert(!stateStrip.includes('PRIVATE_KEY'), 'Bud state strip does not expose wallet private keys');
 });
 
 async function main() {
@@ -833,14 +237,17 @@ async function main() {
     const port = await getFreePort();
     tempDataDir = await mkdtemp(join(tmpdir(), 'thoon-test-'));
     baseUrl = `http://127.0.0.1:${port}`;
-    const nextMode = process.env.THOON_TEST_NEXT_MODE === 'start' && existsSync(join(root, '.next', 'BUILD_ID')) ? 'start' : 'dev';
+    const nextMode = resolveNextMode();
     server = spawn(nextBin, [nextMode, '-H', '127.0.0.1', '-p', String(port)], {
       cwd: root,
       env: {
         ...process.env,
         NEXT_TELEMETRY_DISABLED: '1',
+        THOON_ADMIN_EMAIL: process.env.THOON_ADMIN_EMAIL ?? testAdminEmail,
+        THOON_ADMIN_PASSWORD_HASH: process.env.THOON_ADMIN_PASSWORD_HASH ?? testAdminPasswordHash,
         THOON_AUTH_MODE: process.env.THOON_AUTH_MODE ?? 'local-disabled',
-        THOON_CRON_SECRET: process.env.THOON_CRON_SECRET ?? functionalCronSecret,
+        THOON_AUTH_SESSION_SECRET: process.env.THOON_AUTH_SESSION_SECRET ?? 'functional-local-session-secret-minimum-32-characters',
+        THOON_COOKIE_SECURE: process.env.THOON_COOKIE_SECURE ?? 'false',
         THOON_DATA_FILE: join(tempDataDir, 'thoon-db.json'),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -865,10 +272,13 @@ async function main() {
   }
 
   try {
+    const authCookie = await authCookieFor(baseUrl);
+    const authedRequest = (path, init = {}) => fetch(`${baseUrl}${path}`, withAuth(init, authCookie));
     const context = {
-      apiRequest: (path, init) => fetch(`${baseUrl}${path}`, init),
+      apiRequest: authedRequest,
       baseUrl,
-      fetchPage: (path) => fetchPage(baseUrl, path),
+      fetchPage: (path) => fetchPage(baseUrl, path, authCookie),
+      rawRequest: (path, init = {}) => authedRequest(path, { ...init, redirect: 'manual' }),
       readSource,
     };
     const failures = [];
@@ -902,7 +312,7 @@ async function main() {
     }
   }
 
-  if (process.exitCode) {
+  if (process.exitCode && serverOutput) {
     console.error(serverOutput);
   }
 }
@@ -911,8 +321,8 @@ function test(name, run) {
   tests.push({ name, run });
 }
 
-async function fetchPage(baseUrl, path) {
-  const response = await fetch(`${baseUrl}${path}`);
+async function fetchPage(baseUrl, path, authCookie = '') {
+  const response = await fetch(`${baseUrl}${path}`, withAuth({}, authCookie));
   const html = await response.text();
 
   if (!response.ok) {
@@ -922,12 +332,87 @@ async function fetchPage(baseUrl, path) {
   return html;
 }
 
+async function authCookieFor(baseUrl) {
+  const session = await fetch(`${baseUrl}/api/auth/session`);
+
+  if (session.ok) {
+    const body = await session.json().catch(() => null);
+
+    if (body?.authenticated === true || body?.session?.mode === 'local-disabled') {
+      return '';
+    }
+  }
+
+  const login = await fetch(`${baseUrl}/api/auth/login`, {
+    body: JSON.stringify({ email: testAdminEmail, password: testAdminPassword }),
+    headers: { 'content-type': 'application/json' },
+    method: 'POST',
+  });
+  const text = await login.text();
+
+  if (!login.ok) {
+    throw new Error(`Could not authenticate functional tests: ${login.status} ${text.slice(0, 300)}`);
+  }
+
+  const cookie = login.headers.get('set-cookie')?.split(';')[0];
+
+  if (!cookie) {
+    throw new Error('Functional test login did not return a session cookie.');
+  }
+
+  return cookie;
+}
+
+function withAuth(init = {}, authCookie = '') {
+  if (!authCookie) {
+    return init;
+  }
+
+  return {
+    ...init,
+    headers: {
+      ...(init.headers ?? {}),
+      cookie: authCookie,
+    },
+  };
+}
+
 async function readSource(path) {
   return readFile(join(root, path), 'utf8');
 }
 
+function resolveNextMode() {
+  if (process.env.THOON_TEST_NEXT_MODE === 'dev') {
+    return 'dev';
+  }
+
+  if (process.env.THOON_TEST_NEXT_MODE === 'start' || existsSync(join(root, '.next', 'BUILD_ID'))) {
+    return 'start';
+  }
+
+  return 'dev';
+}
+
+function unwrapPayload(value) {
+  if (value && typeof value === 'object' && 'payload' in value) {
+    return value.payload;
+  }
+
+  return value;
+}
+
+async function readJsonResponse(response, message) {
+  const text = await response.text();
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`${message}: response was not JSON: ${text.slice(0, 300)}`);
+  }
+}
+
 function assertIncludes(value, expected, message) {
-  if (!value.includes(expected)) {
+  if (!String(value).includes(expected)) {
     throw new Error(`${message}: expected to include ${expected}`);
   }
 }
@@ -947,16 +432,6 @@ function assertEqual(value, expected, message) {
 function assertStatus(response, expected, message) {
   if (response.status !== expected) {
     throw new Error(`${message}: expected ${expected}, got ${response.status}`);
-  }
-}
-
-async function readJsonResponse(response, message) {
-  const text = await response.text();
-
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error(`${message}: response was not JSON: ${text.slice(0, 300)}`);
   }
 }
 
@@ -985,17 +460,6 @@ function normalizeBaseUrl(value) {
   return value ? value.replace(/\/$/, '') : null;
 }
 
-function strategyIdFromResearchRecord(record) {
-  const rawSlug = record.url.match(/\/script\/([^/]+)/)?.[1] ?? record.title;
-  const slug = rawSlug.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 72) || 'tradingview';
-
-  return `strat-tv-${slug}`;
-}
-
-function normalizeReactHtml(value) {
-  return value.replace(/<!-- -->/g, '');
-}
-
 function delay(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -1022,6 +486,6 @@ function getFreePort() {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.stack : error);
+  console.error(error);
   process.exit(1);
 });

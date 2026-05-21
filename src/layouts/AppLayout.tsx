@@ -1,49 +1,51 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { Activity, AlertTriangle, Bell, PanelLeftClose, PanelLeftOpen, PlugZap, Settings, UserCircle } from 'lucide-react';
+import { AlertTriangle, PanelLeftClose, PanelLeftOpen, Settings, UserCircle } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
+import { BudStateStrip } from '../components/bud/BudStateStrip';
 import { Button, IconButton, Modal, ThemeToggle } from '../components/ui';
 import { appNavigation } from '../config/navigation';
-import { apiJson, patchJson } from '../services/api-client';
-import type { AgentSettings } from '../types/trading';
+import { apiJson, postJson } from '../services/api-client';
 import { cn } from '../utils/classNames';
 
 type AppLayoutProps = {
   children: ReactNode;
 };
 
+type BudStatusPayload = {
+  capabilities?: {
+    live_trading_enabled?: boolean;
+  };
+  health?: {
+    status?: string;
+  };
+  status?: string;
+};
+
 export function AppLayout({ children }: AppLayoutProps) {
   const pathname = usePathname();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [executionMode, setExecutionMode] = useState<'paper' | 'live'>('paper');
-  const [liveModeOpen, setLiveModeOpen] = useState(false);
   const [emergencyOpen, setEmergencyOpen] = useState(false);
-  const [topbarStatus, setTopbarStatus] = useState('Paper trading ready');
-  const [agentSettings, setAgentSettings] = useState<AgentSettings | null>(null);
-  const [agentStatusLoading, setAgentStatusLoading] = useState(true);
+  const [topbarStatus, setTopbarStatus] = useState('Backend verification');
+  const [budStatus, setBudStatus] = useState<BudStatusPayload | null>(null);
 
   useEffect(() => {
     let ignore = false;
 
-    apiJson<AgentSettings>('/api/agent/settings')
-      .then((settings) => {
+    apiJson<BudStatusPayload>('/api/bud/status')
+      .then((status) => {
         if (!ignore) {
-          setAgentSettings(settings);
-          setTopbarStatus(settings.enabled ? `Strategy Agent ${formatAgentMode(settings.mode)} actif` : 'Strategy Agent suspendu');
+          setBudStatus(status);
+          setTopbarStatus(status.status === 'online' ? 'Bud backend online' : 'Bud backend unavailable');
         }
       })
       .catch((error) => {
         if (!ignore) {
-          setTopbarStatus(error instanceof Error ? error.message : 'Strategy Agent indisponible');
-        }
-      })
-      .finally(() => {
-        if (!ignore) {
-          setAgentStatusLoading(false);
+          setTopbarStatus(error instanceof Error ? error.message : 'Bud backend unavailable');
         }
       });
 
@@ -52,42 +54,23 @@ export function AppLayout({ children }: AppLayoutProps) {
     };
   }, []);
 
-  function confirmLiveMode() {
-    setExecutionMode('live');
-    setTopbarStatus('Live mode armed after confirmation');
-    setLiveModeOpen(false);
-  }
-
-  function confirmEmergencyStop() {
-    setExecutionMode('paper');
-    setTopbarStatus('Emergency stop sent. Trading locked to paper.');
-    setEmergencyOpen(false);
-  }
-
-  async function toggleAgentAutonomy() {
-    if (!agentSettings || agentStatusLoading) {
-      return;
-    }
-
-    const nextSettings = { ...agentSettings, enabled: !agentSettings.enabled };
-    setAgentSettings(nextSettings);
-    setAgentStatusLoading(true);
-    setTopbarStatus(nextSettings.enabled ? 'Activation Strategy Agent' : 'Suspension Strategy Agent');
-
+  async function confirmEmergencyStop() {
     try {
-      const savedSettings = await patchJson<AgentSettings>('/api/agent/settings', nextSettings);
-      setAgentSettings(savedSettings);
-      setTopbarStatus(savedSettings.enabled ? `Strategy Agent ${formatAgentMode(savedSettings.mode)} actif` : 'Strategy Agent suspendu');
+      await postJson('/api/bud/kill-switch', {
+        action: 'trigger',
+        detail: 'manual Thoon topbar emergency stop',
+        reason: 'manual',
+      });
+      setTopbarStatus('Kill switch triggered. Trading locked.');
     } catch (error) {
-      setAgentSettings(agentSettings);
-      setTopbarStatus(error instanceof Error ? error.message : 'Strategy Agent update failed');
+      setTopbarStatus(error instanceof Error ? error.message : 'Kill switch failed');
     } finally {
-      setAgentStatusLoading(false);
+      setEmergencyOpen(false);
     }
   }
 
-  const agentEnabled = Boolean(agentSettings?.enabled);
-  const agentModeLabel = agentSettings ? formatAgentMode(agentSettings.mode) : 'verification';
+  const backendOnline = budStatus?.status === 'online' || budStatus?.health?.status === 'ok';
+  const liveEnabled = Boolean(budStatus?.capabilities?.live_trading_enabled);
 
   return (
     <div className={cn('app-shell app-shell--with-sidebar', sidebarCollapsed && 'app-shell--sidebar-collapsed')}>
@@ -101,68 +84,29 @@ export function AppLayout({ children }: AppLayoutProps) {
           onClick={() => setSidebarCollapsed((current) => !current)}
         />
 
-        <div className="topbar-agent" aria-label="Agent connection">
-          <span>Agent connecte</span>
+        <div className="topbar-agent" aria-label="Backend connection">
+          <span>Backend</span>
           <strong>
             <i aria-hidden="true" />
-            Alpha-01
+            {backendOnline ? 'Bud online' : 'Bud offline'}
           </strong>
         </div>
 
         <div className="topbar-mode-switch" aria-label="Execution mode">
-          <button
-            className={executionMode === 'paper' ? 'is-active' : undefined}
-            onClick={() => {
-              setExecutionMode('paper');
-              setTopbarStatus('Paper trading active');
-            }}
-            type="button"
-          >
-            Paper Trading
-          </button>
-          <button className={executionMode === 'live' ? 'is-active' : undefined} onClick={() => setLiveModeOpen(true)} type="button">
-            Live
-          </button>
+          <button className="is-active" type="button">Paper locked</button>
         </div>
 
-        <div className="topbar-equity" aria-label="Paper equity">
-          <span>Equity paper</span>
-          <strong>25,000.00 USDT</strong>
-        </div>
-
-        <div className="topbar-autonomy" aria-label="Autonomous mode">
-          <span>Mode autonome</span>
-          <button
-            className={cn('topbar-autonomy-toggle', agentEnabled && 'is-active', agentStatusLoading && 'is-loading')}
-            disabled={!agentSettings || agentStatusLoading}
-            onClick={toggleAgentAutonomy}
-            title={agentEnabled ? 'Suspendre le Strategy Agent' : 'Activer le Strategy Agent'}
-            type="button"
-          >
-            <Activity size={15} />
-            {agentEnabled ? agentModeLabel : agentStatusLoading ? 'Verification' : 'Suspendu'}
-          </button>
+        <div className="topbar-equity" aria-label="Live readiness">
+          <span>Live</span>
+          <strong>{liveEnabled ? 'Enabled' : 'Blocked'}</strong>
         </div>
 
         <div className="topbar-actions">
           <span className="sr-only" aria-live="polite">{topbarStatus}</span>
-          <Button
-            className="topbar-websocket"
-            icon={<PlugZap size={16} />}
-            onClick={() => setTopbarStatus('Websocket actif. Flux marche verifie.')}
-            size="sm"
-            variant="ghost"
-          >
-            websocket
-          </Button>
           <Button icon={<AlertTriangle size={16} />} onClick={() => setEmergencyOpen(true)} size="sm" variant="danger">
             Arret d'urgence
           </Button>
           <ThemeToggle />
-          <Link aria-label="Alerts" className="ui-icon-button topbar-optional-action" href="/alerts" title="Alerts">
-            <span className="sr-only">Alerts</span>
-            <Bell size={18} />
-          </Link>
           <Link aria-label="Settings" className="ui-icon-button topbar-optional-action" href="/preferences" title="Settings">
             <span className="sr-only">Settings</span>
             <Settings size={18} />
@@ -199,40 +143,29 @@ export function AppLayout({ children }: AppLayoutProps) {
           })}
         </nav>
 
-        <div className="sidebar-telemetry" aria-label="Market stream status">
+        <div className="sidebar-telemetry" aria-label="Backend status">
           <span>
             <i aria-hidden="true" />
-            Flux marche
+            Backend
           </span>
-          <strong>websocket actif</strong>
+          <strong>{backendOnline ? 'backend online' : 'backend check'}</strong>
         </div>
         <span className="sidebar-version">v0.1.0</span>
       </aside>
 
-      <main className="app-main">{children}</main>
-
-      <Modal onClose={() => setLiveModeOpen(false)} open={liveModeOpen} title="Confirm Live Mode">
-        <div className="confirmation-modal-body">
-          <p>Live mode unlocks real execution flows. Risk checks and per-order confirmations stay required.</p>
-          <div>
-            <Button onClick={() => setLiveModeOpen(false)} size="sm" variant="ghost">
-              Cancel
-            </Button>
-            <Button onClick={confirmLiveMode} size="sm" variant="danger">
-              Confirm
-            </Button>
-          </div>
-        </div>
-      </Modal>
+      <main className="app-main">
+        <BudStateStrip />
+        {children}
+      </main>
 
       <Modal onClose={() => setEmergencyOpen(false)} open={emergencyOpen} title="Emergency Stop">
         <div className="confirmation-modal-body">
-          <p>This locks execution back to paper mode and marks trading as stopped for this session.</p>
+          <p>This triggers the Bud kill switch and blocks trading execution.</p>
           <div>
             <Button onClick={() => setEmergencyOpen(false)} size="sm" variant="ghost">
               Cancel
             </Button>
-            <Button onClick={confirmEmergencyStop} size="sm" variant="danger">
+            <Button onClick={() => void confirmEmergencyStop()} size="sm" variant="danger">
               Stop Trading
             </Button>
           </div>
@@ -240,17 +173,4 @@ export function AppLayout({ children }: AppLayoutProps) {
       </Modal>
     </div>
   );
-}
-
-function formatAgentMode(mode: AgentSettings['mode']) {
-  switch (mode) {
-    case 'manual':
-      return 'manuel';
-    case 'assisted':
-      return 'assiste';
-    case 'limited_autonomous':
-      return 'limite';
-    case 'guarded_autonomous':
-      return 'garde';
-  }
 }

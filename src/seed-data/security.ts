@@ -286,6 +286,9 @@ export const wallets: WalletConnection[] = [];
 export const apiKeys: ApiKeyRecord[] = [];
 
 export const riskRules: RiskRules = {
+  allowedTradingDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+  allowedTradingSessionEnd: '23:59',
+  allowedTradingSessionStart: '00:00',
   blockOrdersWithoutStop: true,
   botLossStreakPause: 3,
   cancelOnDisconnect: true,
@@ -302,6 +305,11 @@ export const riskRules: RiskRules = {
 export const tradeLimits: TradeLimits = {
   cooldownAfterBotErrorMinutes: 20,
   cooldownAfterLossMinutes: 15,
+  marketLimits: [
+    { exposure: 12000, maxSize: 9000, symbol: 'BTC/USDT' },
+    { exposure: 9000, maxSize: 6500, symbol: 'ETH/USDT' },
+    { exposure: 4500, maxSize: 3200, symbol: 'SOL/USDT' },
+  ],
   maxApiErrorsBeforePause: 3,
   maxBotSlotsActive: 4,
   maxOpenPositions: 3,

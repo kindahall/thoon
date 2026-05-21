@@ -11,7 +11,12 @@ function isLegacyLocalAgentChatMessage(message: AgentChatMessage) {
 
   return (
     message.id.includes('agent-chat-thoonix-instant') ||
+    message.id.includes('agent-chat-thoonix-fast') ||
     message.content.startsWith('Recu. Je te reponds tout de suite') ||
+    message.content.startsWith('Je suis la. Je reponds en mode rapide') ||
+    message.content.startsWith('Tu as raison: une question simple ne doit pas lancer') ||
+    message.content.startsWith('Je te reponds directement en mode rapide') ||
+    message.content.startsWith('Etat rapide:') ||
     message.content.startsWith('Tu as raison: le chat ne doit pas attendre Codex CLI') ||
     message.content.startsWith('Analyse profonde lancee avec Codex. Tu peux continuer') ||
     message.content.startsWith('Connexion directe a Codex CLI en cours') ||

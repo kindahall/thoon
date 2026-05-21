@@ -16,9 +16,6 @@ const tradingDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 export function RiskRulesSettingsPage({ riskRules }: RiskRulesSettingsPageProps) {
   const [rules, setRules] = useState(riskRules);
-  const [sessionStart, setSessionStart] = useState('00:00');
-  const [sessionEnd, setSessionEnd] = useState('23:59');
-  const [activeDays, setActiveDays] = useState(tradingDays);
   const [saveStatus, setSaveStatus] = useState('Ready');
   const [blockOrderModalOpen, setBlockOrderModalOpen] = useState(false);
   const [killSwitchConfirmationOpen, setKillSwitchConfirmationOpen] = useState(false);
@@ -28,14 +25,20 @@ export function RiskRulesSettingsPage({ riskRules }: RiskRulesSettingsPageProps)
   }
 
   function toggleDay(day: string) {
-    setActiveDays((currentDays) => (currentDays.includes(day) ? currentDays.filter((item) => item !== day) : [...currentDays, day]));
+    const tradingDay = day as RiskRules['allowedTradingDays'][number];
+
+    updateRule({
+      allowedTradingDays: rules.allowedTradingDays.includes(tradingDay)
+        ? rules.allowedTradingDays.filter((item) => item !== tradingDay)
+        : [...rules.allowedTradingDays, tradingDay],
+    });
   }
 
   async function saveRules() {
     setSaveStatus('Saving');
 
     try {
-      const savedRules = await patchJson<RiskRules>('/api/risk-rules', rules);
+      const savedRules = await patchJson<RiskRules>('/api/risk-rules', { ...rules, confirmed: true });
       setRules(savedRules);
       setSaveStatus('Saved');
     } catch (error) {
@@ -50,7 +53,7 @@ export function RiskRulesSettingsPage({ riskRules }: RiskRulesSettingsPageProps)
     setKillSwitchConfirmationOpen(false);
 
     try {
-      const savedRules = await patchJson<RiskRules>('/api/risk-rules', nextRules);
+      const savedRules = await patchJson<RiskRules>('/api/risk-rules', { ...nextRules, confirmed: true });
       setRules(savedRules);
       setSaveStatus('Saved');
     } catch (error) {
@@ -97,7 +100,14 @@ export function RiskRulesSettingsPage({ riskRules }: RiskRulesSettingsPageProps)
                 suffix="%"
                 value={rules.maxRiskPerTrade}
               />
-              <SessionHours activeDays={activeDays} end={sessionEnd} onDayToggle={toggleDay} onEndChange={setSessionEnd} onStartChange={setSessionStart} start={sessionStart} />
+              <SessionHours
+                activeDays={rules.allowedTradingDays}
+                end={rules.allowedTradingSessionEnd}
+                onDayToggle={toggleDay}
+                onEndChange={(value) => updateRule({ allowedTradingSessionEnd: value })}
+                onStartChange={(value) => updateRule({ allowedTradingSessionStart: value })}
+                start={rules.allowedTradingSessionStart}
+              />
               <RuleInput icon={<TrendingDown size={18} />} label="Daily Loss Limit" onChange={(value) => updateRule({ dailyLossLimit: value })} suffix="%" value={rules.dailyLossLimit} />
               <RuleInput icon={<PauseCircle size={18} />} label="Bot Pause After Loss Streak" onChange={(value) => updateRule({ botLossStreakPause: value })} suffix="Losses" value={rules.botLossStreakPause} />
               <RuleInput icon={<TrendingDown size={18} />} label="Weekly Loss Limit" onChange={(value) => updateRule({ weeklyLossLimit: value })} suffix="%" value={rules.weeklyLossLimit} />
@@ -125,7 +135,7 @@ export function RiskRulesSettingsPage({ riskRules }: RiskRulesSettingsPageProps)
               <SummaryLine label="Daily Loss Limit" value={`${rules.dailyLossLimit}%`} />
               <SummaryLine label="Weekly Loss Limit" value={`${rules.weeklyLossLimit}%`} />
               <SummaryLine label="Max Leverage" value={`${rules.maxLeverage}x`} />
-              <SummaryLine label="Trading Session" value={`${sessionStart} - ${sessionEnd}`} />
+              <SummaryLine label="Trading Session" value={`${rules.allowedTradingSessionStart} - ${rules.allowedTradingSessionEnd}`} />
               <SummaryLine label="Loss Streak Pause" value={`${rules.botLossStreakPause} losses`} />
               <SummaryLine label="Block Orders Without SL" value={rules.blockOrdersWithoutStop ? 'Enabled' : 'Disabled'} />
               <SummaryLine label="Confirm Real Orders" value={rules.confirmLiveOrders ? 'Enabled' : 'Disabled'} />

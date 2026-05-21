@@ -1,31 +1,11 @@
 import { notFound } from 'next/navigation';
 
-import { AdvancedSettingsPage } from '../../../screens/preferences/AdvancedSettingsPage';
-import { AgentSettingsPage } from '../../../screens/preferences/AgentSettingsPage';
-import { AppearanceSettingsPage } from '../../../screens/preferences/AppearanceSettingsPage';
-import { AuditLogsSettingsPage } from '../../../screens/preferences/AuditLogsSettingsPage';
-import { BillingSettingsPage } from '../../../screens/preferences/BillingSettingsPage';
-import { DataPrivacySettingsPage } from '../../../screens/preferences/DataPrivacySettingsPage';
-import { KeyboardShortcutsSettingsPage } from '../../../screens/preferences/KeyboardShortcutsSettingsPage';
-import { LayoutsSettingsPage } from '../../../screens/preferences/LayoutsSettingsPage';
-import { NotificationsSettingsPage } from '../../../screens/preferences/NotificationsSettingsPage';
-import { ProfileSettingsPage } from '../../../screens/preferences/ProfileSettingsPage';
-import { RiskRulesSettingsPage } from '../../../screens/preferences/RiskRulesSettingsPage';
-import { SecuritySettingsPage } from '../../../screens/preferences/SecuritySettingsPage';
-import { TradeLimitsSettingsPage } from '../../../screens/preferences/TradeLimitsSettingsPage';
-import { TradingDefaultsSettingsPage } from '../../../screens/preferences/TradingDefaultsSettingsPage';
-import { ExchangeHubPage } from '../../../screens/ExchangeHubPage';
-import { WorkspacePage } from '../../../screens/WorkspacePage';
 import {
-  getPreferenceSectionSummary,
-  getAgentAiStatus,
-  getAgentSettings,
   getRiskRules,
   getTradeLimits,
   getUserProfile,
   getUserPreferences,
   listApiKeys,
-  listAlerts,
   listAuditLogs,
   listExchangeConnections,
   listWalletConnections,
@@ -35,20 +15,14 @@ import type { AuditEvent, PreferenceSectionKey } from '../../../types/trading';
 export const dynamic = 'force-dynamic';
 
 const preferenceSectionKeys: PreferenceSectionKey[] = [
-  'agent',
   'profile',
   'appearance',
   'trading-defaults',
   'security',
-  'notifications',
-  'billing',
   'data-privacy',
   'risk-rules',
   'trade-limits',
   'audit-logs',
-  'layouts',
-  'keyboard-shortcuts',
-  'advanced',
 ];
 
 type PreferenceSectionRouteProps = {
@@ -69,6 +43,8 @@ export default async function PreferenceSectionRoute({ params, searchParams }: P
   const query = await searchParams;
 
   if (section === 'exchange-api') {
+    const { ExchangeHubPage } = await import('../../../screens/ExchangeHubPage');
+
     return <ExchangeHubPage apiKeys={listApiKeys()} exchanges={listExchangeConnections()} wallets={listWalletConnections()} />;
   }
 
@@ -77,62 +53,54 @@ export default async function PreferenceSectionRoute({ params, searchParams }: P
   }
 
   if (section === 'profile') {
+    const { ProfileSettingsPage } = await import('../../../screens/preferences/ProfileSettingsPage');
+
     return <ProfileSettingsPage profile={getUserProfile()} />;
   }
 
-  if (section === 'agent') {
-    return <AgentSettingsPage aiStatus={getAgentAiStatus()} settings={getAgentSettings()} />;
-  }
-
   if (section === 'appearance') {
+    const { AppearanceSettingsPage } = await import('../../../screens/preferences/AppearanceSettingsPage');
+
     return <AppearanceSettingsPage preferences={getUserPreferences()} />;
   }
 
   if (section === 'trading-defaults') {
+    const { TradingDefaultsSettingsPage } = await import('../../../screens/preferences/TradingDefaultsSettingsPage');
+
     return <TradingDefaultsSettingsPage preferences={getUserPreferences()} />;
   }
 
   if (section === 'security') {
+    const { SecuritySettingsPage } = await import('../../../screens/preferences/SecuritySettingsPage');
+
     return <SecuritySettingsPage apiKeys={listApiKeys()} auditLogs={listAuditLogs()} exchanges={listExchangeConnections()} riskRules={getRiskRules()} />;
   }
 
-  if (section === 'notifications') {
-    return <NotificationsSettingsPage alerts={listAlerts()} preferences={getUserPreferences()} profile={getUserProfile()} />;
-  }
-
-  if (section === 'billing') {
-    return <BillingSettingsPage preferences={getUserPreferences()} />;
-  }
-
   if (section === 'data-privacy') {
-    return <DataPrivacySettingsPage auditLogs={listAuditLogs()} />;
+    const { DataPrivacySettingsPage } = await import('../../../screens/preferences/DataPrivacySettingsPage');
+
+    return <DataPrivacySettingsPage auditLogs={listAuditLogs()} preferences={getUserPreferences()} />;
   }
 
   if (section === 'risk-rules') {
+    const { RiskRulesSettingsPage } = await import('../../../screens/preferences/RiskRulesSettingsPage');
+
     return <RiskRulesSettingsPage riskRules={getRiskRules()} />;
   }
 
   if (section === 'trade-limits') {
+    const { TradeLimitsSettingsPage } = await import('../../../screens/preferences/TradeLimitsSettingsPage');
+
     return <TradeLimitsSettingsPage tradeLimits={getTradeLimits()} />;
   }
 
   if (section === 'audit-logs') {
+    const { AuditLogsSettingsPage } = await import('../../../screens/preferences/AuditLogsSettingsPage');
+
     return <AuditLogsSettingsPage auditLogs={listAuditLogs()} initialEventType={isAuditEventType(query?.event) ? query.event : undefined} />;
   }
 
-  if (section === 'layouts') {
-    return <LayoutsSettingsPage preferences={getUserPreferences()} />;
-  }
-
-  if (section === 'keyboard-shortcuts') {
-    return <KeyboardShortcutsSettingsPage preferences={getUserPreferences()} />;
-  }
-
-  if (section === 'advanced') {
-    return <AdvancedSettingsPage />;
-  }
-
-  return <WorkspacePage {...getPreferenceSectionSummary(section)} />;
+  notFound();
 }
 
 function isPreferenceSectionKey(value: string): value is PreferenceSectionKey {

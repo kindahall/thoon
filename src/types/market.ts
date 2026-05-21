@@ -24,7 +24,7 @@ export type MarketDataStatus = {
   baseUrl: string;
   live: boolean;
   pairCount: number;
-  provider: 'binance' | 'local';
+  provider: 'binance' | 'bud' | 'local';
   updatedAt: string;
   warnings: string[];
 };

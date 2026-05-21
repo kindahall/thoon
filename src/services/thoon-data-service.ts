@@ -1,4 +1,4 @@
-import type { MetricTone, PreferenceSectionKey, WorkspaceRow, WorkspaceSummary, WorkspaceSummaryKey } from '../types/trading';
+import type { BacktestReport, MetricTone, PreferenceSectionKey, Strategy, WorkspaceRow, WorkspaceSummary, WorkspaceSummaryKey } from '../types/trading';
 import { formatCompact, formatCompactUsd, formatPercent, formatUsd } from '../utils/format';
 import { readThoonDb } from '../server/thoon-db';
 import { getStrategyAgentAiStatus } from '../server/strategy-agent-ai';
@@ -273,6 +273,21 @@ export function listStrategies() {
   return visibleStrategyRecords(strategyRecords, strategyResearchRecords);
 }
 
+export function listChartStrategies(): Strategy[] {
+  return listStrategies().map((strategy) => ({
+    id: strategy.id,
+    market: strategy.market,
+    name: strategy.name,
+    performance30d: strategy.performance30d,
+    positionDraft: strategy.positionDraft,
+    riskPerTrade: strategy.riskPerTrade,
+    status: strategy.status,
+    timeframe: strategy.timeframe,
+    type: strategy.type,
+    updatedAt: strategy.updatedAt,
+  }));
+}
+
 export function getStrategy(id: string) {
   const { strategyRecords, strategyResearchRecords } = readThoonDb();
 
@@ -281,6 +296,46 @@ export function getStrategy(id: string) {
 
 export function listBacktestReports() {
   return readThoonDb().backtestReportRecords.filter((report) => report.source === 'calculated');
+}
+
+export function listBacktestReportSummaries(): BacktestReport[] {
+  return listBacktestReports().map(toBacktestReportSummary);
+}
+
+export function listChartBacktestReports(): BacktestReport[] {
+  return listBacktestReports().map(toBacktestReportSummary);
+}
+
+function toBacktestReportSummary(report: BacktestReport): BacktestReport {
+  return {
+    buyHoldReturn: report.buyHoldReturn,
+    candleCount: report.candleCount,
+    dataWindow: report.dataWindow,
+    drawdown: report.drawdown,
+    engine: report.engine,
+    executionSettings: report.executionSettings,
+    feesPct: report.feesPct,
+    exchangeId: report.exchangeId,
+    exchangeName: report.exchangeName,
+    generatedAt: report.generatedAt,
+    id: report.id,
+    initialCapital: report.initialCapital,
+    losingTrades: report.losingTrades,
+    market: report.market,
+    marketDataSource: report.marketDataSource,
+    netProfit: report.netProfit,
+    openPosition: report.openPosition,
+    period: report.period,
+    profitFactor: report.profitFactor,
+    slippagePct: report.slippagePct,
+    source: report.source,
+    strategyId: report.strategyId,
+    timeframe: report.timeframe,
+    totalTrades: report.totalTrades,
+    warnings: report.warnings,
+    winRate: report.winRate,
+    winningTrades: report.winningTrades,
+  };
 }
 
 export function listEndorsedStrategies() {
@@ -498,30 +553,23 @@ export function getPreferenceSectionSummary(section: PreferenceSectionKey): Work
 }
 
 function buildPreferenceRows(): WorkspaceRow[] {
-  const { alertRecords, apiKeyRecords, auditLogRecords, tradeLimitsRecord, userPreferencesRecord, userProfileRecord } = readThoonDb();
+  const { apiKeyRecords, auditLogRecords, tradeLimitsRecord, userPreferencesRecord, userProfileRecord } = readThoonDb();
 
   return [
     { href: '/preferences/profile', primary: 'Profile', secondary: userProfileRecord.timezone, status: userProfileRecord.language },
-    { href: '/preferences/agent', primary: 'Strategy Agent', secondary: 'Assisted safe defaults', status: readThoonDb().agentSettingsRecord.mode },
     { href: '/preferences/appearance', primary: 'Appearance', secondary: userPreferencesRecord.density, status: userPreferencesRecord.theme },
     { href: '/preferences/trading-defaults', primary: 'Trading Defaults', secondary: `${userPreferencesRecord.defaultLeverage}x leverage`, status: `${userPreferencesRecord.defaultRiskPerTrade}%` },
     { href: '/preferences/security', primary: 'Security', secondary: 'Confirm critical actions', status: 'locked', tone: 'positive' },
-    { href: '/preferences/notifications', primary: 'Notifications', secondary: `${alertRecords.length} alert rules`, status: 'on' },
     { href: '/exchanges', primary: 'Exchanges', secondary: `${apiKeyRecords.length} masked keys · CEX/DEX`, status: 'open' },
-    { href: '/preferences/billing', primary: 'Billing', secondary: 'Private plan', status: 'active' },
     { href: '/preferences/data-privacy', primary: 'Data & Privacy', secondary: 'Local JSON DB', status: 'clean', tone: 'positive' },
     { href: '/preferences/risk-rules', primary: 'Risk Rules', secondary: 'Stop-loss required', status: 'locked', tone: 'positive' },
     { href: '/preferences/trade-limits', primary: 'Trade Limits', secondary: `${tradeLimitsRecord.maxOrdersPerDay} orders/day`, status: 'set' },
     { href: '/preferences/audit-logs', primary: 'Audit Logs', secondary: `${auditLogRecords.length} latest`, status: 'open' },
-    { href: '/preferences/layouts', primary: 'Layouts', secondary: 'Single Chart default', status: 'saved' },
-    { href: '/preferences/keyboard-shortcuts', primary: 'Keyboard Shortcuts', secondary: 'Core actions', status: 'ready' },
-    { href: '/preferences/advanced', primary: 'Advanced', secondary: 'Developer-safe options', status: 'closed' },
   ];
 }
 
 function preferenceSectionConfig(): Record<PreferenceSectionKey, Pick<WorkspaceSummary, 'metrics' | 'rows' | 'title'>> {
   const {
-    alertRecords,
     auditLogRecords,
     riskRulesRecord,
     tradeLimitsRecord,
@@ -530,190 +578,111 @@ function preferenceSectionConfig(): Record<PreferenceSectionKey, Pick<WorkspaceS
   } = readThoonDb();
 
   return {
-  agent: {
-    metrics: [
-      { label: 'Mode', value: readThoonDb().agentSettingsRecord.mode.replace('_', ' ') },
-      { label: 'Tasks', value: String(readThoonDb().agentQueueRecords.length) },
-      { label: 'Blocked', tone: 'warning', value: String(readThoonDb().agentRunRecords.filter((run) => run.result === 'blocked').length) },
-    ],
-    rows: [
-      { href: '/agent', primary: 'Dashboard', secondary: 'Compact agent control', status: 'open' },
-      { primary: 'Core Protection', secondary: 'Original versions locked', status: 'on', tone: 'positive' },
-      { primary: 'Live Actions', secondary: 'Never automatic', status: 'blocked', tone: 'negative' },
-    ],
-    title: 'Strategy Agent',
-  },
-  profile: {
-    metrics: [
-      { label: 'Name', value: userProfileRecord.name },
-      { label: 'Currency', value: userProfileRecord.mainCurrency },
-      { label: 'Timezone', value: userProfileRecord.timezone },
-    ],
-    rows: [
-      { primary: 'Username', secondary: userProfileRecord.email, status: userProfileRecord.username },
-      { primary: 'Language', secondary: userProfileRecord.country, status: userProfileRecord.language },
-      { primary: 'Experience', secondary: 'Used for defaults only', status: userProfileRecord.tradingExperience },
-    ],
-    title: 'Profile',
-  },
-  appearance: {
-    metrics: [
-      { label: 'Theme', value: userPreferencesRecord.theme },
-      { label: 'Accent', value: userPreferencesRecord.accent },
-      { label: 'Density', value: userPreferencesRecord.density },
-    ],
-    rows: [
-      { primary: 'Chart Preset', secondary: 'Dark terminal', status: 'active' },
-      { primary: 'Sidebar', secondary: 'Compact main nav', status: 'auto' },
-      { primary: 'Motion', secondary: 'Minimal transitions', status: 'on' },
-    ],
-    title: 'Appearance',
-  },
-  'trading-defaults': {
-    metrics: [
-      { label: 'Risk', value: `${userPreferencesRecord.defaultRiskPerTrade}%` },
-      { label: 'Leverage', value: `${userPreferencesRecord.defaultLeverage}x` },
-      { label: 'Order', value: userPreferencesRecord.orderType },
-    ],
-    rows: [
-      { primary: 'Stop-loss', secondary: 'Required before live order', status: 'locked', tone: 'positive' },
-      { primary: 'Take Profit', secondary: 'Single target default', status: 'TP1' },
-      { primary: 'Exchange', secondary: 'Default execution venue', status: userPreferencesRecord.defaultExchange },
-    ],
-    title: 'Trading Defaults',
-  },
-  security: {
-    metrics: [
-      { label: 'Live Confirm', tone: 'positive', value: riskRulesRecord.confirmLiveOrders ? 'On' : 'Off' },
-      { label: 'Kill Switch', value: riskRulesRecord.emergencyKillSwitch ? 'On' : 'Off' },
-      { label: 'Disconnect', tone: 'positive', value: riskRulesRecord.cancelOnDisconnect ? 'Cancel' : 'Hold' },
-    ],
-    rows: [
-      { primary: 'Critical Actions', secondary: 'Live order, bots, API revoke', status: 'confirm' },
-      { primary: 'API', secondary: 'Masked keys only in UI', status: 'safe', tone: 'positive' },
-      { primary: 'Withdrawals', secondary: 'Always disabled', status: 'off', tone: 'positive' },
-    ],
-    title: 'Security',
-  },
-  notifications: {
-    metrics: [
-      { label: 'Active', tone: 'positive', value: String(alertRecords.filter((alert) => alert.status === 'active').length) },
-      { label: 'Email', value: String(alertRecords.filter((alert) => alert.channel === 'email').length) },
-      { label: 'Webhook', value: String(alertRecords.filter((alert) => alert.channel === 'webhook').length) },
-    ],
-    rows: alertRecords.slice(0, 3).map((alert) => ({
-      primary: alert.symbol,
-      secondary: `${alert.type} · ${alert.condition}`,
-      status: alert.channel,
-      href: '/alerts',
-    })),
-    title: 'Notifications',
-  },
-  billing: {
-    metrics: [
-      { label: 'Plan', value: 'Private' },
-      { label: 'Usage', value: 'Local' },
-      { label: 'Status', tone: 'positive', value: 'Active' },
-    ],
-    rows: [
-      { primary: 'Subscription', secondary: 'Private app workspace', status: 'active' },
-      { primary: 'Billing Cycle', secondary: 'Stored in Thoon data', status: 'saved' },
-      { primary: 'Receipts', secondary: 'Generated as local records', status: 'ready' },
-    ],
-    title: 'Billing',
-  },
-  'data-privacy': {
-    metrics: [
-      { label: 'Exports', value: 'Manual' },
-      { label: 'Storage', value: 'Local DB' },
-      { label: 'Secrets', tone: 'positive', value: 'Hidden' },
-    ],
-    rows: [
-      { primary: 'API Keys', secondary: 'Never exposed client-side', status: 'masked', tone: 'positive' },
-      { primary: 'Trading Logs', secondary: 'Audit trail required', status: 'on' },
-      { primary: 'Data Delete', secondary: 'Confirmation required', status: 'guarded' },
-    ],
-    title: 'Data & Privacy',
-  },
-  'risk-rules': {
-    metrics: [
-      { label: 'Risk', value: `${riskRulesRecord.maxRiskPerTrade}%` },
-      { label: 'Daily Loss', tone: 'negative', value: `${riskRulesRecord.dailyLossLimit}%` },
-      { label: 'Leverage', value: `${riskRulesRecord.maxLeverage}x` },
-    ],
-    rows: [
-      { primary: 'Stop-loss', secondary: 'Block live orders without stop', status: 'on', tone: 'positive' },
-      { primary: 'Drawdown', secondary: 'Stop bots at max drawdown', status: `${riskRulesRecord.stopBotsAtDrawdown}%` },
-      { primary: 'Kill Switch', secondary: 'Manual emergency stop', status: riskRulesRecord.emergencyKillSwitch ? 'on' : 'off' },
-    ],
-    title: 'Risk Rules',
-  },
-  'trade-limits': {
-    metrics: [
-      { label: 'Orders / day', value: String(tradeLimitsRecord.maxOrdersPerDay) },
-      { label: 'Open Pos.', value: String(tradeLimitsRecord.maxOpenPositions) },
-      { label: 'Exposure', value: formatCompactUsd(tradeLimitsRecord.maxTotalExposure) },
-    ],
-    rows: [
-      { primary: 'Orders / hour', secondary: 'Execution throttle', status: String(tradeLimitsRecord.maxOrdersPerHour) },
-      { primary: 'Bot Slots', secondary: 'Active automation cap', status: String(tradeLimitsRecord.maxBotSlotsActive) },
-      { primary: 'API Errors', secondary: 'Pause after repeated errors', status: String(tradeLimitsRecord.maxApiErrorsBeforePause) },
-    ],
-    title: 'Trade Limits',
-  },
-  'audit-logs': {
-    metrics: [
-      { label: 'Events', value: String(auditLogRecords.length) },
-      { label: 'Blocked', tone: 'negative', value: String(auditLogRecords.filter((log) => log.status === 'blocked').length) },
-      { label: 'Warnings', tone: 'warning', value: String(auditLogRecords.filter((log) => log.status === 'warning').length) },
-    ],
-    rows: auditLogRecords.map((log) => ({
-      primary: log.action,
-      secondary: `${log.actor} · ${log.eventType}`,
-      status: log.status,
-      tone: log.status === 'success' ? 'positive' : log.status === 'blocked' ? 'negative' : 'warning',
-    })),
-    title: 'Audit Logs',
-  },
-  layouts: {
-    metrics: [
-      { label: 'Default', value: 'Single' },
-      { label: 'Saved', value: '3' },
-      { label: 'Docking', value: 'Auto' },
-    ],
-    rows: [
-      { primary: 'Single Chart', secondary: 'Default workspace', status: 'active', tone: 'positive' },
-      { primary: 'Bot Monitor', secondary: 'Automation view', status: 'saved' },
-      { primary: 'Backtest Lab', secondary: 'Testing view', status: 'saved' },
-    ],
-    title: 'Layouts',
-  },
-  'keyboard-shortcuts': {
-    metrics: [
-      { label: 'Core', value: '8' },
-      { label: 'Trading', value: '4' },
-      { label: 'Chart', value: '4' },
-    ],
-    rows: [
-      { primary: 'Open Chart', secondary: 'Navigate to active pair', status: 'C' },
-      { primary: 'Save Setup', secondary: 'Store visual trade plan', status: 'S' },
-      { primary: 'Create Alert', secondary: 'Alert from chart level', status: 'A' },
-    ],
-    title: 'Keyboard Shortcuts',
-  },
-  advanced: {
-    metrics: [
-      { label: 'Mode', value: 'Safe' },
-      { label: 'Debug', value: 'Off' },
-      { label: 'API', tone: 'positive', value: 'Guarded' },
-    ],
-    rows: [
-      { primary: 'Developer Logs', secondary: 'Frontend only', status: 'off' },
-      { primary: 'Experimental Tools', secondary: 'Hidden until needed', status: 'off' },
-      { primary: 'Reset Workspace', secondary: 'Confirmation required', status: 'guarded' },
-    ],
-    title: 'Advanced',
-  },
+    profile: {
+      metrics: [
+        { label: 'Name', value: userProfileRecord.name },
+        { label: 'Currency', value: userProfileRecord.mainCurrency },
+        { label: 'Timezone', value: userProfileRecord.timezone },
+      ],
+      rows: [
+        { primary: 'Username', secondary: userProfileRecord.email, status: userProfileRecord.username },
+        { primary: 'Language', secondary: userProfileRecord.country, status: userProfileRecord.language },
+        { primary: 'Experience', secondary: 'Used for defaults only', status: userProfileRecord.tradingExperience },
+      ],
+      title: 'Profile',
+    },
+    appearance: {
+      metrics: [
+        { label: 'Theme', value: userPreferencesRecord.theme },
+        { label: 'Accent', value: userPreferencesRecord.accent },
+        { label: 'Density', value: userPreferencesRecord.density },
+      ],
+      rows: [
+        { primary: 'Chart Preset', secondary: 'Dark terminal', status: 'active' },
+        { primary: 'Sidebar', secondary: 'Compact main nav', status: 'auto' },
+        { primary: 'Motion', secondary: 'Minimal transitions', status: 'on' },
+      ],
+      title: 'Appearance',
+    },
+    'trading-defaults': {
+      metrics: [
+        { label: 'Risk', value: `${userPreferencesRecord.defaultRiskPerTrade}%` },
+        { label: 'Leverage', value: `${userPreferencesRecord.defaultLeverage}x` },
+        { label: 'Order', value: userPreferencesRecord.orderType },
+      ],
+      rows: [
+        { primary: 'Stop-loss', secondary: 'Required before live order', status: 'locked', tone: 'positive' },
+        { primary: 'Take Profit', secondary: 'Single target default', status: 'TP1' },
+        { primary: 'Exchange', secondary: 'Default execution venue', status: userPreferencesRecord.defaultExchange },
+      ],
+      title: 'Trading Defaults',
+    },
+    security: {
+      metrics: [
+        { label: 'Live Confirm', tone: 'positive', value: riskRulesRecord.confirmLiveOrders ? 'On' : 'Off' },
+        { label: 'Kill Switch', value: riskRulesRecord.emergencyKillSwitch ? 'On' : 'Off' },
+        { label: 'Disconnect', tone: 'positive', value: riskRulesRecord.cancelOnDisconnect ? 'Cancel' : 'Hold' },
+      ],
+      rows: [
+        { primary: 'Critical Actions', secondary: 'Live order, bots, API revoke', status: 'confirm' },
+        { primary: 'API', secondary: 'Masked keys only in UI', status: 'safe', tone: 'positive' },
+        { primary: 'Withdrawals', secondary: 'Always disabled', status: 'off', tone: 'positive' },
+      ],
+      title: 'Security',
+    },
+    'data-privacy': {
+      metrics: [
+        { label: 'Exports', value: 'Manual' },
+        { label: 'Storage', value: 'Local DB' },
+        { label: 'Secrets', tone: 'positive', value: 'Hidden' },
+      ],
+      rows: [
+        { primary: 'API Keys', secondary: 'Never exposed client-side', status: 'masked', tone: 'positive' },
+        { primary: 'Trading Logs', secondary: 'Audit trail required', status: 'on' },
+        { primary: 'Data Delete', secondary: 'Confirmation required', status: 'guarded' },
+      ],
+      title: 'Data & Privacy',
+    },
+    'risk-rules': {
+      metrics: [
+        { label: 'Risk', value: `${riskRulesRecord.maxRiskPerTrade}%` },
+        { label: 'Daily Loss', tone: 'negative', value: `${riskRulesRecord.dailyLossLimit}%` },
+        { label: 'Leverage', value: `${riskRulesRecord.maxLeverage}x` },
+      ],
+      rows: [
+        { primary: 'Stop-loss', secondary: 'Block live orders without stop', status: 'on', tone: 'positive' },
+        { primary: 'Drawdown', secondary: 'Stop bots at max drawdown', status: `${riskRulesRecord.stopBotsAtDrawdown}%` },
+        { primary: 'Kill Switch', secondary: 'Manual emergency stop', status: riskRulesRecord.emergencyKillSwitch ? 'on' : 'off' },
+      ],
+      title: 'Risk Rules',
+    },
+    'trade-limits': {
+      metrics: [
+        { label: 'Orders / day', value: String(tradeLimitsRecord.maxOrdersPerDay) },
+        { label: 'Open Pos.', value: String(tradeLimitsRecord.maxOpenPositions) },
+        { label: 'Exposure', value: formatCompactUsd(tradeLimitsRecord.maxTotalExposure) },
+      ],
+      rows: [
+        { primary: 'Orders / hour', secondary: 'Execution throttle', status: String(tradeLimitsRecord.maxOrdersPerHour) },
+        { primary: 'Bot Slots', secondary: 'Active automation cap', status: String(tradeLimitsRecord.maxBotSlotsActive) },
+        { primary: 'API Errors', secondary: 'Pause after repeated errors', status: String(tradeLimitsRecord.maxApiErrorsBeforePause) },
+      ],
+      title: 'Trade Limits',
+    },
+    'audit-logs': {
+      metrics: [
+        { label: 'Events', value: String(auditLogRecords.length) },
+        { label: 'Blocked', tone: 'negative', value: String(auditLogRecords.filter((log) => log.status === 'blocked').length) },
+        { label: 'Warnings', tone: 'warning', value: String(auditLogRecords.filter((log) => log.status === 'warning').length) },
+      ],
+      rows: auditLogRecords.map((log) => ({
+        primary: log.action,
+        secondary: `${log.actor} · ${log.eventType}`,
+        status: log.status,
+        tone: log.status === 'success' ? 'positive' : log.status === 'blocked' ? 'negative' : 'warning',
+      })),
+      title: 'Audit Logs',
+    },
   };
 }
 

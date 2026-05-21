@@ -48,6 +48,11 @@ export async function getProductionReadiness() {
       message: env.rateLimitEnabled ? 'Runtime API rate limits enabled.' : 'Keep THOON_RATE_LIMIT_ENABLED enabled in production.',
     },
     {
+      id: 'trusted-proxy-headers',
+      ok: env.trustProxyHeaders || env.nodeEnv !== 'production',
+      message: env.trustProxyHeaders || env.nodeEnv !== 'production' ? 'Client IP headers are trusted only in an approved proxy environment.' : 'Set THOON_TRUST_PROXY_HEADERS=true only after the app is behind a trusted proxy/CDN.',
+    },
+    {
       id: 'edge-rate-limit',
       ok: env.edgeRateLimitPolicy === 'configured' || env.nodeEnv !== 'production',
       message: env.edgeRateLimitPolicy === 'configured' || env.nodeEnv !== 'production' ? 'Edge/WAF rate-limit policy acknowledged.' : 'Set THOON_EDGE_RATE_LIMIT_POLICY=configured after enabling host/WAF throttling.',

@@ -15,17 +15,34 @@ import {
   getAuthProductionStatus,
   getSessionFromRequest,
   isAuthRequired,
+  parseSessionCookieValue,
   sessionCookieOptions,
   thoonSessionCookieName,
   verifyPassword,
 } from '../../../server/auth';
+import type { AuthSession } from '../../../server/auth';
 import { encryptSecret, maskSecret } from '../../../server/crypto';
 import { getThoonServerEnv, hasProductionEncryptionKey } from '../../../server/env';
 import { executeLiveOrder, fetchLiveAccountSnapshot, verifyLiveApiKey } from '../../../server/exchanges/live-executor';
 import { getMetricsSnapshot, incrementMetric, observeApiResponse, logServerEvent } from '../../../server/observability';
 import { checkRateLimit, rateLimitHeaders } from '../../../server/rate-limit';
 import { getProductionReadiness } from '../../../server/readiness';
-import { generateAiStrategySuggestions, getStrategyAgentAiStatus, runThoonixAgentChat } from '../../../server/strategy-agent-ai';
+import {
+  canUseLiveTrading,
+  createBetaInvite,
+  currentPlanFromContext,
+  isSaasMode,
+  loginSaas,
+  logoutSaas,
+  requestIp,
+  requestLiveAccessReview,
+  resolveOwnerSaasRequestContext,
+  resolveSaasRequestContext,
+  signupWithInvite,
+  updateLiveAccessReview,
+  workspacePlanLimits,
+} from '../../../server/saas-store';
+import { generateAiStrategySuggestions, getStrategyAgentAiStatus } from '../../../server/strategy-agent-ai';
 import { getKronosIntegrationProfile } from '../../../server/kronos-integration';
 import { advanceKronosLearning, getKronosLearningProfile } from '../../../server/kronos-learning';
 import { getTradingViewMcpProfile } from '../../../server/tradingview-mcp-integration';
@@ -42,7 +59,10 @@ import {
   promoteVersion,
   updateVersionWithBacktest,
 } from '../../../server/strategy-agent';
-import { flushPendingPostgresMirror, readThoonDb, updateThoonDb, type SavedSetupRecord, type ThoonDb } from '../../../server/thoon-db';
+import { createStripeCheckoutSession, createStripePortalSession, handleStripeWebhook } from '../../../server/stripe-billing';
+import { flushPendingPostgresMirror, maxBacktestReportRecords, readThoonDb, updateThoonDb, type SavedSetupRecord, type ThoonDb } from '../../../server/thoon-db';
+import { getThoonRequestContext, runWithThoonRequestContext } from '../../../server/thoon-request-context';
+import { createThoonixBridgePairingCode, createThoonixProviderConnection, disableThoonixProviderConnection, listThoonixProviderConnections, runThoonixGatewayChat, testThoonixProviderConnection } from '../../../server/thoonix-connections';
 import { researchTradingViewStrategies } from '../../../server/tradingview-research';
 import { getMarketCandles, getMarketDataSnapshot } from '../../../services/market-service';
 import type { MarketDataSnapshot, MarketPair, PositionDraft, Timeframe } from '../../../types/market';
@@ -70,30 +90,74 @@ const agentCronTargetPairCount = 100;
 const agentCronTimeframesPerSweep = 4;
 const maximumNumericInput = 1_000_000_000;
 const maximumCandleLimit = 1000;
+const maximumJsonBodyBytes = 1_000_000;
+const sensitiveConfirmationStatus = 428;
 
 export async function GET(request: NextRequest, context: RouteContext) {
-  return handleApiError(request, () => getHandler(request, context));
+  const path = await routePath(context);
+
+  return handleApiError(request, () => withApiRequestContext(request, path, () => getHandler(request, path)));
 }
 
-async function getHandler(request: NextRequest, context: RouteContext) {
-  const path = await routePath(context);
+async function getHandler(request: NextRequest, path: string[]) {
   const guard = readGuard(request, path);
 
   if (guard) {
     return guard;
   }
 
+  const retiredResponse = retiredLegacyModuleResponse(path);
+
+  if (retiredResponse) {
+    return retiredResponse;
+  }
+
   if (path[0] === 'auth' && path[1] === 'session') {
+    if (isSaasMode()) {
+      const context = getThoonRequestContext();
+
+      if (!context?.user || !context.workspace) {
+        return json({ authenticated: false, auth: { ...getAuthProductionStatus(), saas: true } }, 401);
+      }
+
+      return json({
+        authenticated: true,
+        auth: { ...getAuthProductionStatus(), saas: true },
+        plan: currentPlanFromContext(context),
+        session: {
+          email: context.user.email,
+          mode: 'authenticated',
+          role: context.membership?.role ?? context.user.role,
+          sessionId: context.sessionId,
+          userId: context.user.id,
+          workspaceId: context.workspace.id,
+        },
+        subscription: context.subscription,
+        workspace: context.workspace,
+      });
+    }
+
     const session = getSessionFromRequest(request);
 
     if (!session && isAuthRequired()) {
-      return json({ authenticated: false, auth: getAuthProductionStatus() }, 401);
+      return json({ authenticated: false, auth: { mode: getAuthProductionStatus().mode } }, 401);
     }
 
     return json({ authenticated: Boolean(session), auth: getAuthProductionStatus(), session });
   }
 
   const db = readThoonDb();
+
+  if (path[0] === 'billing' && path[1] === 'status') {
+    const context = requireSaasWorkspaceContext();
+
+    return json({
+      limits: workspacePlanLimits(context),
+      plan: currentPlanFromContext(context),
+      subscription: context.subscription,
+      workspace: context.workspace,
+    });
+  }
 
   if (path[0] === 'production' && path[1] === 'readiness') {
     const readiness = await getProductionReadiness();
@@ -106,11 +170,13 @@ async function getHandler(request: NextRequest, context: RouteContext) {
   }
 
   if (path[0] === 'health') {
+    const env = getThoonServerEnv();
+
     return json({
       auth: getAuthProductionStatus(),
-      dataFile: getThoonServerEnv().dataFile,
-      databaseProvider: getThoonServerEnv().databaseProvider,
-      marketDataProvider: getThoonServerEnv().marketDataProvider,
+      dataFileConfigured: Boolean(env.dataFile),
+      databaseProvider: env.databaseProvider,
+      marketDataProvider: env.marketDataProvider,
       ok: true,
       resources: resourceIndex,
       updatedAt: db.updatedAt,
@@ -132,6 +198,10 @@ async function getHandler(request: NextRequest, context: RouteContext) {
 
     if (path[1] === 'settings') {
       return json(db.agentSettingsRecord);
+    }
+
+    if (path[1] === 'connections') {
+      return json({ connections: await listThoonixProviderConnections(getThoonRequestContext()) });
     }
 
     if (path[1] === 'ai' && path[2] === 'status') {
@@ -259,7 +329,13 @@ async function getHandler(request: NextRequest, context: RouteContext) {
   }
 
   if (path[0] === 'backtests') {
-    return json(db.backtestReportRecords.filter((report) => report.source === 'calculated'));
+    if (path[1]) {
+      const report = db.backtestReportRecords.find((item) => item.id === path[1] && item.source === 'calculated');
+
+      return report ? json(report) : notFound(path);
+    }
+
+    return json(db.backtestReportRecords.filter((report) => report.source === 'calculated').slice(0, maxBacktestReportRecords).map(compactBacktestReport));
   }
 
   if (path[0] === 'preferences') {
@@ -302,15 +378,37 @@ async function getHandler(request: NextRequest, context: RouteContext) {
 }
 
 export async function POST(request: NextRequest, context: RouteContext) {
-  return handleApiError(request, () => durableMutation(() => postHandler(request, context)));
+  const path = await routePath(context);
+
+  return handleApiError(request, () => withApiRequestContext(request, path, () => durableMutation(() => postHandler(request, path))));
 }
 
-async function postHandler(request: NextRequest, context: RouteContext) {
-  const path = await routePath(context);
+async function postHandler(request: NextRequest, path: string[]) {
   const guard = mutationGuard(request, path);
 
   if (guard) {
     return guard;
+  }
+
+  const retiredResponse = retiredLegacyModuleResponse(path);
+
+  if (retiredResponse) {
+    return retiredResponse;
+  }
+
+  if (path[0] === 'webhooks' && path[1] === 'stripe') {
+    let result;
+
+    try {
+      result = await handleStripeWebhook({
+        rawBody: await request.text(),
+        signature: request.headers.get('stripe-signature') ?? undefined,
+      });
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : 'Invalid Stripe webhook.' }, 400);
+    }
+
+    return json(result);
   }
 
   const body = await readJson(request);
@@ -319,12 +417,72 @@ async function postHandler(request: NextRequest, context: RouteContext) {
     return login(request, body);
   }
 
+  if (path[0] === 'auth' && path[1] === 'signup') {
+    return signup(request, body);
+  }
+
   if (path[0] === 'auth' && path[1] === 'logout') {
     return logout(request);
   }
 
+  if (path[0] === 'billing' && path[1] === 'checkout') {
+    return billingCheckout(request, body);
+  }
+
+  if (path[0] === 'billing' && path[1] === 'portal') {
+    return billingPortal(request);
+  }
+
+  if (path[0] === 'billing' && path[1] === 'live-access') {
+    return requestLiveAccess(body);
+  }
+
+  if (path[0] === 'beta' && path[1] === 'invites') {
+    return betaInvite(body);
+  }
+
+  if (path[0] === 'admin' && path[1] === 'live-access') {
+    return adminLiveAccess(body);
+  }
+
   if (path[0] === 'agent' && path[1] === 'actions') {
     return agentAction(body);
+  }
+
+  if (path[0] === 'agent' && path[1] === 'connections') {
+    try {
+      if (path[2] === 'pairing-code') {
+        const pairing = await createThoonixBridgePairingCode(getThoonRequestContext());
+
+        recordThoonixConnectionAudit('Codex bridge pairing code generated', 'Pairing code issued for a workspace-scoped outbound bridge.');
+
+        return json(pairing, 201);
+      }
+
+      if (path[2] && path[3] === 'test') {
+        const connection = await testThoonixProviderConnection(path[2], getThoonRequestContext());
+
+        if (!connection) {
+          throw new ApiError('Thoonix connection not found.', 404);
+        }
+
+        recordThoonixConnectionAudit('Thoonix provider tested', `${connection.label} returned a valid provider inventory response.`);
+
+        return json({ connection, connections: await listThoonixProviderConnections(getThoonRequestContext()) });
+      }
+
+      const connection = await createThoonixProviderConnection(body, getThoonRequestContext());
+
+      recordThoonixConnectionAudit('Thoonix provider connection created', `${connection?.label ?? 'Provider'} saved with encrypted credentials.`);
+
+      return json({ connection, connections: await listThoonixProviderConnections(getThoonRequestContext()) }, 201);
+    } catch (error) {
+      if (error instanceof ApiError) {
+        throw error;
+      }
+
+      return json({ error: error instanceof Error ? error.message : 'Thoonix connection failed.' }, 400);
+    }
   }
 
   if (path[0] === 'agent' && path[1] === 'chat') {
@@ -366,6 +524,21 @@ async function postHandler(request: NextRequest, context: RouteContext) {
 
           return { error: validationBlocker };
         }
+
+        if (bot.mode === 'live' && !hasSensitiveConfirmation(body)) {
+          appendAuditEvent(db, {
+            action: 'Live bot start blocked',
+            actor: 'system',
+            botId: bot.id,
+            details: 'Live bot start blocked because explicit server-side confirmation was missing.',
+            eventType: 'risk',
+            exchange: bot.exchange,
+            status: 'blocked',
+            symbol: bot.symbol,
+          });
+
+          return { confirmationRequired: true, error: 'Live bot start requires explicit confirmation.' };
+        }
       }
 
       bot.status = action === 'pause' ? 'paused' : action === 'stop' ? 'stopped' : 'running';
@@ -383,10 +556,16 @@ async function postHandler(request: NextRequest, context: RouteContext) {
       return bot;
     });
 
-    return json(result, 'error' in result ? 403 : 200);
+    return json(result, mutationResponseStatus(result));
   }
 
   if (path[0] === 'orders' && path[1] === 'close-all') {
+    const confirmation = requireSensitiveConfirmation(body, 'Close all positions');
+
+    if (confirmation) {
+      return confirmation;
+    }
+
     return json(
       updateThoonDb((db) => {
         const now = new Date().toISOString();
@@ -428,6 +607,12 @@ async function postHandler(request: NextRequest, context: RouteContext) {
   }
 
   if (path[0] === 'positions' && path[1] && path[2] === 'close') {
+    const confirmation = requireSensitiveConfirmation(body, 'Position close');
+
+    if (confirmation) {
+      return confirmation;
+    }
+
     return json(
       updateThoonDb((db) => {
         const position = db.positionRecords.find((item) => item.id === path[1]);
@@ -689,7 +874,42 @@ async function postHandler(request: NextRequest, context: RouteContext) {
       );
     }
 
+    if (requestedMode === 'live' && requestedStatus === 'running' && !hasSensitiveConfirmation(body)) {
+      return json(
+        updateThoonDb((db) => {
+          appendAuditEvent(db, {
+            action: 'Live bot blocked',
+            actor: 'system',
+            details: 'Live bot launch blocked because explicit server-side confirmation was missing.',
+            eventType: 'risk',
+            exchange: asString(body.exchange) || 'Live',
+            status: 'blocked',
+            symbol: asString(body.symbol) || db.marketPairRecords[0].symbol,
+          });
+
+          return { confirmationRequired: true, error: 'Live bot launch requires explicit confirmation.' };
+        }),
+        sensitiveConfirmationStatus,
+      );
+    }
+
     const result = updateThoonDb((db) => {
+      const planLimitBlocker = saasPlanLimitBlocker('bots', db.botRecords.length);
+
+      if (planLimitBlocker) {
+        appendAuditEvent(db, {
+          action: 'Bot creation blocked',
+          actor: 'system',
+          details: planLimitBlocker,
+          eventType: 'bot',
+          exchange: asString(body.exchange) || 'Paper',
+          status: 'blocked',
+          symbol: asString(body.symbol) || db.marketPairRecords[0].symbol,
+        });
+
+        return { error: planLimitBlocker };
+      }
+
       const botStrategyId = normalizeStrategyId(asString(body.strategyId) || db.strategyRecords[0]?.id || 'manual', db);
       const botSymbol = asString(body.symbol) || db.marketPairRecords[0].symbol;
       const requestedSourceReportId = asString(body.sourceBacktestReportId);
@@ -783,7 +1003,7 @@ async function postHandler(request: NextRequest, context: RouteContext) {
         return bot;
       });
 
-    return json(result, 'error' in result ? 403 : 201);
+    return json(result, mutationResponseStatus(result, 201));
   }
 
   if (path[0] === 'orders') {
@@ -830,6 +1050,29 @@ async function postHandler(request: NextRequest, context: RouteContext) {
           return { allowed: false, error: 'Live execution is disabled until auth, Postgres, production encryption and a live exchange provider are configured.' };
         }),
         403,
+      );
+    }
+
+    if (requestedMode === 'live' && !hasSensitiveConfirmation(body)) {
+      incrementMetric('liveOrdersBlocked');
+
+      return json(
+        updateThoonDb((db) => {
+          const symbol = asString(body.symbol) || db.marketPairRecords[0].symbol;
+
+          appendAuditEvent(db, {
+            action: 'Live order blocked',
+            actor: 'system',
+            details: 'Live order blocked because explicit server-side confirmation was missing.',
+            eventType: 'risk',
+            exchange: asString(body.exchangeName) || 'Live',
+            status: 'blocked',
+            symbol,
+          });
+
+          return { allowed: false, confirmationRequired: true, error: 'Live order execution requires explicit confirmation.' };
+        }),
+        sensitiveConfirmationStatus,
       );
     }
 
@@ -1164,7 +1407,7 @@ async function postHandler(request: NextRequest, context: RouteContext) {
           strategyId: strategy.id,
           timeframe,
         });
-        db.backtestReportRecords = [report, ...db.backtestReportRecords].slice(0, 80);
+        db.backtestReportRecords = [report, ...db.backtestReportRecords].slice(0, maxBacktestReportRecords);
         db.kronosForecastRecords = kronosLearning.records;
         appendAuditEvent(db, {
           action: 'Backtest run',
@@ -1234,16 +1477,18 @@ async function postHandler(request: NextRequest, context: RouteContext) {
         });
 
         return {
-          auditLogs: db.auditLogRecords,
+          data: buildPrivacyExport(db),
           generatedAt: new Date().toISOString(),
-          profile: db.userProfileRecord,
-          settings: db.userPreferencesRecord,
         };
       }),
     );
   }
 
   if (path[0] === 'security' && path[1] === 'action') {
+    if ((asString(body.action).includes('delete') || asString(body.action).includes('deactivate')) && !hasSensitiveConfirmation(body)) {
+      return requireSensitiveConfirmation(body, 'Account deletion or deactivation') as NextResponse;
+    }
+
     return json(
       updateThoonDb((db) => {
         const action = asString(body.action) || 'security-action';
@@ -1256,8 +1501,17 @@ async function postHandler(request: NextRequest, context: RouteContext) {
           status: action.includes('delete') || action.includes('deactivate') ? 'warning' : 'success',
         });
 
+        if (action === 'delete-account' || action === 'deactivate') {
+          return {
+            action,
+            error: 'Account deletion requires a dedicated tenant deletion workflow before production. The request was logged and no data was silently deleted.',
+            ok: false,
+          };
+        }
+
         return { action, confirmedAt: new Date().toISOString(), ok: true };
       }),
+      actionRequiresDeletionWorkflow(asString(body.action)) ? 501 : 200,
     );
   }
 
@@ -1278,6 +1532,12 @@ async function postHandler(request: NextRequest, context: RouteContext) {
   }
 
   if (path[0] === 'system' && path[1] === 'reset-local-data') {
+    const confirmation = requireSensitiveConfirmation(body, 'Local data reset');
+
+    if (confirmation) {
+      return confirmation;
+    }
+
     return json(
       updateThoonDb((db) => {
         db.savedSetupRecords = [];
@@ -1295,6 +1555,14 @@ async function postHandler(request: NextRequest, context: RouteContext) {
   }
 
   if (path[0] === 'wallets') {
+    if ((asString(body.action) || 'connect-wallet') === 'create-wallet') {
+      const confirmation = requireSensitiveConfirmation(body, 'Internal wallet creation');
+
+      if (confirmation) {
+        return confirmation;
+      }
+    }
+
     return json(
       updateThoonDb((db) => {
         const action = asString(body.action) || 'connect-wallet';
@@ -1423,9 +1691,24 @@ async function postHandler(request: NextRequest, context: RouteContext) {
         const apiKey = asString(body.apiKey);
         const apiSecret = asString(body.apiSecret);
         const exchange = db.exchangeRecords.find((item) => item.id === exchangeId);
+        const connectedExchangeIds = new Set(db.apiKeyRecords.filter((record) => record.status !== 'disabled').map((record) => record.exchangeId));
+        const planLimitBlocker = saasPlanLimitBlocker('exchanges', connectedExchangeIds.size);
 
         if (!exchange || !apiKey) {
           throw new ApiError('Missing exchange or API key', 400);
+        }
+
+        if (planLimitBlocker && !connectedExchangeIds.has(exchangeId)) {
+          appendAuditEvent(db, {
+            action: 'API key creation blocked',
+            actor: 'system',
+            details: planLimitBlocker,
+            eventType: 'api',
+            exchange: exchange.name,
+            status: 'blocked',
+          });
+
+          return { error: planLimitBlocker };
         }
 
         const permissions = normalizePermissions(body.permissions);
@@ -1534,21 +1817,21 @@ async function postHandler(request: NextRequest, context: RouteContext) {
   if (path[0] === 'setups') {
     return json(
       updateThoonDb((db) => {
-        const setup = body as SavedSetupRecord;
+        const setup = body as Partial<SavedSetupRecord>;
         const record: SavedSetupRecord = {
           chartHeight: asNumber(setup.chartHeight, 640),
-          draft: setup.draft ?? {},
-          drawings: Array.isArray(setup.drawings) ? setup.drawings : [],
-          exchangeId: asString(setup.exchangeId),
+          draft: sanitizeJsonValue(setup.draft ?? {}),
+          drawings: Array.isArray(setup.drawings) ? setup.drawings.slice(0, 200).map((drawing) => sanitizeJsonValue(drawing)) : [],
+          exchangeId: asString(setup.exchangeId).slice(0, 120),
           executionIntent: setup.executionIntent === 'strategy' ? 'strategy' : 'manual',
-          id: asString(setup.id) || `setup-${Date.now()}`,
-          indicators: setup.indicators ?? {},
-          markers: Array.isArray(setup.markers) ? setup.markers : [],
-          name: asString(setup.name) || 'Saved setup',
-          notes: asString(setup.notes),
+          id: slug(asString(setup.id)).slice(0, 120) || `setup-${Date.now()}`,
+          indicators: sanitizeJsonValue(setup.indicators ?? {}),
+          markers: Array.isArray(setup.markers) ? setup.markers.slice(0, 100).map((marker) => sanitizeJsonValue(marker)) : [],
+          name: (asString(setup.name) || 'Saved setup').slice(0, 120),
+          notes: asString(setup.notes).slice(0, 2000),
           pair: asString(setup.pair) || db.marketPairRecords[0].symbol,
-          plannedOrders: Array.isArray(setup.plannedOrders) ? setup.plannedOrders : [],
-          riskSettings: setup.riskSettings ?? {},
+          plannedOrders: Array.isArray(setup.plannedOrders) ? setup.plannedOrders.filter(isRecord).slice(0, 20).map((order) => normalizeOrder(order, db.marketPairRecords[0].symbol)) : [],
+          riskSettings: sanitizeJsonValue(setup.riskSettings ?? {}),
           savedAt: asString(setup.savedAt) || new Date().toISOString(),
           selectedRange: asString(setup.selectedRange) || '1D',
           strategyId: asString(setup.strategyId) || undefined,
@@ -1575,15 +1858,22 @@ async function postHandler(request: NextRequest, context: RouteContext) {
 }
 
 export async function PATCH(request: NextRequest, context: RouteContext) {
-  return handleApiError(request, () => durableMutation(() => patchHandler(request, context)));
+  const path = await routePath(context);
+
+  return handleApiError(request, () => withApiRequestContext(request, path, () => durableMutation(() => patchHandler(request, path))));
 }
 
-async function patchHandler(request: NextRequest, context: RouteContext) {
-  const path = await routePath(context);
+async function patchHandler(request: NextRequest, path: string[]) {
   const guard = mutationGuard(request, path);
 
   if (guard) {
     return guard;
+  }
+
+  const retiredResponse = retiredLegacyModuleResponse(path);
+
+  if (retiredResponse) {
+    return retiredResponse;
   }
 
   const body = await readJson(request);
@@ -1649,10 +1939,24 @@ async function patchHandler(request: NextRequest, context: RouteContext) {
   }
 
   if (path[0] === 'risk-rules') {
+    const currentRules = readThoonDb().riskRulesRecord;
+    const confirmation = riskRuleWeakeningRequiresConfirmation(currentRules, body) ? requireSensitiveConfirmation(body, 'Risk rule weakening') : undefined;
+
+    if (confirmation) {
+      return confirmation;
+    }
+
     return json(updateThoonDb((db) => patchRiskRules(db.riskRulesRecord, body)));
   }
 
   if (path[0] === 'trade-limits') {
+    const currentLimits = readThoonDb().tradeLimitsRecord;
+    const confirmation = tradeLimitWeakeningRequiresConfirmation(currentLimits, body) ? requireSensitiveConfirmation(body, 'Trade limit weakening') : undefined;
+
+    if (confirmation) {
+      return confirmation;
+    }
+
     return json(updateThoonDb((db) => patchTradeLimits(db.tradeLimitsRecord, body)));
   }
 
@@ -1688,6 +1992,12 @@ async function patchHandler(request: NextRequest, context: RouteContext) {
   }
 
   if (path[0] === 'orders' && path[1]) {
+    const confirmation = body.status === 'cancelled' ? requireSensitiveConfirmation(body, 'Order cancellation') : undefined;
+
+    if (confirmation) {
+      return confirmation;
+    }
+
     return json(
       updateThoonDb((db) => {
         const order = [...db.openOrderRecords, ...db.plannedOrderRecords].find((item) => item.id === path[1]);
@@ -1832,6 +2142,21 @@ async function patchHandler(request: NextRequest, context: RouteContext) {
         return { error: 'Live execution is disabled. Set THOON_APP_MODE=live-enabled only after connecting a real exchange executor.' };
       }
 
+      if (requestedMode === 'live' && requestedStatus === 'running' && !hasSensitiveConfirmation(body)) {
+        appendAuditEvent(db, {
+          action: 'Live bot update blocked',
+          actor: 'system',
+          botId: bot.id,
+          details: 'Live bot update blocked because explicit server-side confirmation was missing.',
+          eventType: 'risk',
+          exchange: asString(body.exchange) || bot.exchange,
+          status: 'blocked',
+          symbol: asString(body.symbol) || bot.symbol,
+        });
+
+        return { confirmationRequired: true, error: 'Live bot update requires explicit confirmation.' };
+      }
+
       const validationBlocker = requestedStatus === 'running' ? getBotLaunchValidationBlocker(db, nextStrategyId, nextSymbol, sourceReport?.id) : undefined;
 
       if (validationBlocker) {
@@ -1904,23 +2229,32 @@ async function patchHandler(request: NextRequest, context: RouteContext) {
       return bot;
     });
 
-    return json(result, 'error' in result ? 403 : 200);
+    return json(result, mutationResponseStatus(result));
   }
 
   return notFound(path);
 }
 
 export async function DELETE(_request: NextRequest, context: RouteContext) {
-  return handleApiError(_request, () => durableMutation(() => deleteHandler(_request, context)));
+  const path = await routePath(context);
+
+  return handleApiError(_request, () => withApiRequestContext(_request, path, () => durableMutation(() => deleteHandler(_request, path))));
 }
 
-async function deleteHandler(_request: NextRequest, context: RouteContext) {
-  const path = await routePath(context);
+async function deleteHandler(_request: NextRequest, path: string[]) {
   const guard = mutationGuard(_request, path);
 
   if (guard) {
     return guard;
   }
+
+  const retiredResponse = retiredLegacyModuleResponse(path);
+
+  if (retiredResponse) {
+    return retiredResponse;
+  }
+
+  const body = await readJson(_request);
 
   if (path[0] === 'alerts' && path[1]) {
     return json(
@@ -1965,7 +2299,31 @@ async function deleteHandler(_request: NextRequest, context: RouteContext) {
     );
   }
 
+  if (path[0] === 'agent' && path[1] === 'connections' && path[2]) {
+    let connection;
+
+    try {
+      connection = await disableThoonixProviderConnection(path[2], getThoonRequestContext());
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : 'Thoonix connection disable failed.' }, 400);
+    }
+
+    if (!connection) {
+      throw new ApiError('Thoonix connection not found.', 404);
+    }
+
+    recordThoonixConnectionAudit('Thoonix provider connection disabled', `${connection.label} disabled for this workspace.`);
+
+    return json({ connection, connections: await listThoonixProviderConnections(getThoonRequestContext()) });
+  }
+
   if (path[0] === 'strategies' && path[1]) {
+    const confirmation = requireSensitiveConfirmation(body, 'Strategy deletion');
+
+    if (confirmation) {
+      return confirmation;
+    }
+
     return json(updateThoonDb((db) => {
       const existingStrategy = findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, path[1]);
       const deletedStrategy = removeById(db.strategyRecords, path[1]);
@@ -1989,6 +2347,12 @@ async function deleteHandler(_request: NextRequest, context: RouteContext) {
   }
 
   if (path[0] === 'bots' && path[1]) {
+    const confirmation = requireSensitiveConfirmation(body, 'Bot deletion');
+
+    if (confirmation) {
+      return confirmation;
+    }
+
     return json(updateThoonDb((db) => {
       const existingBot = db.botRecords.find((bot) => bot.id === path[1]);
       const deleted = removeById(db.botRecords, path[1]);
@@ -2012,6 +2376,12 @@ async function deleteHandler(_request: NextRequest, context: RouteContext) {
   }
 
   if (path[0] === 'exchanges' && path[1] === 'api-keys' && path[2]) {
+    const confirmation = requireSensitiveConfirmation(body, 'API key revocation');
+
+    if (confirmation) {
+      return confirmation;
+    }
+
     return json(
       updateThoonDb((db) => {
         const keyRecord = db.apiKeyRecords.find((item) => item.id === path[2]);
@@ -2037,6 +2407,12 @@ async function deleteHandler(_request: NextRequest, context: RouteContext) {
   }
 
   if (path[0] === 'journal' && path[1]) {
+    const confirmation = requireSensitiveConfirmation(body, 'Journal trade deletion');
+
+    if (confirmation) {
+      return confirmation;
+    }
+
     return json(
       updateThoonDb((db) => {
         const deleted = db.journalTradeRecords.find((trade) => trade.id === path[1]);
@@ -2062,11 +2438,255 @@ async function deleteHandler(_request: NextRequest, context: RouteContext) {
 }
 
 function json(value: unknown, status = 200, headers?: HeadersInit) {
-  return NextResponse.json(value, { headers, status });
+  const responseHeaders = new Headers(headers);
+
+  if (!responseHeaders.has('Cache-Control')) {
+    responseHeaders.set('Cache-Control', 'no-store');
+  }
+
+  if (!responseHeaders.has('X-Content-Type-Options')) {
+    responseHeaders.set('X-Content-Type-Options', 'nosniff');
+  }
+
+  return NextResponse.json(value, { headers: responseHeaders, status });
 }
 
-function login(request: NextRequest, body: Record<string, unknown>) {
+function hasSensitiveConfirmation(body: Record<string, unknown>) {
+  return body.confirmed === true || body.confirmation === 'confirmed';
+}
+
+function requireSensitiveConfirmation(body: Record<string, unknown>, action: string) {
+  if (hasSensitiveConfirmation(body)) {
+    return undefined;
+  }
+
+  return json({ confirmationRequired: true, error: `${action} requires explicit confirmation.` }, sensitiveConfirmationStatus);
+}
+
+function mutationResponseStatus(result: unknown, successStatus = 200) {
+  if (isRecord(result) && result.confirmationRequired === true) {
+    return sensitiveConfirmationStatus;
+  }
+
+  if (isRecord(result) && typeof result.error === 'string') {
+    return 403;
+  }
+
+  return successStatus;
+}
+
+async function billingCheckout(request: NextRequest, body: Record<string, unknown>) {
+  const context = requireSaasWorkspaceContext();
+  const planId = normalizeBillingPlan(body.planId);
+  const period = body.billingPeriod === 'monthly' || body.period === 'monthly' ? 'monthly' : 'yearly';
+  const session = await createStripeCheckoutSession({
+    context,
+    origin: request.nextUrl.origin,
+    period,
+    planId,
+  });
+
+  return json({ id: session.id, url: session.url });
+}
+
+async function billingPortal(request: NextRequest) {
+  const context = requireSaasWorkspaceContext();
+  const session = await createStripePortalSession({ context, origin: request.nextUrl.origin });
+
+  return json({ id: session.id, url: session.url });
+}
+
+async function requestLiveAccess(body: Record<string, unknown>) {
+  const context = requireSaasWorkspaceContext();
+  const result = await requestLiveAccessReview({ context, reason: asString(body.reason) || undefined });
+
+  return json(result, 201);
+}
+
+async function betaInvite(body: Record<string, unknown>) {
+  requireSaasPlatformAdminContext();
+  const email = asString(body.email).toLowerCase();
+
+  if (!email) {
+    return json({ error: 'Invite email is required.' }, 400);
+  }
+
+  return json(await createBetaInvite(email), 201);
+}
+
+async function adminLiveAccess(body: Record<string, unknown>) {
+  const context = requireSaasPlatformAdminContext();
+  const workspaceId = asString(body.workspaceId);
+  const status = body.status === 'approved' || body.status === 'rejected' ? body.status : undefined;
+
+  if (!workspaceId || !status || !context.user) {
+    return json({ error: 'workspaceId and status approved/rejected are required.' }, 400);
+  }
+
+  return json(
+    await updateLiveAccessReview({
+      notes: asString(body.notes) || undefined,
+      reviewerUserId: context.user.id,
+      status,
+      workspaceId,
+    }),
+  );
+}
+
+function requireSaasWorkspaceContext() {
+  if (!isSaasMode()) {
+    throw new ApiError('SaaS mode is not enabled in this runtime.', 404);
+  }
+
+  const context = getThoonRequestContext();
+
+  if (!context?.user || !context.workspace || !context.membership) {
+    throw new ApiError('Authentication required.', 401);
+  }
+
+  return context;
+}
+
+function requireSaasPlatformAdminContext() {
+  const context = requireSaasWorkspaceContext();
+  const platformAdminRoles = new Set(['admin', 'owner']);
+
+  if (!context.user || !platformAdminRoles.has(context.user.role)) {
+    throw new ApiError('Platform admin privileges required.', 403);
+  }
+
+  return context;
+}
+
+function normalizeBillingPlan(value: unknown) {
+  if (value === 'pro' || value === 'elite') {
+    return value;
+  }
+
+  throw new ApiError('A paid planId of pro or elite is required.', 400);
+}
+
+function saasPlanLimitBlocker(kind: 'bots' | 'exchanges', currentCount: number) {
+  if (!isSaasMode()) {
+    return undefined;
+  }
+
+  const limits = workspacePlanLimits(getThoonRequestContext());
+  const max = kind === 'bots' ? limits.botSlots : limits.exchangeConnections;
+
+  if (currentCount < max) {
+    return undefined;
+  }
+
+  return kind === 'bots'
+    ? `Your current plan allows ${max} bot${max === 1 ? '' : 's'}. Upgrade before creating another bot.`
+    : `Your current plan allows ${max} exchange connection${max === 1 ? '' : 's'}. Upgrade before connecting another exchange.`;
+}
+
+async function signup(request: NextRequest, body: Record<string, unknown>) {
+  if (!isSaasMode()) {
+    return json({ error: 'SaaS signup is disabled in this runtime.' }, 404);
+  }
+
+  const email = asString(body.email).toLowerCase();
+  const password = asString(body.password);
+  const inviteToken = asString(body.inviteToken) || asString(body.token);
+
+  if (!email || !password || !inviteToken) {
+    return json({ error: 'Email, password and beta invite token are required.' }, 400);
+  }
+
+  if (password.length < 12) {
+    return json({ error: 'Password must be at least 12 characters.' }, 400);
+  }
+
+  try {
+    const { cookie, payload } = await signupWithInvite({
+      email,
+      inviteToken,
+      ipAddress: requestIp(request),
+      password,
+      seedDb: readThoonDb(),
+      userAgent: request.headers.get('user-agent') ?? 'unknown',
+    });
+    const response = json(
+      {
+        authenticated: true,
+        session: {
+          email: payload.email,
+          expiresAt: payload.expiresAt,
+          mode: 'authenticated',
+          role: payload.role,
+          userId: payload.userId,
+          workspaceId: payload.workspaceId,
+        },
+      },
+      201,
+    );
+
+    response.cookies.set(thoonSessionCookieName, cookie, sessionCookieOptions(payload.expiresAt));
+
+    return response;
+  } catch (error) {
+    incrementMetric('authFailures');
+    return json({ error: error instanceof Error ? error.message : 'Signup failed.' }, 401);
+  }
+}
+
+async function login(request: NextRequest, body: Record<string, unknown>) {
   const env = getThoonServerEnv();
+
+  if (isSaasMode()) {
+    const email = asString(body.email).toLowerCase();
+    const password = asString(body.password);
+    const rateLimitKey = loginRateLimitKey(request, email);
+    const rateLimit = getLoginRateLimit(rateLimitKey);
+
+    if (rateLimit.blocked) {
+      incrementMetric('rateLimitedRequests');
+
+      return json(
+        {
+          error: 'Too many login attempts. Try again in a few minutes.',
+          retryAfterSeconds: rateLimit.retryAfterSeconds,
+        },
+        429,
+        { 'Retry-After': String(rateLimit.retryAfterSeconds) },
+      );
+    }
+
+    const session = await loginSaas({
+      email,
+      ipAddress: requestIp(request),
+      password,
+      userAgent: request.headers.get('user-agent') ?? 'unknown',
+    });
+
+    if (!session) {
+      incrementMetric('authFailures');
+      recordFailedLoginAttempt(rateLimitKey);
+
+      return json({ error: 'Invalid credentials.' }, 401);
+    }
+
+    clearLoginAttempts(rateLimitKey);
+    const { cookie, payload } = session;
+    const response = json({
+      authenticated: true,
+      session: {
+        email: payload.email,
+        expiresAt: payload.expiresAt,
+        mode: 'authenticated',
+        role: payload.role,
+        userId: payload.userId,
+        workspaceId: payload.workspaceId,
+      },
+    });
+
+    response.cookies.set(thoonSessionCookieName, cookie, sessionCookieOptions(payload.expiresAt));
+
+    return response;
+  }
 
   if (!isAuthRequired()) {
     return json({ authenticated: true, session: getSessionFromRequest(request) });
@@ -2151,11 +2771,16 @@ function login(request: NextRequest, body: Record<string, unknown>) {
   return response;
 }
 
-function logout(request: NextRequest) {
-  const session = getSessionFromRequest(request);
+async function logout(request: NextRequest) {
+  const session = isSaasMode() ? sessionFromSignedCookie(request) : getSessionFromRequest(request);
   const response = json({ authenticated: false, ok: true });
 
   response.cookies.set(thoonSessionCookieName, '', clearedSessionCookieOptions());
+
+  if (isSaasMode()) {
+    await logoutSaas(session?.sessionId);
+    return response;
+  }
 
   if (session?.mode === 'authenticated') {
     updateThoonDb((db) => {
@@ -2220,7 +2845,27 @@ function clearLoginAttempts(key: string) {
 }
 
 function clientIp(request: NextRequest) {
-  return request.headers.get('x-forwarded-for')?.split(',')[0]?.trim().slice(0, 80) || 'local';
+  const env = getThoonServerEnv();
+
+  if (!env.trustProxyHeaders) {
+    return 'local';
+  }
+
+  return request.headers.get('x-forwarded-for')?.split(',')[0]?.trim().slice(0, 80) || request.headers.get('x-real-ip')?.trim().slice(0, 80) || 'local';
+}
+
+function recordThoonixConnectionAudit(action: string, details: string) {
+  updateThoonDb((db) => {
+    appendAuditEvent(db, {
+      action,
+      actor: 'user',
+      details,
+      eventType: 'system',
+      status: 'success',
+    });
+
+    return null;
+  });
 }
 
 async function agentChat(body: Record<string, unknown>) {
@@ -2238,13 +2883,13 @@ async function agentChat(body: Record<string, unknown>) {
     role: 'user',
     status: 'completed',
   };
-
   const response = updateThoonDb((db) => {
     const assistantMessage: AgentChatMessage = {
       content: 'Thoonix active',
       createdAt: new Date().toISOString(),
       id: `agent-chat-thoonix-job-${randomUUID()}`,
       role: 'assistant',
+      steps: chatProgressSteps(content),
       status: 'running',
     };
 
@@ -2276,8 +2921,11 @@ async function agentChat(body: Record<string, unknown>) {
 
 async function completeAgentChatInBackground({ assistantMessageId, content }: { assistantMessageId: string; content: string }) {
   let tradingViewImportNote = '';
+  const contextMode = chatContextMode(content);
 
   if (shouldRunTradingViewImportFromChat(content)) {
+    markAgentChatStep(assistantMessageId, 'Recherche TradingView', 'running');
+
     try {
       const db = readThoonDb();
       const strategy = findVisibleStrategyRecord(db.strategyRecords, db.strategyResearchRecords, JIMMY_STRATEGY_ID);
@@ -2301,8 +2949,10 @@ async function completeAgentChatInBackground({ assistantMessageId, content }: { 
       });
 
       tradingViewImportNote = `TradingView import pipeline saved ${research.records.length} public strategy records (${newCount} new).`;
+      markAgentChatStep(assistantMessageId, 'Recherche TradingView', 'completed');
     } catch (error) {
       tradingViewImportNote = `TradingView import pipeline failed: ${error instanceof Error ? error.message : 'unknown error'}.`;
+      markAgentChatStep(assistantMessageId, 'Recherche TradingView', 'completed');
       updateThoonDb((db) => {
         appendAuditEvent(db, {
           action: 'TradingView import from chat failed',
@@ -2316,17 +2966,22 @@ async function completeAgentChatInBackground({ assistantMessageId, content }: { 
   }
 
   try {
+    markAgentChatStep(assistantMessageId, 'Lecture contexte', 'running');
     const db = readThoonDb();
-    const replyText = await runThoonixAgentChat({
-      appSnapshot: buildAgentChatSnapshot(db),
-      history: visibleAgentChatMessages(db.agentChatRecords).slice(0, 16).reverse(),
+    markAgentChatStep(assistantMessageId, 'Lecture contexte', 'completed');
+    markAgentChatStep(assistantMessageId, 'Analyse Thoonix', 'running');
+    const replyText = await runThoonixGatewayChat({
+      appSnapshot: buildAgentChatSnapshot(db, contextMode),
+      contextMode,
+      history: visibleAgentChatMessages(db.agentChatRecords).slice(0, contextMode === 'compact' ? 6 : 16).reverse(),
       message: tradingViewImportNote ? `${content}\n\n${tradingViewImportNote}` : content,
-    });
+    }, getThoonRequestContext());
     const assistantMessage: AgentChatMessage = {
       content: replyText || "Thoonix n'a pas retourne de message.",
       createdAt: new Date().toISOString(),
       id: `agent-chat-thoonix-${randomUUID()}`,
       role: 'assistant',
+      steps: chatProgressSteps(content).map((step) => ({ ...step, status: 'completed' })),
       status: 'completed',
     };
 
@@ -2346,6 +3001,7 @@ async function completeAgentChatInBackground({ assistantMessageId, content }: { 
       createdAt: new Date().toISOString(),
       id: assistantMessageId,
       role: 'assistant',
+      steps: chatProgressSteps(content).map((step) => ({ ...step, status: 'completed' })),
       status: 'failed',
     };
 
@@ -2362,20 +3018,94 @@ async function completeAgentChatInBackground({ assistantMessageId, content }: { 
   }
 }
 
+function chatProgressSteps(content: string): NonNullable<AgentChatMessage['steps']> {
+  const contextMode = chatContextMode(content);
+  const steps: NonNullable<AgentChatMessage['steps']> = [];
+
+  if (shouldRunTradingViewImportFromChat(content)) {
+    steps.push({ label: 'Recherche TradingView', status: 'waiting' });
+  }
+
+  steps.push({ label: contextMode === 'full' ? 'Lecture contexte complet' : 'Lecture contexte compact', status: 'waiting' });
+  steps.push({ label: 'Analyse Thoonix', status: 'waiting' });
+  steps.push({ label: 'Reponse finale', status: 'waiting' });
+
+  return steps;
+}
+
+function markAgentChatStep(assistantMessageId: string, label: string, status: 'completed' | 'running' | 'waiting') {
+  updateThoonDb((db) => {
+    db.agentChatRecords = db.agentChatRecords.map((message) => {
+      if (message.id !== assistantMessageId || !message.steps?.length) {
+        return message;
+      }
+
+      return {
+        ...message,
+        steps: message.steps.map((step) => (step.label === label || step.label.includes(label) ? { ...step, status } : step)),
+      };
+    });
+
+    return null;
+  });
+}
+
+function chatContextMode(content: string): 'compact' | 'full' {
+  const normalized = content
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+  if (isClearlyCompactChatRequest(normalized)) {
+    return 'compact';
+  }
+
+  if (
+    /\b(strategy|strategie|strategies|backtest|tradingview|kronos|crypto|cryptos|marche|market|markets|bot|bots|paper|paper test|paper trading|risque|risk|drawdown|profit factor|winrate|win rate|timeframe|exchange|binance|bybit|okx|bitget|perpetuel|perpetual|chart|graphique|candle|bougie|ordre|order|position|wallet|api)\b/.test(
+      normalized,
+    )
+  ) {
+    return 'full';
+  }
+
+  return 'compact';
+}
+
+function isClearlyCompactChatRequest(normalizedContent: string) {
+  if (
+    /\b(allo|bonjour|salut|coucou|merci|ok|oui|non|tu es la|t es la|question simple|message simple|reponds? en une phrase|pourquoi tu mets autant de temps|pourquoi c est lent|c est lent|instantannee|instantane)\b/.test(
+      normalizedContent,
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    normalizedContent.length < 240 &&
+    /\b(sans|pas de|aucun|ne lance pas de|ne fais pas de)\s+(backtest|strategie|strategies|tradingview|kronos|analyse complete|contexte complet)\b/.test(
+      normalizedContent,
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 function friendlyAgentChatFailure(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   const timeoutSeconds = Math.round(getThoonServerEnv().agentAiTimeoutMs / 1000);
 
-  if (/Codex CLI|codex.*not logged|logged out|ENOENT|spawn .*codex/i.test(message)) {
-    return `Ancienne configuration Codex CLI detectee: ${message}. Thoonix utilise maintenant l'API OpenAI serveur, pas le CLI local.`;
+  if (/Codex CLI|Codex OAuth|codex.*not logged|logged out|ENOENT|spawn .*codex|auth file|access token/i.test(message)) {
+    return `Le moteur local de Thoonix n'a pas pu repondre: ${message}. Aucun message pre-enregistre n'a ete utilise; reconnecte Thoonix local pour obtenir une vraie reponse.`;
   }
 
   if (/api key is not configured|no api key|OPENAI_API_KEY|THOON_AGENT_AI_API_KEY/i.test(message)) {
-    return "Le provider OpenAI serveur n'est pas configure. Ajoute OPENAI_API_KEY ou THOON_AGENT_AI_API_KEY pour obtenir des reponses directes.";
+    return "Le provider API distant n'est pas configure. Pour utiliser ton forfait sans cle API, garde THOON_AGENT_AI_PROVIDER=codex.";
   }
 
   if (/timed out|timeout|after \d+s/i.test(message)) {
-    return `Thoonix direct n'a pas repondu dans le delai serveur (${timeoutSeconds}s). La requete OpenAI a ete arretee proprement.`;
+    return `Thoonix direct n'a pas repondu dans le delai serveur (${timeoutSeconds}s). Aucun message pre-enregistre n'a ete utilise; la requete a ete arretee proprement.`;
   }
 
   return `Thoonix direct n'a pas pu repondre: ${message}`;
@@ -2630,7 +3360,7 @@ async function agentCron() {
       db.strategyResearchRecords = mergeResearchRecords(db.strategyResearchRecords, research.records);
 
       const reports = outcomes.flatMap((outcome) => (outcome.report ? [outcome.report] : []));
-      db.backtestReportRecords = [...reports, ...db.backtestReportRecords].slice(0, 1000);
+      db.backtestReportRecords = [...reports, ...db.backtestReportRecords].slice(0, maxBacktestReportRecords);
       const kronosCreated = outcomes.filter((outcome) => outcome.kronosLearning?.created).length;
       const kronosEvaluated = outcomes.reduce((sum, outcome) => sum + (outcome.kronosLearning?.evaluatedCount ?? 0), 0);
       db.kronosForecastRecords = mergeKronosForecastRecords(db.kronosForecastRecords, outcomes.flatMap((outcome) => outcome.kronosLearning?.records ?? []));
@@ -3450,6 +4180,38 @@ function trustedCalculatedReports(reports: BacktestReport[]) {
   return reports.filter((report) => report.source === 'calculated' && Boolean(report.dataWindow?.candleChecksum) && Boolean(report.executionSettings) && Array.isArray(report.equityCurve) && report.equityCurve.length > 0);
 }
 
+function compactBacktestReport(report: BacktestReport): BacktestReport {
+  return {
+    buyHoldReturn: report.buyHoldReturn,
+    candleCount: report.candleCount,
+    dataWindow: report.dataWindow,
+    drawdown: report.drawdown,
+    engine: report.engine,
+    executionSettings: report.executionSettings,
+    exchangeId: report.exchangeId,
+    exchangeName: report.exchangeName,
+    feesPct: report.feesPct,
+    generatedAt: report.generatedAt,
+    id: report.id,
+    initialCapital: report.initialCapital,
+    losingTrades: report.losingTrades,
+    market: report.market,
+    marketDataSource: report.marketDataSource,
+    netProfit: report.netProfit,
+    openPosition: report.openPosition,
+    period: report.period,
+    profitFactor: report.profitFactor,
+    slippagePct: report.slippagePct,
+    source: report.source,
+    strategyId: report.strategyId,
+    timeframe: report.timeframe,
+    totalTrades: report.totalTrades,
+    warnings: report.warnings,
+    winRate: report.winRate,
+    winningTrades: report.winningTrades,
+  };
+}
+
 function isAgentOwnedStrategy(strategy: Strategy | undefined) {
   const sourceId = strategy?.agentSource?.sourceId ?? '';
 
@@ -3839,7 +4601,7 @@ function executeAgentAction(
         throw new ApiError('Backtest could not be calculated for this strategy.', 502);
       }
 
-      db.backtestReportRecords = [report, ...db.backtestReportRecords];
+      db.backtestReportRecords = [report, ...db.backtestReportRecords].slice(0, maxBacktestReportRecords);
 
       if (version) {
         db.strategyVersionRecords = db.strategyVersionRecords.map((item) => (item.id === version.id ? updateVersionWithBacktest(item, report, db.agentSettingsRecord.limits.minTrades) : item));
@@ -4024,7 +4786,84 @@ function agentDashboard(db: ThoonDb, strategyId?: string) {
   };
 }
 
-function buildAgentChatSnapshot(db: ThoonDb) {
+function buildPrivacyExport(db: ThoonDb) {
+  return {
+    agent: {
+      chat: visibleAgentChatMessages(db.agentChatRecords),
+      reports: db.agentReportRecords,
+      runs: db.agentRunRecords,
+      settings: db.agentSettingsRecord,
+      suggestions: db.agentSuggestionRecords,
+    },
+    auditLogs: db.auditLogRecords,
+    billing: db.userPreferencesRecord.billingSettings,
+    bots: {
+      bots: db.botRecords,
+      logs: db.botLogRecords,
+      paperTests: db.paperTestSessionRecords,
+    },
+    exchanges: {
+      apiKeys: db.apiKeyRecords,
+      exchanges: db.exchangeRecords,
+      wallets: db.walletRecords,
+    },
+    generatedAt: new Date().toISOString(),
+    orders: {
+      fills: db.fillRecords,
+      history: db.orderHistoryRecords,
+      open: db.openOrderRecords,
+      planned: db.plannedOrderRecords,
+      positions: db.positionRecords,
+    },
+    preferences: db.userPreferencesRecord,
+    profile: db.userProfileRecord,
+    risk: {
+      riskRules: db.riskRulesRecord,
+      tradeLimits: db.tradeLimitsRecord,
+    },
+    strategies: {
+      backtests: db.backtestReportRecords.slice(0, maxBacktestReportRecords),
+      research: db.strategyResearchRecords,
+      strategies: db.strategyRecords,
+      versions: db.strategyVersionRecords,
+    },
+    watchlists: {
+      alerts: db.alertRecords,
+      savedSetups: db.savedSetupRecords,
+      watchlists: db.watchlistRecords,
+    },
+  };
+}
+
+function actionRequiresDeletionWorkflow(action: string) {
+  return action === 'delete-account' || action === 'deactivate';
+}
+
+function buildAgentChatSnapshot(db: ThoonDb, mode: 'compact' | 'full' = 'full') {
+  if (mode === 'compact') {
+    return {
+      ai: getStrategyAgentAiStatus(),
+      agent: {
+        enabled: db.agentSettingsRecord.enabled,
+        mode: db.agentSettingsRecord.mode,
+        queuePaused: db.agentSettingsRecord.queuePaused,
+      },
+      app: {
+        mode: getThoonServerEnv().appMode,
+        marketDataProvider: getThoonServerEnv().marketDataProvider,
+        release: getThoonServerEnv().release,
+      },
+      counts: {
+        backtests: db.backtestReportRecords.length,
+        paperSessions: db.paperTestSessionRecords.length,
+        reports: db.agentReportRecords.length,
+        strategies: db.strategyRecords.length,
+        tradingViewResearch: db.strategyResearchRecords.length,
+      },
+      updatedAt: db.updatedAt,
+    };
+  }
+
   const strategies = buildVisibleStrategyRecords(db.strategyRecords, db.strategyResearchRecords);
   const calculatedReports = db.backtestReportRecords
     .filter((report) => report.source === 'calculated')
@@ -4043,7 +4882,7 @@ function buildAgentChatSnapshot(db: ThoonDb) {
     kronos: getKronosIntegrationProfile(),
     kronosLearning: {
       profile: getKronosLearningProfile(db.kronosForecastRecords),
-      recent: db.kronosForecastRecords.slice(0, 16).map((record) => ({
+      recent: db.kronosForecastRecords.slice(0, 8).map((record) => ({
         confidence: record.confidence,
         hit: record.hit,
         market: record.market,
@@ -4055,7 +4894,7 @@ function buildAgentChatSnapshot(db: ThoonDb) {
       })),
     },
     tradingViewMcp: getTradingViewMcpProfile(),
-    queue: db.agentQueueRecords.slice(0, 10).map((task) => ({
+    queue: db.agentQueueRecords.slice(0, 6).map((task) => ({
       action: task.action,
       nextAction: task.nextAction,
       priority: task.priority,
@@ -4063,14 +4902,14 @@ function buildAgentChatSnapshot(db: ThoonDb) {
       status: task.status,
       strategyId: task.strategyId,
     })),
-    recentRuns: db.agentRunRecords.slice(0, 12).map((run) => ({
+    recentRuns: db.agentRunRecords.slice(0, 6).map((run) => ({
       action: run.action,
       createdAt: run.createdAt,
       notes: run.notes,
       result: run.result,
       strategyId: run.strategyId,
     })),
-    reports: db.agentReportRecords.slice(0, 10).map((report) => ({
+    reports: db.agentReportRecords.slice(0, 6).map((report) => ({
       botDecision: report.botDecision,
       botScore: report.botScore,
       nextAction: report.nextAction,
@@ -4090,7 +4929,7 @@ function buildAgentChatSnapshot(db: ThoonDb) {
       totalTrades: report.totalTrades,
       winRate: report.winRate,
     })),
-    strategies: strategies.slice(0, 40).map((strategy) => ({
+    strategies: strategies.slice(0, 20).map((strategy) => ({
       id: strategy.id,
       market: strategy.market,
       name: strategy.name,
@@ -4099,7 +4938,7 @@ function buildAgentChatSnapshot(db: ThoonDb) {
       timeframe: strategy.timeframe,
       type: strategy.type,
     })),
-    tradingViewResearch: db.strategyResearchRecords.slice(0, 16).map((record) => ({
+    tradingViewResearch: db.strategyResearchRecords.slice(0, 8).map((record) => ({
       concepts: record.concepts,
       fetchedAt: record.fetchedAt,
       provider: record.provider,
@@ -4154,8 +4993,55 @@ async function durableMutation(handler: () => Promise<NextResponse>) {
   return response;
 }
 
+async function withApiRequestContext(handlerRequest: NextRequest, path: string[], handler: () => Promise<NextResponse>) {
+  if (!isSaasMode()) {
+    return runWithThoonRequestContext({ mode: 'local' }, handler);
+  }
+
+  const seedDb = readThoonDb();
+  const cronContext = isAgentCronPath(path) ? await resolveOwnerSaasRequestContext(seedDb) : undefined;
+
+  if (cronContext) {
+    return runWithThoonRequestContext(cronContext, handler);
+  }
+
+  const session = sessionFromSignedCookie(handlerRequest);
+  const context = await resolveSaasRequestContext(session, seedDb);
+
+  return runWithThoonRequestContext(context ?? { mode: 'saas' }, handler);
+}
+
+function sessionFromSignedCookie(request: NextRequest): AuthSession | undefined {
+  const payload = parseSessionCookieValue(request.cookies.get(thoonSessionCookieName)?.value);
+
+  if (!payload) {
+    return undefined;
+  }
+
+  return {
+    email: payload.email,
+    expiresAt: payload.expiresAt,
+    mode: 'authenticated',
+    role: payload.role,
+    sessionId: payload.sessionId,
+    userId: payload.userId,
+    workspaceId: payload.workspaceId,
+  };
+}
+
 function readGuard(request: NextRequest, path: string[]) {
   if (isPublicReadPath(path) || isAgentCronPath(path)) {
+    return null;
+  }
+
+  if (isSaasMode()) {
+    const context = getThoonRequestContext();
+
+    if (!context?.user || !context.workspace || !context.membership) {
+      incrementMetric('authFailures');
+      return json({ error: 'Authentication required.' }, 401);
+    }
+
     return null;
   }
 
@@ -4175,6 +5061,24 @@ function isPublicReadPath(path: string[]) {
 
 function notFound(path: string[]) {
   return json({ error: `Unknown API route: /api/${path.join('/')}` }, 404);
+}
+
+function retiredLegacyModuleResponse(path: string[]) {
+  if (!isRetiredLegacyModule(path[0])) {
+    return null;
+  }
+
+  return json(
+    {
+      error: `Legacy Thoon module retired: /api/${path.join('/')}`,
+      replacement: 'Use /api/bud/* endpoints for the rebuilt Bud-backed cockpit.',
+    },
+    410,
+  );
+}
+
+function isRetiredLegacyModule(moduleName?: string) {
+  return moduleName === 'agent' || moduleName === 'alerts' || moduleName === 'backtests' || moduleName === 'bots' || moduleName === 'strategies';
 }
 
 function mutationGuard(request: NextRequest, path: string[]) {
@@ -4200,6 +5104,21 @@ function mutationGuard(request: NextRequest, path: string[]) {
 
   if (path[0] === 'auth') {
     return null;
+  }
+
+  if (path[0] === 'webhooks' && path[1] === 'stripe') {
+    return null;
+  }
+
+  if (isSaasMode()) {
+    const context = getThoonRequestContext();
+
+    if (!context?.user || !context.workspace || !context.membership) {
+      incrementMetric('authFailures');
+      return json({ error: 'Authentication required.' }, 401);
+    }
+
+    return mutationRateLimit(request, path, context.user.email);
   }
 
   const session = getSessionFromRequest(request);
@@ -4318,10 +5237,20 @@ async function routePath(context: RouteContext) {
 }
 
 async function readJson(request: NextRequest) {
+  const contentLength = Number(request.headers.get('content-length') ?? 0);
+
+  if (Number.isFinite(contentLength) && contentLength > maximumJsonBodyBytes) {
+    throw new ApiError('JSON request body is too large.', 413);
+  }
+
   const text = await request.text();
 
   if (!text.trim()) {
     return {};
+  }
+
+  if (new TextEncoder().encode(text).byteLength > maximumJsonBodyBytes) {
+    throw new ApiError('JSON request body is too large.', 413);
   }
 
   try {
@@ -4736,7 +5665,7 @@ function patchUserPreferences(current: UserPreferences, body: Record<string, unk
   const enumFields = {
     accent: ['blue', 'cyan', 'green', 'pink', 'red', 'violet', 'yellow'],
     breakEvenRule: ['off', 'move-to-be-at-1r', 'move-to-be-at-tp1'],
-    density: ['compact', 'comfortable'],
+    density: ['compact', 'comfortable', 'spacious'],
     multiTpBehavior: ['single-target', 'partial-take-profits', 'equal-ladder'],
     orderType: ['market', 'limit', 'stop'],
     positionSizingMethod: ['risk-percent', 'fixed-usdt', 'fixed-size'],
@@ -4805,6 +5734,15 @@ function patchUserPreferences(current: UserPreferences, body: Record<string, unk
 
 function patchRiskRules(current: RiskRules, body: Record<string, unknown>) {
   patchBooleanFields(current, body, ['blockOrdersWithoutStop', 'cancelOnDisconnect', 'confirmLiveOrders', 'emergencyKillSwitch']);
+  if (Array.isArray(body.allowedTradingDays)) {
+    current.allowedTradingDays = normalizeTradingDays(body.allowedTradingDays, current.allowedTradingDays);
+  }
+  if (typeof body.allowedTradingSessionEnd === 'string') {
+    current.allowedTradingSessionEnd = normalizeTradingTime(body.allowedTradingSessionEnd, current.allowedTradingSessionEnd);
+  }
+  if (typeof body.allowedTradingSessionStart === 'string') {
+    current.allowedTradingSessionStart = normalizeTradingTime(body.allowedTradingSessionStart, current.allowedTradingSessionStart);
+  }
   patchBoundedNumberField(current, body, 'botLossStreakPause', 0, 100);
   patchBoundedNumberField(current, body, 'dailyLossLimit', 0, 100);
   patchBoundedNumberField(current, body, 'maxLeverage', 1, 125);
@@ -4814,6 +5752,99 @@ function patchRiskRules(current: RiskRules, body: Record<string, unknown>) {
   patchBoundedNumberField(current, body, 'weeklyLossLimit', 0, 100);
 
   return current;
+}
+
+function riskRuleWeakeningRequiresConfirmation(current: RiskRules, body: Record<string, unknown>) {
+  if (body.blockOrdersWithoutStop === false && current.blockOrdersWithoutStop) {
+    return true;
+  }
+
+  if (body.cancelOnDisconnect === false && current.cancelOnDisconnect) {
+    return true;
+  }
+
+  if (body.confirmLiveOrders === false && current.confirmLiveOrders) {
+    return true;
+  }
+
+  if (body.emergencyKillSwitch === false && current.emergencyKillSwitch) {
+    return true;
+  }
+
+  if (body.botLossStreakPause !== undefined && asNumber(body.botLossStreakPause, current.botLossStreakPause) > current.botLossStreakPause) {
+    return true;
+  }
+
+  if (body.dailyLossLimit !== undefined && asNumber(body.dailyLossLimit, current.dailyLossLimit) > current.dailyLossLimit) {
+    return true;
+  }
+
+  if (body.maxLeverage !== undefined && asNumber(body.maxLeverage, current.maxLeverage) > current.maxLeverage) {
+    return true;
+  }
+
+  if (body.maxRiskPerTrade !== undefined && asNumber(body.maxRiskPerTrade, current.maxRiskPerTrade) > current.maxRiskPerTrade) {
+    return true;
+  }
+
+  if (body.minimumBalance !== undefined && asNumber(body.minimumBalance, current.minimumBalance) < current.minimumBalance) {
+    return true;
+  }
+
+  if (body.stopBotsAtDrawdown !== undefined && asNumber(body.stopBotsAtDrawdown, current.stopBotsAtDrawdown) > current.stopBotsAtDrawdown) {
+    return true;
+  }
+
+  if (body.weeklyLossLimit !== undefined && asNumber(body.weeklyLossLimit, current.weeklyLossLimit) > current.weeklyLossLimit) {
+    return true;
+  }
+
+  return false;
+}
+
+function tradeLimitWeakeningRequiresConfirmation(current: TradeLimits, body: Record<string, unknown>) {
+  const increasedLimitFields: Array<keyof TradeLimits> = [
+    'maxApiErrorsBeforePause',
+    'maxBotSlotsActive',
+    'maxOpenPositions',
+    'maxOrdersPerDay',
+    'maxOrdersPerHour',
+    'maxPositionSizePerPair',
+    'maxStrategyExecutionsPerDay',
+    'maxTotalExposure',
+  ];
+  const reducedCooldownFields: Array<keyof TradeLimits> = ['cooldownAfterBotErrorMinutes', 'cooldownAfterLossMinutes'];
+
+  for (const field of increasedLimitFields) {
+    if (body[field] !== undefined && asNumber(body[field], Number(current[field])) > Number(current[field])) {
+      return true;
+    }
+  }
+
+  for (const field of reducedCooldownFields) {
+    if (body[field] !== undefined && asNumber(body[field], Number(current[field])) < Number(current[field])) {
+      return true;
+    }
+  }
+
+  if (Array.isArray(body.marketLimits)) {
+    const currentLimitsBySymbol = new Map(current.marketLimits.map((limit) => [limit.symbol, limit]));
+    const nextLimits = normalizeMarketTradeLimits(body.marketLimits, current.marketLimits);
+
+    for (const nextLimit of nextLimits) {
+      const currentLimit = currentLimitsBySymbol.get(nextLimit.symbol);
+
+      if (!currentLimit) {
+        return true;
+      }
+
+      if (nextLimit.maxSize > currentLimit.maxSize || nextLimit.exposure > currentLimit.exposure) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 function patchTradeLimits(current: TradeLimits, body: Record<string, unknown>) {
@@ -4827,8 +5858,45 @@ function patchTradeLimits(current: TradeLimits, body: Record<string, unknown>) {
   patchBoundedNumberField(current, body, 'maxPositionSizePerPair', 0, maximumNumericInput);
   patchBoundedNumberField(current, body, 'maxStrategyExecutionsPerDay', 0, 10000);
   patchBoundedNumberField(current, body, 'maxTotalExposure', 0, maximumNumericInput);
+  if (Array.isArray(body.marketLimits)) {
+    current.marketLimits = normalizeMarketTradeLimits(body.marketLimits, current.marketLimits);
+  }
 
   return current;
+}
+
+function normalizeTradingDays(value: unknown, fallback: RiskRules['allowedTradingDays']): RiskRules['allowedTradingDays'] {
+  const allowed = new Set<RiskRules['allowedTradingDays'][number]>(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']);
+
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  const days = value.filter((day): day is RiskRules['allowedTradingDays'][number] => allowed.has(day as RiskRules['allowedTradingDays'][number]));
+
+  return days.length > 0 ? Array.from(new Set(days)) : fallback;
+}
+
+function normalizeTradingTime(value: unknown, fallback: string) {
+  return typeof value === 'string' && /^\d{2}:\d{2}$/.test(value) ? value : fallback;
+}
+
+function normalizeMarketTradeLimits(value: unknown, fallback: TradeLimits['marketLimits']): TradeLimits['marketLimits'] {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  const limits = value
+    .filter((item): item is Record<string, unknown> => item !== null && typeof item === 'object')
+    .map((item) => ({
+      exposure: boundedNumber(item.exposure, 0, maximumNumericInput, 0),
+      maxSize: boundedNumber(item.maxSize, 0, maximumNumericInput, 0),
+      symbol: asString(item.symbol).slice(0, 40),
+    }))
+    .filter((item) => item.symbol.length > 0)
+    .slice(0, 50);
+
+  return limits.length > 0 ? limits : fallback;
 }
 
 function patchUserProfile(current: UserProfile, body: Record<string, unknown>) {
@@ -4900,11 +5968,30 @@ function sanitizeJsonValue(value: unknown, depth = 0): unknown {
 
 function isLiveExecutionEnabled() {
   const env = getThoonServerEnv();
+  const context = getThoonRequestContext();
+
+  if (isSaasMode() && !canUseLiveTrading(context)) {
+    return false;
+  }
 
   return env.appMode === 'live-enabled' && env.authMode === 'local-required' && env.databaseProvider === 'postgres' && env.liveExchangeProvider !== 'disabled' && hasProductionEncryptionKey(env.encryptionKey);
 }
 
 function getLiveTradingBlocker(db: ThoonDb, exchangeNameOrId: string) {
+  const context = getThoonRequestContext();
+
+  if (isSaasMode()) {
+    const plan = currentPlanFromContext(context);
+
+    if (plan !== 'elite') {
+      return 'Live trading is reserved for active Elite workspaces.';
+    }
+
+    if (context?.workspace?.liveAccessStatus !== 'approved') {
+      return 'Live trading requires admin validation before any live bot or order can run.';
+    }
+  }
+
   const exchange = findExchange(db, exchangeNameOrId);
 
   if (!exchange || exchange.status !== 'connected') {
@@ -5014,17 +6101,17 @@ function findExchange(db: ThoonDb, exchangeNameOrId: string) {
 function normalizeOrder(body: Record<string, unknown>, fallbackSymbol: string): Order {
   return {
     createdAt: new Date().toISOString(),
-    exchange: asString(body.exchange) || 'Paper',
+    exchange: asString(body.exchange).slice(0, 80) || 'Paper',
     executionSource: body.executionSource === 'strategy' ? 'strategy' : 'manual',
-    id: asString(body.id) || `plan-${Date.now()}`,
+    id: slug(asString(body.id)).slice(0, 120) || `plan-${Date.now()}`,
     price: positiveValue(body.price, 0),
     reduceOnly: Boolean(body.reduceOnly),
     side: body.side === 'sell' ? 'sell' : 'buy',
     size: positiveValue(body.size, 0),
-    status: body.status === 'open' || body.status === 'filled' || body.status === 'cancelled' || body.status === 'rejected' ? body.status : 'planned',
-    strategyId: asString(body.strategyId) || undefined,
-    strategyName: asString(body.strategyName) || undefined,
-    symbol: asString(body.symbol) || fallbackSymbol,
+    status: 'planned',
+    strategyId: asString(body.strategyId).slice(0, 160) || undefined,
+    strategyName: asString(body.strategyName).slice(0, 160) || undefined,
+    symbol: asString(body.symbol).slice(0, 40) || fallbackSymbol,
     type: body.type === 'market' || body.type === 'stop' || body.type === 'take-profit' ? body.type : 'limit',
   };
 }
@@ -5097,21 +6184,18 @@ const resourceIndex = [
   'GET /api/production/readiness',
   'GET /api/observability/metrics',
   'GET|POST /api/auth/session|login|logout',
-  'GET /api/agent|settings|versions|suggestions|activity|reports|queue|research|ai/status',
-  'POST /api/agent/actions',
-  'GET|POST /api/agent/cron',
-  'PATCH /api/agent/settings',
+  '410 /api/agent/* retired; use /api/bud/*',
   'GET /api/markets',
   'GET /api/markets/candles?symbol=BTC%2FUSDT&timeframe=15m&exchangeId=binance|bybit|okx|bitget|kraken|kucoin|coinbase-advanced&marketType=spot|perpetual',
   'GET /api/markets/status',
   'GET|POST /api/watchlists',
-  'GET|POST|PATCH|DELETE /api/alerts',
-  'GET|POST|PATCH|DELETE /api/strategies',
-  'GET|POST|PATCH|DELETE /api/bots',
+  '410 /api/alerts/* retired; use /api/bud/*',
+  '410 /api/strategies/* retired; use /api/bud/*',
+  '410 /api/bots/* retired; use /api/bud/*',
   'GET|POST|PATCH /api/orders',
   'POST /api/positions/:id/close',
   'POST /api/trading/execute',
-  'GET|POST /api/backtests',
+  '410 /api/backtests/* retired; use /api/bud/*',
   'GET|POST|DELETE /api/journal',
   'POST /api/notifications/test',
   'POST /api/privacy/export',

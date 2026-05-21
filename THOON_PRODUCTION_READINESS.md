@@ -12,6 +12,7 @@ Use `/api/production/readiness` before deploying live execution. It fails until 
 - `DATABASE_URL`
 - `THOON_LIVE_EXCHANGE_PROVIDER=binance` before `THOON_APP_MODE=live-enabled`
 - `THOON_RATE_LIMIT_ENABLED=true`
+- `THOON_TRUST_PROXY_HEADERS=true` only after deployment behind a trusted proxy/CDN
 - `THOON_EDGE_RATE_LIMIT_POLICY=configured` after host/WAF throttling is enabled
 - `THOON_CRON_SECRET` before scheduled Strategy Agent runs are enabled
 - audit retention values large enough for incident review
@@ -22,14 +23,18 @@ Use `/api/production/readiness` before deploying live execution. It fails until 
 npm run auth:hash -- "replace-with-a-long-password"
 npm run db:migrate
 npm run db:push
+npm run saas:bootstrap
 npm run verify
 ```
 
 `npm run db:push` creates the `thoon_app_state/default` snapshot required by readiness. When `THOON_DATABASE_PROVIDER=postgres`, API mutations wait for the Postgres mirror before returning, so a failed durable write fails the request instead of being hidden.
 
+When `THOON_SAAS_MODE=enabled`, `npm run saas:bootstrap` migrates the existing snapshot into the first owner workspace and stores a JSONB backup in `thoon_app_state_backups`. Paid SaaS billing also requires `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` and the Pro/Elite monthly/yearly Stripe Price IDs before Checkout or webhooks can be used.
+
 ## Strategy Agent
 
 - `THOON_AGENT_AI_PROVIDER=codex` runs Thoonix through the local Codex CLI logged into the machine's ChatGPT/Codex plan; no OpenAI API key is required for that mode.
+- Thoonix keeps chat responsive by using compact context for simple messages and full context only for strategy, market, TradingView, bot, risk and paper-test requests.
 - `THOON_AGENT_AI_PROVIDER=openai` or `openai-compatible` can call a remote model from the server only.
 - `THOON_AGENT_AI_API_KEY` is only for remote OpenAI-compatible providers and must never be exposed in client code.
 - TradingView MCP is expected under Codex MCP server name `tradingview`. Check it with `codex mcp list`; Thoonix uses it only for symbol/chart/TA research and public strategy concept import before Thoon backtests and paper-tests the result.

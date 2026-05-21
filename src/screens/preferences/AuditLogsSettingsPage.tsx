@@ -70,9 +70,23 @@ export function AuditLogsSettingsPage({ auditLogs, initialEventType }: AuditLogs
 
   const selectedLog = filteredLogs.find((log) => log.id === selectedLogId) ?? filteredLogs[0] ?? orderedLogs[0];
   const summary = useMemo(() => buildSummary(filteredLogs), [filteredLogs]);
+  const visibleLogs = filteredLogs.slice(0, 12);
 
   function exportLogs() {
-    setExportStatus('Export ready');
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      filters: { bot, eventType, exchange, query, status },
+      logs: filteredLogs,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const href = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+
+    link.href = href;
+    link.download = `thoon-audit-logs-${Date.now()}.json`;
+    link.click();
+    URL.revokeObjectURL(href);
+    setExportStatus('Downloaded');
   }
 
   return (
@@ -144,7 +158,9 @@ export function AuditLogsSettingsPage({ auditLogs, initialEventType }: AuditLogs
                   </option>
                 ))}
               </select>
-              <strong>{exportStatus}</strong>
+              <strong>
+                {visibleLogs.length}/{filteredLogs.length} · {exportStatus}
+              </strong>
             </div>
           </Card>
 
@@ -163,8 +179,8 @@ export function AuditLogsSettingsPage({ auditLogs, initialEventType }: AuditLogs
                   <span>Details</span>
                 </div>
 
-                {filteredLogs.length > 0 ? (
-                  filteredLogs.map((log) => (
+                {visibleLogs.length > 0 ? (
+                  visibleLogs.map((log) => (
                     <button className={cn('audit-row', selectedLog?.id === log.id && 'is-selected')} key={log.id} onClick={() => setSelectedLogId(log.id)} type="button">
                       <span>{formatAuditTime(log.time)}</span>
                       <span>{titleCase(log.eventType)}</span>
@@ -256,7 +272,7 @@ function sourceHref(log: AuditEvent) {
     case 'risk':
       return '/preferences/risk-rules';
     case 'bot':
-      return log.botId ? `/bots/${log.botId}` : '/bots';
+      return '/bots';
     case 'strategy':
       return '/strategies';
     case 'order':

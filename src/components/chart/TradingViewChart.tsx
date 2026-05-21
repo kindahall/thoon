@@ -12,11 +12,9 @@ type TradingViewChartProps = {
   timeframe: Timeframe;
 };
 
-const tradingViewEmbedScriptUrl = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
-
 export function TradingViewChart({ exchangeId, marketType, symbol, timeframe }: TradingViewChartProps) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
   const { resolvedTheme } = useTheme();
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [loadState, setLoadState] = useState<'fallback' | 'loading' | 'ready'>('loading');
   const tradingViewSymbol = useMemo(() => toTradingViewSymbol(symbol, exchangeId, marketType), [exchangeId, marketType, symbol]);
   const widgetOptions = useMemo(
@@ -43,71 +41,31 @@ export function TradingViewChart({ exchangeId, marketType, symbol, timeframe }: 
     }),
     [resolvedTheme, timeframe, tradingViewSymbol],
   );
+  const frameSrc = useMemo(() => tradingViewFrameSrc(widgetOptions), [widgetOptions]);
 
   useEffect(() => {
     let cancelled = false;
-    const container = containerRef.current;
-
-    if (!container) {
-      return undefined;
-    }
 
     setLoadState('loading');
-    container.innerHTML = '';
 
-    const widget = document.createElement('div');
-    const copyright = document.createElement('div');
-    const link = document.createElement('a');
-    const linkLabel = document.createElement('span');
-    const trademark = document.createElement('span');
-    const script = document.createElement('script');
-
-    widget.className = 'tradingview-widget-container__widget';
-    copyright.className = 'tradingview-widget-copyright';
-    link.href = `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tradingViewSymbol)}`;
-    link.rel = 'noopener nofollow';
-    link.target = '_blank';
-    linkLabel.className = 'blue-text';
-    linkLabel.textContent = `${tradingViewSymbol} chart`;
-    trademark.className = 'trademark';
-    trademark.textContent = ' by TradingView';
-    link.appendChild(linkLabel);
-    copyright.append(link, trademark);
-    script.async = true;
-    script.src = tradingViewEmbedScriptUrl;
-    script.type = 'text/javascript';
-    script.textContent = JSON.stringify(widgetOptions);
-    script.addEventListener('error', () => {
-      if (!cancelled) {
-        setLoadState('fallback');
-      }
-    });
-
-    container.append(widget, copyright, script);
-
-    const readyPoll = window.setInterval(() => {
-      if (!cancelled && container.querySelector('iframe')) {
+    const frameReadyFallback = window.setTimeout(() => {
+      if (!cancelled && iframeRef.current) {
         setLoadState('ready');
-        window.clearInterval(readyPoll);
       }
-    }, 250);
+    }, 4_500);
+
     const watchdog = window.setTimeout(() => {
       if (!cancelled) {
-        setLoadState(container.querySelector('iframe') ? 'ready' : 'fallback');
+        setLoadState((currentState) => (currentState === 'loading' ? 'fallback' : currentState));
       }
-    }, 12_000);
-    const stopPolling = window.setTimeout(() => {
-      window.clearInterval(readyPoll);
-    }, 60_000);
+    }, 22_000);
 
     return () => {
       cancelled = true;
-      window.clearInterval(readyPoll);
+      window.clearTimeout(frameReadyFallback);
       window.clearTimeout(watchdog);
-      window.clearTimeout(stopPolling);
-      container.innerHTML = '';
     };
-  }, [tradingViewSymbol, widgetOptions]);
+  }, [frameSrc]);
 
   return (
     <div className={`tradingview-chart tradingview-chart--${loadState}`} aria-label={`${symbol} TradingView chart`}>
@@ -126,9 +84,41 @@ export function TradingViewChart({ exchangeId, marketType, symbol, timeframe }: 
           </a>
         </div>
       ) : null}
-      <div className="tradingview-chart__container tradingview-widget-container" ref={containerRef} />
+      <div className="tradingview-chart__container tradingview-widget-container">
+        <iframe
+          allow="fullscreen"
+          className="tradingview-chart__iframe"
+          key={frameSrc}
+          onError={() => setLoadState('fallback')}
+          onLoad={() => setLoadState('ready')}
+          ref={iframeRef}
+          referrerPolicy="origin"
+          scrolling="no"
+          src={frameSrc}
+          title={`${tradingViewSymbol} chart by TradingView`}
+        />
+        <div className="tradingview-widget-copyright">
+          <a href={`https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tradingViewSymbol)}`} rel="noopener nofollow" target="_blank">
+            <span className="blue-text">{tradingViewSymbol} chart</span>
+          </a>
+          <span className="trademark"> by TradingView</span>
+        </div>
+      </div>
     </div>
   );
+}
+
+function tradingViewFrameSrc(options: Record<string, unknown>) {
+  const widgetOptions = {
+    ...options,
+    height: '100%',
+    utm_campaign: 'advanced-chart',
+    utm_medium: 'widget_new',
+    utm_source: 'localhost',
+    width: '100%',
+  };
+
+  return `https://www.tradingview-widget.com/embed-widget/advanced-chart/?locale=fr#${encodeURIComponent(JSON.stringify(widgetOptions))}`;
 }
 
 function toTradingViewInterval(timeframe: Timeframe) {
@@ -155,11 +145,7 @@ function toTradingViewSymbol(symbol: string, exchangeId: string, marketType: Tra
   const base = normalizeBase(rawBase, exchangeId);
   const quote = normalizeQuote(rawQuote, exchangeId);
 
-  if (marketType !== 'spot' && exchangeId === 'binance') {
-    return `${prefix}:${base}${quote}PERP`;
-  }
-
-  if (marketType !== 'spot' && ['bybit', 'okx', 'bitget'].includes(exchangeId)) {
+  if (marketType !== 'spot' && ['binance', 'bybit', 'okx', 'bitget'].includes(exchangeId)) {
     return `${prefix}:${base}${quote}.P`;
   }
 

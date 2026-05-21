@@ -37,20 +37,14 @@ export type WorkspaceSummary = {
 };
 
 export type PreferenceSectionKey =
-  | 'agent'
   | 'profile'
   | 'appearance'
   | 'trading-defaults'
   | 'security'
-  | 'notifications'
-  | 'billing'
   | 'data-privacy'
   | 'risk-rules'
   | 'trade-limits'
-  | 'audit-logs'
-  | 'layouts'
-  | 'keyboard-shortcuts'
-  | 'advanced';
+  | 'audit-logs';
 
 export type Watchlist = {
   alertCount: number;
@@ -368,6 +362,10 @@ export type AgentChatMessage = {
   content: string;
   createdAt: string;
   id: string;
+  steps?: Array<{
+    label: string;
+    status: 'completed' | 'running' | 'waiting';
+  }>;
   role: 'assistant' | 'system' | 'user';
   status: 'completed' | 'failed' | 'running';
 };
@@ -438,6 +436,29 @@ export type AgentSettings = {
   permissions: Record<AgentPermission, boolean>;
   policies: Partial<Record<AgentAction, AgentActionPolicy>>;
   queuePaused: boolean;
+};
+
+export type ThoonixProviderKind = 'codex-bridge' | 'openai' | 'openai-compatible';
+
+export type ThoonixProviderEndpoint = 'chat-completions' | 'responses';
+
+export type ThoonixProviderConnectionStatus = 'active' | 'disabled' | 'error' | 'pending_bridge';
+
+export type ThoonixProviderConnection = {
+  authType: 'api_key' | 'codex_oauth_bridge';
+  baseUrl?: string;
+  chatModel: string;
+  createdAt: string;
+  endpoint: ThoonixProviderEndpoint;
+  id: string;
+  isDefault: boolean;
+  label: string;
+  lastCheckedAt?: string;
+  maskedCredential?: string;
+  model: string;
+  provider: ThoonixProviderKind;
+  status: ThoonixProviderConnectionStatus;
+  updatedAt: string;
 };
 
 export type StrategyCondition = {
@@ -656,7 +677,12 @@ export type ApiKeyRecord = {
   status: 'active' | 'disabled' | 'testing';
 };
 
+export type TradingDay = 'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun';
+
 export type RiskRules = {
+  allowedTradingDays: TradingDay[];
+  allowedTradingSessionEnd: string;
+  allowedTradingSessionStart: string;
   blockOrdersWithoutStop: boolean;
   botLossStreakPause: number;
   cancelOnDisconnect: boolean;
@@ -670,8 +696,15 @@ export type RiskRules = {
   weeklyLossLimit: number;
 };
 
+export type MarketTradeLimit = {
+  exposure: number;
+  maxSize: number;
+  symbol: string;
+};
+
 export type TradeLimits = {
   cooldownAfterBotErrorMinutes: number;
+  marketLimits: MarketTradeLimit[];
   cooldownAfterLossMinutes: number;
   maxApiErrorsBeforePause: number;
   maxBotSlotsActive: number;
@@ -781,7 +814,7 @@ export type UserPreferences = {
   defaultLeverage: number;
   defaultRiskPerTrade: number;
   defaultSlippage: number;
-  density: 'compact' | 'comfortable';
+  density: 'compact' | 'comfortable' | 'spacious';
   fontSize?: unknown;
   keyboardShortcuts?: KeyboardShortcutSettings;
   multiTpBehavior: 'single-target' | 'partial-take-profits' | 'equal-ladder';

@@ -1,0 +1,1 @@
+"""Autonomous quantitative research platform."""

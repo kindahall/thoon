@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import process from 'node:process';
 
@@ -24,9 +24,19 @@ try {
     process.exit(1);
   }
 
-  mkdirSync(dirname(dataFile), { recursive: true });
+  mkdirSync(dirname(dataFile), { mode: 0o700, recursive: true });
+  chmodBestEffort(dirname(dataFile), 0o700);
   writeFileSync(dataFile, `${JSON.stringify(payload, null, 2)}\n`);
+  chmodBestEffort(dataFile, 0o600);
   console.log(`Pulled Postgres thoon_app_state/default to ${dataFile}.`);
 } finally {
   await pool.end();
+}
+
+function chmodBestEffort(path, mode) {
+  try {
+    chmodSync(path, mode);
+  } catch {
+    // Some filesystems do not support chmod; the pull should still complete.
+  }
 }
