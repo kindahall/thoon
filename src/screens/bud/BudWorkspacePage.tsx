@@ -17,6 +17,7 @@ import {
   Play,
   RefreshCcw,
   Save,
+  Send,
   ShieldAlert,
   SlidersHorizontal,
   Sparkles,
@@ -78,6 +79,8 @@ type StrategyParamField = {
   min: number;
   step?: number;
 };
+
+type BotWorkspaceTab = 'decisions' | 'orchestrator' | 'payload' | 'workbench';
 
 type StrategyWorkspaceTab = 'activity' | 'payload' | 'readiness' | 'workbench';
 
@@ -245,6 +248,10 @@ export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMar
   const [deterministicAgentData, setDeterministicAgentData] = useState<JsonRecord | null>(null);
   const [hedgeFundData, setHedgeFundData] = useState<JsonRecord | null>(null);
   const [paperBotTestData, setPaperBotTestData] = useState<JsonRecord | null>(null);
+  const [botAuditData, setBotAuditData] = useState<JsonRecord | null>(null);
+  const [botBacktestData, setBotBacktestData] = useState<JsonRecord | null>(null);
+  const [botStrategyData, setBotStrategyData] = useState<JsonRecord | null>(null);
+  const [orchestratorChatData, setOrchestratorChatData] = useState<JsonRecord | null>(null);
   const [runtimeState, setRuntimeState] = useState<BudRuntimeState>(() => readBudRuntimeState(runtimeKey));
   const { error, pendingAction, pendingStartedAt, resultData } = runtimeState;
 
@@ -290,6 +297,11 @@ export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMar
 
     if (page === 'bots' || page === 'history') {
       void loadPaperBotTests();
+    }
+
+    if (page === 'bots') {
+      void loadBotDecisionContext();
+      void loadOrchestratorChat();
     }
   }, [page, symbol]);
 
@@ -397,6 +409,44 @@ export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMar
     }
   }
 
+  async function loadBotDecisionContext() {
+    try {
+      const [research, auditLogs] = await Promise.all([
+        apiJson<JsonRecord>('/api/bud/research?limit=25'),
+        apiJson<unknown[]>('/api/audit-logs'),
+      ]);
+      const researchPayload = asRecord(unwrapBudPayload(research));
+      setBotStrategyData({ strategies: asArray(readPath(researchPayload, ['strategies'])) });
+      setBotBacktestData({ backtests: asArray(readPath(researchPayload, ['evaluations'])) });
+      setBotAuditData({ auditLogs });
+    } catch (contextError) {
+      setError(contextError instanceof Error ? contextError.message : 'Bot decision context unavailable');
+    }
+  }
+
+  async function loadOrchestratorChat() {
+    try {
+      setOrchestratorChatData(asRecord(unwrapBudPayload(await apiJson<JsonRecord>('/api/bud/orchestrator-chat'))));
+    } catch (chatError) {
+      setError(chatError instanceof Error ? chatError.message : 'Orchestrator chat unavailable');
+    }
+  }
+
+  async function askBotOrchestrator(message: string, context: JsonRecord) {
+    const payload = await runAction('bot-orchestrator-chat', () =>
+      postJson<JsonRecord>('/api/bud/orchestrator-chat', {
+        context: compactBotContext(context),
+        message,
+      }),
+    );
+
+    if (payload) {
+      setOrchestratorChatData(asRecord(payload));
+      window.setTimeout(() => void loadOrchestratorChat(), 1800);
+      window.setTimeout(() => void loadOrchestratorChat(), 6000);
+    }
+  }
+
   async function startTwoHourPaperBot() {
     const payload = await runAction('paper-bot-2h', () =>
       postJson<JsonRecord>('/api/bud/paper-bot-test', {
@@ -409,6 +459,7 @@ export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMar
     if (payload) {
       setPaperBotTestData(asRecord(payload));
       void loadPaperBotTests();
+      void loadBotDecisionContext();
       void refreshTradingState();
       void refreshHedgeFundReadiness();
     }
@@ -597,6 +648,8 @@ export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMar
             if (page === 'bots') {
               void loadPaperBotTests();
               void refreshHedgeFundReadiness();
+              void loadBotDecisionContext();
+              void loadOrchestratorChat();
             }
             if (page === 'alerts') {
               void refreshKillSwitch();
@@ -650,11 +703,16 @@ export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMar
 
       {page === 'bots' ? (
         <BotsView
+          botAuditData={botAuditData}
+          botBacktestData={botBacktestData}
+          botStrategyData={botStrategyData}
           executionData={executionData}
           onCheck={() => void checkReadiness()}
+          onAskOrchestrator={(message, context) => void askBotOrchestrator(message, context)}
           onRefresh={() => void refreshTradingState()}
           onStartPaperBot={() => void startTwoHourPaperBot()}
           hedgeFundData={hedgeFundData}
+          orchestratorChatData={orchestratorChatData}
           paperBotTestData={paperBotTestData}
           pendingAction={pendingAction}
           readinessData={readinessData}
@@ -1406,8 +1464,13 @@ function StrategyMiniMetric({ label, tone = 'neutral', value }: { label: string;
 }
 
 function BotsView({
+  botAuditData,
+  botBacktestData,
+  botStrategyData,
   executionData,
   hedgeFundData,
+  orchestratorChatData,
+  onAskOrchestrator,
   onCheck,
   onRefresh,
   onStartPaperBot,
@@ -1416,8 +1479,13 @@ function BotsView({
   readinessData,
   statusData,
 }: {
+  botAuditData: JsonRecord | null;
+  botBacktestData: JsonRecord | null;
+  botStrategyData: JsonRecord | null;
   executionData: JsonRecord | null;
   hedgeFundData: JsonRecord | null;
+  orchestratorChatData: JsonRecord | null;
+  onAskOrchestrator: (message: string, context: JsonRecord) => void;
   onCheck: () => void;
   onRefresh: () => void;
   onStartPaperBot: () => void;
@@ -1429,45 +1497,438 @@ function BotsView({
   const blockers = asArray(readPath(readinessData, ['blockers']));
   const liveReady = readPath(readinessData, ['live_ready']) === true;
   const paperSessions = asArray(readPath(paperBotTestData, ['sessions']));
+  const paperBots = asArray(readPath(paperBotTestData, ['bots']));
+  const botRecords = mergeBotRecords(paperBots, paperSessions);
   const runningPaperSessions = paperSessions.filter((session) => readPath(session, ['status']) === 'running');
+  const strategies = asArray(readPath(botStrategyData, ['strategies']));
+  const backtests = asArray(readPath(botBacktestData, ['backtests']));
+  const auditLogs = asArray(readPath(botAuditData, ['auditLogs']));
+  const chatMessages = asArray(readPath(orchestratorChatData, ['messages']));
+  const firstBotId = botRecordKey(botRecords[0]);
+  const [activeTab, setActiveTab] = useState<BotWorkspaceTab>('workbench');
+  const [selectedBotId, setSelectedBotId] = useState(firstBotId);
+  const selectedBot = asRecord(botRecords.find((bot) => botRecordKey(bot) === selectedBotId) ?? botRecords[0]);
+  const selectedSession = findSessionForBot(selectedBot, paperSessions);
+  const selectedStrategy = findStrategyForBot(selectedBot, strategies);
+  const selectedBacktest = findBacktestForBot(selectedBot, selectedSession, backtests);
+  const selectedAuditLogs = auditLogs.filter((log) => botAuditMatches(asRecord(log), selectedBot, selectedSession)).slice(0, listPageSize);
+  const decisionCount = selectedAuditLogs.length + asArray(readPath(selectedSession, ['notes'])).length;
+  const tabs: Array<{ badge: string; id: BotWorkspaceTab; label: string }> = [
+    { badge: String(botRecords.length), id: 'workbench', label: 'Bots' },
+    { badge: String(decisionCount), id: 'decisions', label: 'Decisions' },
+    { badge: chatMessages.length ? String(chatMessages.length) : 'Chat', id: 'orchestrator', label: 'Orchestrator' },
+    { badge: paperBotTestData || readinessData ? 'JSON' : 'Empty', id: 'payload', label: 'Payload' },
+  ];
+
+  useEffect(() => {
+    if (!selectedBotId && firstBotId) {
+      setSelectedBotId(firstBotId);
+    }
+  }, [firstBotId, selectedBotId]);
+
+  useEffect(() => {
+    if (selectedBotId && botRecords.length && !botRecords.some((bot) => botRecordKey(bot) === selectedBotId)) {
+      setSelectedBotId(firstBotId);
+    }
+  }, [botRecords, firstBotId, selectedBotId]);
+
+  return (
+    <div className="bud-strategy-shell">
+      <Card className="bud-action-panel bud-accent-orange bud-strategy-command">
+        <div className="bud-panel-head">
+          <h2>Bot Launch Gate</h2>
+          <Badge tone={liveReady ? 'positive' : 'warning'}>{liveReady ? 'Launch ready' : 'Launch locked'}</Badge>
+        </div>
+        <div className="bud-action-row">
+          <Button
+            icon={<ShieldAlert size={15} />}
+            isLoading={pendingAction === 'readiness'}
+            onClick={() => {
+              setActiveTab('decisions');
+              onCheck();
+            }}
+            variant="primary"
+          >
+            Check readiness
+          </Button>
+          <Button icon={<RefreshCcw size={15} />} isLoading={pendingAction === 'refresh-trading'} onClick={onRefresh}>
+            Refresh positions
+          </Button>
+          <Button
+            icon={<Play size={15} />}
+            isLoading={pendingAction === 'paper-bot-2h'}
+            onClick={() => {
+              setActiveTab('workbench');
+              onStartPaperBot();
+            }}
+          >
+            Start 2h paper bot
+          </Button>
+        </div>
+      </Card>
+
+      <div className="bud-metric-grid">
+        <BudMetric label="Live Ready" tone={liveReady ? 'green' : 'red'} value={liveReady ? 'Yes' : 'No'} />
+        <BudMetric label="Safety Score" tone="cyan" value={readinessData ? formatMaybePercent(readPath(readinessData, ['safety_score']), true) : 'Not checked'} />
+        <BudMetric label="Blockers" tone={blockers.length ? 'red' : 'green'} value={blockers.length || '0'} />
+        <BudMetric label="Bots" tone={botRecords.length ? 'green' : 'primary'} value={botRecords.length || '0'} />
+        <BudMetric label="Paper 2h" tone={runningPaperSessions.length ? 'green' : 'primary'} value={runningPaperSessions.length || paperSessions.length || '0'} />
+      </div>
+
+      <div className="bud-strategy-tabs" role="tablist" aria-label="Bot workspace sections">
+        {tabs.map((tab) => (
+          <button aria-selected={activeTab === tab.id} className={activeTab === tab.id ? 'is-active' : undefined} key={tab.id} onClick={() => setActiveTab(tab.id)} role="tab" type="button">
+            <span>{tab.label}</span>
+            <strong>{tab.badge}</strong>
+          </button>
+        ))}
+      </div>
+
+      <div className="bud-strategy-tab-panel" role="tabpanel">
+        {activeTab === 'workbench' ? (
+          <BotWorkbench
+            backtest={selectedBacktest}
+            bot={selectedBot}
+            bots={botRecords}
+            onSelect={setSelectedBotId}
+            selectedId={botRecordKey(selectedBot)}
+            session={selectedSession}
+            strategy={selectedStrategy}
+          />
+        ) : null}
+
+        {activeTab === 'decisions' ? (
+          <div className="bud-grid bud-grid--main-side">
+            <div className="bud-stack">
+              <BotDecisionPanel auditLogs={selectedAuditLogs} backtest={selectedBacktest} bot={selectedBot} session={selectedSession} strategy={selectedStrategy} />
+              <BlockerList blockers={blockers} />
+              <RecordTable empty="No running Bud bot positions returned by execution engine." records={asArray(readPath(executionData, ['positions']))} title="Execution Positions" />
+            </div>
+            <div className="bud-stack">
+              <SystemStatusCard statusData={statusData} />
+              <HedgeFundReadinessPanel data={hedgeFundData} />
+            </div>
+          </div>
+        ) : null}
+
+        {activeTab === 'orchestrator' ? (
+          <BotOrchestratorPanel
+            auditLogs={selectedAuditLogs}
+            backtest={selectedBacktest}
+            bot={selectedBot}
+            messages={chatMessages}
+            onAsk={(message, context) => onAskOrchestrator(message, context)}
+            pending={pendingAction === 'bot-orchestrator-chat'}
+            session={selectedSession}
+            strategy={selectedStrategy}
+          />
+        ) : null}
+
+        {activeTab === 'payload' ? (
+          <div className="bud-grid bud-grid--main-side">
+            <div className="bud-stack">
+              <RecordTable empty="No 2h paper bot test has been started." records={paperSessions} title="2h Paper Bot Tests" />
+              <JsonPanel data={paperBotTestData} title="Bot Payload" />
+            </div>
+            <div className="bud-stack">
+              <JsonPanel data={readinessData} title="Readiness Payload" />
+              <JsonPanel data={orchestratorChatData} title="Orchestrator Chat Payload" />
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function BotWorkbench({
+  backtest,
+  bot,
+  bots,
+  onSelect,
+  selectedId,
+  session,
+  strategy,
+}: {
+  backtest: JsonRecord;
+  bot: JsonRecord;
+  bots: unknown[];
+  onSelect: (botId: string) => void;
+  selectedId: string;
+  session: JsonRecord;
+  strategy: JsonRecord;
+}) {
+  const [botPage, setBotPage] = useState(1);
+  const botPageCount = Math.max(1, Math.ceil(bots.length / listPageSize));
+  const pageStart = (botPage - 1) * listPageSize;
+  const visibleBots = bots.slice(pageStart, pageStart + listPageSize);
+
+  useEffect(() => {
+    setBotPage((current) => Math.min(current, botPageCount));
+  }, [botPageCount]);
+
+  if (!bots.length) {
+    return (
+      <Card className="bud-card bud-bot-workbench">
+        <div className="bud-panel-head">
+          <h2>Bot Workbench</h2>
+          <Badge tone="warning">Empty</Badge>
+        </div>
+        <BudEmpty label="Start a 2h paper bot or create a bot draft to populate selectable bots." />
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="bud-card bud-bot-workbench">
+      <div className="bud-panel-head">
+        <h2>Bot Workbench</h2>
+        <Badge tone="positive">{bots.length} bots</Badge>
+      </div>
+
+      <div className="bud-bot-workbench__layout">
+        <div className="bud-bot-list" aria-label="Bud bots">
+          {visibleBots.map((item, index) => {
+            const record = asRecord(item);
+            const id = botRecordKey(record) || String(pageStart + index);
+            const isActive = id === selectedId;
+
+            return (
+              <button
+                aria-pressed={isActive}
+                className={isActive ? 'is-active' : undefined}
+                key={id}
+                onClick={() => {
+                  onSelect(id);
+                }}
+                type="button"
+              >
+                <span>
+                  <strong>{formatBotText(readPath(record, ['name']), 'Paper bot')}</strong>
+                  <em>
+                    {formatBotText(readPath(record, ['symbol']), 'Market')} · {formatBotText(readPath(record, ['mode']), 'paper')} · {formatBotText(readPath(record, ['exchange']), 'Bud')}
+                  </em>
+                </span>
+                <span className="bud-bot-list__metrics">
+                  <b>{formatBotText(readPath(record, ['status']), 'draft')}</b>
+                  <small>PnL {formatBotCurrency(readPath(record, ['pnl']))}</small>
+                  <small>WR {formatBotPercent(readPath(record, ['winRate']))}</small>
+                </span>
+              </button>
+            );
+          })}
+          <BudPagination label="Bot pages" onPageChange={setBotPage} page={botPage} pageCount={botPageCount} pageSize={listPageSize} total={bots.length} />
+        </div>
+
+        <div className="bud-bot-detail">
+          <div className="bud-bot-detail__head">
+            <div>
+              <span>{formatBotText(readPath(bot, ['id']), 'new-bot')}</span>
+              <strong>{formatBotText(readPath(bot, ['name']), 'Paper bot')}</strong>
+            </div>
+            <Badge tone={botStatusTone(readPath(bot, ['status']))}>{formatBotText(readPath(bot, ['status']), 'draft')}</Badge>
+          </div>
+
+          <div className="bud-strategy-mini-metrics bud-bot-mini-metrics">
+            <StrategyMiniMetric label="Bot score" value={formatBotInteger(readPath(session, ['botScore']))} />
+            <StrategyMiniMetric label="Pnl" tone={metricTone(readPath(bot, ['pnl']) ?? readPath(session, ['pnl']))} value={formatBotCurrency(readPath(bot, ['pnl']) ?? readPath(session, ['pnl']))} />
+            <StrategyMiniMetric label="Win rate" value={formatBotPercent(readPath(bot, ['winRate']) ?? botBacktestMetric(backtest, 'winRate'))} />
+            <StrategyMiniMetric label="Profit factor" tone={metricTone(botBacktestMetric(backtest, 'profitFactor'))} value={formatStrategyNumber(botBacktestMetric(backtest, 'profitFactor'), 'No backtest')} />
+            <StrategyMiniMetric label="Trades" value={formatBotInteger(botBacktestMetric(backtest, 'totalTrades') ?? readPath(session, ['tradesRecorded']))} />
+            <StrategyMiniMetric label="Drawdown" tone="negative" value={formatBotPercent(botBacktestMetric(backtest, 'drawdown'))} />
+          </div>
+
+          <div className="bud-bot-selection-grid">
+            <div>
+              <span>Strategy</span>
+              <strong>{formatBotText(readPath(strategy, ['name']) ?? readPath(bot, ['strategyId']), 'No strategy linked')}</strong>
+            </div>
+            <div>
+              <span>Selected by</span>
+              <strong>{botSelectorLabel(bot, session)}</strong>
+            </div>
+            <div>
+              <span>Why selected</span>
+              <strong>{botSelectionReason(bot, session, backtest)}</strong>
+            </div>
+            <div>
+              <span>Next decision</span>
+              <strong>{formatBotText(readPath(session, ['botDecision']) ?? readPath(session, ['status']) ?? readPath(bot, ['status']), 'Review required')}</strong>
+            </div>
+          </div>
+
+          <div className="bud-bot-note-list">
+            {botDecisionNotes(bot, session, backtest).map((note) => (
+              <span key={note}>
+                <CheckCircle2 size={14} />
+                {note}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function BotDecisionPanel({
+  auditLogs,
+  backtest,
+  bot,
+  session,
+  strategy,
+}: {
+  auditLogs: unknown[];
+  backtest: JsonRecord;
+  bot: JsonRecord;
+  session: JsonRecord;
+  strategy: JsonRecord;
+}) {
+  const blockers = asArray(readPath(session, ['blockers']));
+  const usagePlan = asArray(readPath(session, ['usagePlan']));
+
+  return (
+    <div className="bud-stack">
+      <Card className="bud-card bud-accent-green">
+        <div className="bud-panel-head">
+          <h2>Selection Rationale</h2>
+          <Badge tone={blockers.length ? 'warning' : 'positive'}>{blockers.length ? 'Needs review' : 'Traceable'}</Badge>
+        </div>
+        <BudKeyValues
+          record={{
+            Bot: readPath(bot, ['name']),
+            Strategy: readPath(strategy, ['name']) ?? readPath(bot, ['strategyId']),
+            ChosenBy: botSelectorLabel(bot, session),
+            Decision: readPath(session, ['botDecision']) ?? readPath(bot, ['status']),
+            Score: readPath(session, ['botScore']),
+            SourceReport: readPath(bot, ['sourceBacktestReportId']) ?? readPath(session, ['reportId']),
+            Period: readPath(backtest, ['period']) ?? readPath(bot, ['sourceBacktestPeriod']),
+            Evidence: botSelectionReason(bot, session, backtest),
+          }}
+        />
+        <div className="bud-bot-note-list">
+          {usagePlan.length ? (
+            usagePlan.slice(0, listPageSize).map((note, index) => (
+              <span key={`${String(note)}-${index}`}>
+                <CheckCircle2 size={14} />
+                {String(note)}
+              </span>
+            ))
+          ) : (
+            <span>
+              <AlertTriangle size={14} />
+              No usage plan has been attached yet.
+            </span>
+          )}
+        </div>
+      </Card>
+
+      {blockers.length ? <BlockerList blockers={blockers} /> : null}
+      <RecordTable compact empty="No audit decisions found for this bot yet." records={auditLogs} title="Audit Decisions" />
+    </div>
+  );
+}
+
+function BotOrchestratorPanel({
+  auditLogs,
+  backtest,
+  bot,
+  messages,
+  onAsk,
+  pending,
+  session,
+  strategy,
+}: {
+  auditLogs: unknown[];
+  backtest: JsonRecord;
+  bot: JsonRecord;
+  messages: unknown[];
+  onAsk: (message: string, context: JsonRecord) => void;
+  pending: boolean;
+  session: JsonRecord;
+  strategy: JsonRecord;
+}) {
+  const [message, setMessage] = useState('');
+  const visibleMessages = messages.slice(0, 8).reverse();
+  const context = {
+    audit: auditLogs.slice(0, 5),
+    backtest,
+    bot,
+    session,
+    strategy,
+  };
+
+  function submitQuestion() {
+    onAsk(message.trim() || defaultBotQuestion(bot, session, strategy), context);
+    setMessage('');
+  }
 
   return (
     <div className="bud-grid bud-grid--main-side">
-      <div className="bud-stack">
-        <Card className="bud-action-panel bud-accent-orange">
-          <div className="bud-panel-head">
-            <h2>Bot Launch Gate</h2>
-            <Badge tone={liveReady ? 'positive' : 'warning'}>{liveReady ? 'Launch ready' : 'Launch locked'}</Badge>
-          </div>
-          <div className="bud-action-row">
-            <Button icon={<ShieldAlert size={15} />} isLoading={pendingAction === 'readiness'} onClick={onCheck} variant="primary">
-              Check readiness
-            </Button>
-            <Button icon={<RefreshCcw size={15} />} isLoading={pendingAction === 'refresh-trading'} onClick={onRefresh}>
-              Refresh positions
-            </Button>
-            <Button icon={<Play size={15} />} isLoading={pendingAction === 'paper-bot-2h'} onClick={onStartPaperBot}>
-              Start 2h paper bot
-            </Button>
-          </div>
-        </Card>
-
-        <div className="bud-metric-grid">
-          <BudMetric label="Live Ready" tone={liveReady ? 'green' : 'red'} value={liveReady ? 'Yes' : 'No'} />
-          <BudMetric label="Safety Score" tone="cyan" value={formatMaybePercent(readPath(readinessData, ['safety_score']), true)} />
-          <BudMetric label="Blockers" tone={blockers.length ? 'red' : 'green'} value={blockers.length || '0'} />
-          <BudMetric label="Paper 2h" tone={runningPaperSessions.length ? 'green' : 'primary'} value={runningPaperSessions.length || paperSessions.length || '0'} />
+      <Card className="bud-card bud-orchestrator-card bud-accent-violet">
+        <div className="bud-panel-head">
+          <h2>Orchestrator Chat</h2>
+          <Badge tone={pending ? 'warning' : 'primary'}>{pending ? 'Thinking' : 'Bud agent'}</Badge>
         </div>
+        <div className="bud-orchestrator-messages" aria-label="Orchestrator messages">
+          {visibleMessages.length ? (
+            visibleMessages.map((item, index) => {
+              const record = asRecord(item);
+              const role = formatBotText(readPath(record, ['role']), 'assistant');
+              const steps = asArray(readPath(record, ['steps']));
 
-        <BlockerList blockers={blockers} />
-        <RecordTable empty="No 2h paper bot test has been started." records={paperSessions} title="2h Paper Bot Tests" />
-        <RecordTable empty="No running Bud bot positions returned by execution engine." records={asArray(readPath(executionData, ['positions']))} title="Execution Positions" />
-      </div>
+              return (
+                <div className={`bud-orchestrator-message is-${role}`} key={String(readPath(record, ['id']) ?? index)}>
+                  <span>
+                    {role} · {formatBotText(readPath(record, ['status']), 'completed')}
+                  </span>
+                  <p>{formatBotText(readPath(record, ['content']), 'No message yet.')}</p>
+                  {steps.length ? (
+                    <div>
+                      {steps.map((step, stepIndex) => (
+                        <small key={`${String(readPath(step, ['label']))}-${stepIndex}`}>{formatBotText(readPath(step, ['label']))}: {formatBotText(readPath(step, ['status']))}</small>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })
+          ) : (
+            <BudEmpty label="No orchestrator discussion yet for the current workspace." />
+          )}
+        </div>
+        <div className="bud-orchestrator-input">
+          <textarea
+            aria-label="Ask orchestrator"
+            onChange={(event) => setMessage(event.target.value)}
+            placeholder="Ask why this bot or strategy was selected..."
+            rows={3}
+            value={message}
+          />
+          <Button disabled={!botRecordKey(bot)} icon={<Send size={15} />} isLoading={pending} onClick={submitQuestion} variant="primary">
+            Ask
+          </Button>
+        </div>
+      </Card>
 
       <div className="bud-stack">
-        <SystemStatusCard statusData={statusData} />
-        <HedgeFundReadinessPanel data={hedgeFundData} />
-        <JsonPanel data={readinessData} title="Readiness Payload" />
+        <Card className="bud-card">
+          <div className="bud-panel-head">
+            <h2>Question Context</h2>
+            <Badge tone="primary">Selected bot</Badge>
+          </div>
+          <BudKeyValues
+            record={{
+              Bot: readPath(bot, ['name']),
+              Strategy: readPath(strategy, ['name']) ?? readPath(bot, ['strategyId']),
+              Market: readPath(bot, ['symbol']) ?? readPath(session, ['market']),
+              Timeframe: readPath(bot, ['sourceTimeframe']) ?? readPath(session, ['timeframe']),
+              Decision: readPath(session, ['botDecision']),
+              Blockers: asArray(readPath(session, ['blockers'])).join(', '),
+            }}
+          />
+        </Card>
+        <JsonPanel data={context} title="Selected Bot Context" />
       </div>
     </div>
   );
@@ -2151,6 +2612,281 @@ function metricTone(value: unknown): 'negative' | 'neutral' | 'positive' {
   }
 
   return numberValue < 0 ? 'negative' : 'positive';
+}
+
+function mergeBotRecords(paperBots: unknown[], sessions: unknown[]) {
+  const merged = new Map<string, JsonRecord>();
+
+  for (const bot of paperBots) {
+    const record = asRecord(bot);
+    const key = botRecordKey(record);
+
+    if (key) {
+      merged.set(key, { ...merged.get(key), ...record });
+    }
+  }
+
+  for (const session of sessions) {
+    const record = asRecord(session);
+    const hasBot = Array.from(merged.values()).some((bot) => botMatchesSession(bot, record));
+
+    if (!hasBot) {
+      const synthetic = syntheticBotFromSession(record);
+      merged.set(botRecordKey(synthetic), synthetic);
+    }
+  }
+
+  return Array.from(merged.values()).sort((left, right) => botSortTime(right) - botSortTime(left));
+}
+
+function syntheticBotFromSession(session: JsonRecord): JsonRecord {
+  const sessionId = String(readPath(session, ['id']) ?? `session-${Date.now()}`);
+  const strategyId = formatBotText(readPath(session, ['strategyId']), 'strategy');
+  const market = formatBotText(readPath(session, ['market']), 'Market');
+
+  return {
+    id: `session-${sessionId}`,
+    mode: 'paper',
+    name: `Paper 2h - ${strategyId}`,
+    pnl: readPath(session, ['pnl']),
+    sessionId,
+    sourceBacktestReportId: readPath(session, ['reportId']),
+    sourceTimeframe: readPath(session, ['timeframe']),
+    status: readPath(session, ['status']),
+    strategyId: readPath(session, ['strategyId']),
+    symbol: market,
+  };
+}
+
+function botRecordKey(record: unknown) {
+  return String(readPath(record, ['id']) ?? '');
+}
+
+function botSortTime(record: JsonRecord) {
+  const time = readPath(record, ['updatedAt']) ?? readPath(record, ['createdAt']);
+  const parsed = typeof time === 'string' ? new Date(time).getTime() : 0;
+
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function botMatchesSession(bot: JsonRecord, session: JsonRecord) {
+  const botId = botRecordKey(bot);
+  const sessionId = String(readPath(session, ['id']) ?? '');
+  const reportId = readPath(session, ['reportId']);
+  const strategyId = readPath(session, ['strategyId']);
+  const market = readPath(session, ['market']);
+
+  return (
+    readPath(bot, ['sessionId']) === sessionId ||
+    (Boolean(sessionId) && botId.includes(slugForMatch(sessionId))) ||
+    (Boolean(reportId) && readPath(bot, ['sourceBacktestReportId']) === reportId) ||
+    (Boolean(strategyId) && readPath(bot, ['strategyId']) === strategyId && (!market || readPath(bot, ['symbol']) === market))
+  );
+}
+
+function findSessionForBot(bot: JsonRecord, sessions: unknown[]) {
+  return asRecord(sessions.find((session) => botMatchesSession(bot, asRecord(session))));
+}
+
+function findStrategyForBot(bot: JsonRecord, strategies: unknown[]) {
+  const strategyId = readPath(bot, ['strategyId']);
+
+  return asRecord(strategies.find((strategy) => readPath(strategy, ['id']) === strategyId || readPath(strategy, ['strategy_id']) === strategyId));
+}
+
+function findBacktestForBot(bot: JsonRecord, session: JsonRecord, backtests: unknown[]) {
+  const reportId = readPath(bot, ['sourceBacktestReportId']) ?? readPath(session, ['reportId']);
+  const strategyId = readPath(bot, ['strategyId']) ?? readPath(session, ['strategyId']);
+  const symbol = readPath(bot, ['symbol']) ?? readPath(session, ['market']);
+
+  return asRecord(
+    backtests.find((backtest) => readPath(backtest, ['id']) === reportId || readPath(backtest, ['report_id']) === reportId) ??
+      backtests.find((backtest) => (readPath(backtest, ['strategyId']) ?? readPath(backtest, ['strategy_id'])) === strategyId && (readPath(backtest, ['market']) ?? readPath(backtest, ['symbol'])) === symbol) ??
+      backtests.find((backtest) => (readPath(backtest, ['strategyId']) ?? readPath(backtest, ['strategy_id'])) === strategyId),
+  );
+}
+
+function botAuditMatches(log: JsonRecord, bot: JsonRecord, session: JsonRecord) {
+  const botId = botRecordKey(bot);
+  const sessionId = String(readPath(session, ['id']) ?? '');
+  const strategyId = readPath(bot, ['strategyId']) ?? readPath(session, ['strategyId']);
+  const detail = `${String(readPath(log, ['details']) ?? '')} ${String(readPath(log, ['action']) ?? '')}`;
+
+  return (
+    (Boolean(botId) && readPath(log, ['botId']) === botId) ||
+    (Boolean(sessionId) && detail.includes(sessionId)) ||
+    (Boolean(strategyId) && detail.includes(String(strategyId)))
+  );
+}
+
+function botSelectorLabel(bot: JsonRecord, session: JsonRecord) {
+  const notes = asArray(readPath(session, ['notes'])).map(String).join(' ');
+
+  if (notes.includes('paper-bot-runner')) {
+    return 'Deterministic paper-bot-runner';
+  }
+
+  if (readPath(bot, ['sourceBacktestReportId'])) {
+    return 'Bud bot launcher';
+  }
+
+  return 'Manual or imported bot';
+}
+
+function botSelectionReason(bot: JsonRecord, session: JsonRecord, backtest: JsonRecord) {
+  const score = readPath(session, ['botScore']);
+  const reportId = readPath(bot, ['sourceBacktestReportId']) ?? readPath(session, ['reportId']);
+  const profitFactor = botBacktestMetric(backtest, 'profitFactor');
+  const winRate = botBacktestMetric(backtest, 'winRate');
+  const drawdown = botBacktestMetric(backtest, 'drawdown');
+  const period = readPath(backtest, ['period']) ?? (readPath(backtest, ['rows']) ? `${formatBotInteger(readPath(backtest, ['rows']))} rows` : readPath(bot, ['sourceBacktestPeriod']));
+
+  if (reportId && Object.keys(backtest).length) {
+    return `Source ${formatBotText(reportId)} · ${formatBotText(period, 'period n/a')} · PF ${formatStrategyNumber(profitFactor, 'n/a')} · WR ${formatBotPercent(winRate, 'n/a')} · DD ${formatBotPercent(drawdown, 'n/a')}`;
+  }
+
+  if (score !== undefined) {
+    return `Paper runner score ${formatBotInteger(score)}/100; source report still needs review.`;
+  }
+
+  return 'No verified selection evidence attached yet.';
+}
+
+function botBacktestMetric(backtest: JsonRecord, key: 'drawdown' | 'profitFactor' | 'totalTrades' | 'winRate') {
+  switch (key) {
+    case 'drawdown':
+      return readPath(backtest, ['drawdown']) ?? strategyBestMetric(backtest, 'max_drawdown');
+    case 'profitFactor':
+      return readPath(backtest, ['profitFactor']) ?? strategyBestMetric(backtest, 'profit_factor');
+    case 'totalTrades':
+      return readPath(backtest, ['totalTrades']) ?? strategyBestMetric(backtest, 'total_trades');
+    case 'winRate':
+      return readPath(backtest, ['winRate']) ?? strategyBestMetric(backtest, 'win_rate');
+  }
+}
+
+function botDecisionNotes(bot: JsonRecord, session: JsonRecord, backtest: JsonRecord) {
+  const notes = asArray(readPath(session, ['notes'])).map(String);
+  const blockers = asArray(readPath(session, ['blockers'])).map((blocker) => `Blocker: ${String(blocker)}`);
+  const reportId = readPath(bot, ['sourceBacktestReportId']) ?? readPath(session, ['reportId']);
+  const checksum = readPath(bot, ['sourceCandleChecksum']) ?? readPath(session, ['candleChecksum']) ?? readPath(backtest, ['dataWindow', 'candleChecksum']);
+  const generated = [
+    reportId ? `Source report: ${formatBotText(reportId)}.` : '',
+    checksum ? `Candle checksum present: ${formatBotText(checksum)}.` : 'Candle checksum missing or not loaded.',
+    readPath(backtest, ['marketDataSource']) ? `Data source: ${formatBotText(readPath(backtest, ['marketDataSource']))}.` : '',
+  ].filter(Boolean);
+
+  return [...generated, ...notes, ...blockers].slice(0, 8);
+}
+
+function defaultBotQuestion(bot: JsonRecord, session: JsonRecord, strategy: JsonRecord) {
+  return [
+    `Explique pourquoi le bot "${formatBotText(readPath(bot, ['name']), 'bot selectionne')}" a ete selectionne.`,
+    `Strategie: ${formatBotText(readPath(strategy, ['name']) ?? readPath(bot, ['strategyId']) ?? readPath(session, ['strategyId']), 'non liee')}.`,
+    'Dis qui a choisi quoi, quelles decisions ont ete prises, quels bloqueurs restent, et quelles questions tu me poses avant de continuer.',
+  ].join(' ');
+}
+
+function compactBotContext(context: JsonRecord) {
+  const bot = asRecord(readPath(context, ['bot']));
+  const session = asRecord(readPath(context, ['session']));
+  const strategy = asRecord(readPath(context, ['strategy']));
+  const backtest = asRecord(readPath(context, ['backtest']));
+
+  return {
+    audit: asArray(readPath(context, ['audit'])).slice(0, 5),
+    backtest: {
+      drawdown: botBacktestMetric(backtest, 'drawdown'),
+      id: readPath(backtest, ['id']),
+      market: readPath(backtest, ['market']) ?? readPath(backtest, ['symbol']),
+      netProfit: readPath(backtest, ['netProfit']),
+      period: readPath(backtest, ['period']),
+      profitFactor: botBacktestMetric(backtest, 'profitFactor'),
+      totalTrades: botBacktestMetric(backtest, 'totalTrades'),
+      winRate: botBacktestMetric(backtest, 'winRate'),
+    },
+    bot: {
+      exchange: readPath(bot, ['exchange']),
+      id: readPath(bot, ['id']),
+      mode: readPath(bot, ['mode']),
+      name: readPath(bot, ['name']),
+      sourceBacktestReportId: readPath(bot, ['sourceBacktestReportId']),
+      status: readPath(bot, ['status']),
+      strategyId: readPath(bot, ['strategyId']),
+      symbol: readPath(bot, ['symbol']),
+    },
+    session: {
+      blockers: readPath(session, ['blockers']),
+      botDecision: readPath(session, ['botDecision']),
+      botScore: readPath(session, ['botScore']),
+      id: readPath(session, ['id']),
+      notes: readPath(session, ['notes']),
+      status: readPath(session, ['status']),
+      usagePlan: readPath(session, ['usagePlan']),
+    },
+    strategy: {
+      id: readPath(strategy, ['id']) ?? readPath(strategy, ['strategy_id']),
+      market: readPath(strategy, ['market']),
+      name: readPath(strategy, ['name']),
+      status: readPath(strategy, ['status']),
+      timeframe: readPath(strategy, ['timeframe']),
+      type: readPath(strategy, ['type']),
+    },
+  };
+}
+
+function botStatusTone(value: unknown): 'negative' | 'neutral' | 'positive' | 'warning' {
+  switch (value) {
+    case 'running':
+    case 'completed':
+      return 'positive';
+    case 'blocked':
+    case 'stopped':
+      return 'negative';
+    case 'paused':
+    case 'prepared':
+      return 'warning';
+    default:
+      return 'neutral';
+  }
+}
+
+function formatBotText(value: unknown, fallback = 'No data') {
+  const formatted = formatStrategyText(value, fallback);
+
+  return formatted === 'NON DEFINI' ? fallback : formatted;
+}
+
+function formatBotCurrency(value: unknown, fallback = 'No pnl') {
+  const numberValue = Number(value);
+
+  return Number.isFinite(numberValue) ? formatUsd(numberValue) : fallback;
+}
+
+function formatBotInteger(value: unknown, fallback = 'No data') {
+  const numberValue = Number(value);
+
+  return Number.isFinite(numberValue) ? Math.round(numberValue).toLocaleString('en-US') : fallback;
+}
+
+function formatBotPercent(value: unknown, fallback = 'No data') {
+  const numberValue = Number(value);
+
+  if (!Number.isFinite(numberValue)) {
+    return fallback;
+  }
+
+  const percentValue = Math.abs(numberValue) <= 1 ? numberValue * 100 : numberValue;
+
+  return `${percentValue.toFixed(2)}%`;
+}
+
+function slugForMatch(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 90);
 }
 
 function unwrapBudPayload<T>(value: T | BudEnvelope<T>): T {

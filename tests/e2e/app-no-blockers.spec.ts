@@ -106,8 +106,15 @@ test('Bud workspace safe actions finish and render structured results', async ({
   await clickAndExpect(page, 'Backtest current', 'walk_forward', 120_000);
 
   await gotoAuthenticated(page, '/bots');
+  await expect(page.getByRole('tab', { name: /Bots/ })).toBeVisible();
+  await expect(page.getByRole('tab', { name: /Decisions/ })).toBeVisible();
+  await expect(page.getByRole('tab', { name: /Orchestrator/ })).toBeVisible();
+  await expect(page.locator('body')).toContainText('Bot Workbench');
   await clickAndExpect(page, 'Check readiness', 'live_trading_disabled', 60_000);
   await clickAndExpect(page, 'Refresh positions', 'Execution Positions', 45_000);
+  await page.getByRole('tab', { name: /Orchestrator/ }).click();
+  await expect(page.locator('body')).toContainText('Orchestrator Chat');
+  await expect(page.getByLabel('Ask orchestrator')).toBeVisible();
 
   await gotoAuthenticated(page, '/alerts');
   await clickAndExpect(page, 'Run checks', 'live_trading_disabled', 60_000);

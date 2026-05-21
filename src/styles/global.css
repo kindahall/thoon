@@ -22270,6 +22270,256 @@ button {
   color: var(--risk);
 }
 
+.bud-bot-workbench {
+  --bud-accent: #ffb86b;
+}
+
+.bud-bot-workbench__layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.36fr) minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+}
+
+.bud-bot-list {
+  display: grid;
+  align-content: start;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-raised) 45%, transparent);
+}
+
+.bud-bot-list > button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 64px;
+  padding: 10px 12px;
+  color: var(--text-soft);
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+}
+
+.bud-bot-list > button:hover,
+.bud-bot-list > button.is-active {
+  color: var(--text);
+  background: color-mix(in srgb, #ffb86b 11%, transparent);
+}
+
+.bud-bot-list > button.is-active {
+  box-shadow: inset 3px 0 0 #ffb86b;
+}
+
+.bud-bot-list > button:last-of-type {
+  border-bottom: 0;
+}
+
+.bud-bot-list > button > span:first-child,
+.bud-bot-detail__head > div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.bud-bot-list strong,
+.bud-bot-detail__head strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bud-bot-list em,
+.bud-bot-detail__head span {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.bud-bot-list__metrics {
+  display: grid;
+  gap: 3px;
+  justify-items: end;
+  min-width: 96px;
+}
+
+.bud-bot-list__metrics b {
+  color: #ffb86b;
+  font-size: 12px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.bud-bot-list__metrics small {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.bud-bot-detail,
+.bud-orchestrator-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.bud-bot-detail__head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.bud-bot-mini-metrics {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.bud-bot-selection-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.bud-bot-selection-grid div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  min-height: 66px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--background) 38%, transparent);
+}
+
+.bud-bot-selection-grid span {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.bud-bot-selection-grid strong {
+  overflow: hidden;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+}
+
+.bud-bot-note-list {
+  display: grid;
+  gap: 7px;
+}
+
+.bud-bot-note-list span {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 34px;
+  padding: 7px 10px;
+  color: var(--text-soft);
+  border: 1px solid color-mix(in srgb, #62e6a8 22%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, #62e6a8 7%, var(--surface));
+  font-weight: 800;
+}
+
+.bud-bot-note-list svg {
+  flex: 0 0 auto;
+  color: #62e6a8;
+}
+
+.bud-orchestrator-messages {
+  display: grid;
+  gap: 8px;
+  min-height: 260px;
+  max-height: 470px;
+  overflow: auto;
+  padding: 2px;
+}
+
+.bud-orchestrator-message {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-raised) 50%, transparent);
+}
+
+.bud-orchestrator-message.is-user {
+  border-color: color-mix(in srgb, #26c8ff 28%, var(--border));
+  background: color-mix(in srgb, #26c8ff 8%, transparent);
+}
+
+.bud-orchestrator-message span,
+.bud-orchestrator-message small {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.bud-orchestrator-message p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 13px;
+  font-weight: 760;
+  line-height: 1.55;
+}
+
+.bud-orchestrator-message div {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.bud-orchestrator-message small {
+  min-height: 24px;
+  padding: 4px 7px;
+  border: 1px solid color-mix(in srgb, #b89cff 22%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, #b89cff 8%, transparent);
+}
+
+.bud-orchestrator-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.bud-orchestrator-input textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 78px;
+  padding: 10px;
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, #b89cff 20%, var(--border));
+  border-radius: var(--radius-sm);
+  outline: 0;
+  background: color-mix(in srgb, var(--surface-raised) 62%, transparent);
+  font-weight: 850;
+  resize: vertical;
+}
+
 .bud-json-card pre {
   max-height: 460px;
   margin: 0;
@@ -22369,7 +22619,10 @@ button {
   .bud-strategy-param-grid,
   .bud-strategy-mini-metrics,
   .bud-strategy-mini-metrics--wide,
-  .bud-strategy-details-grid {
+  .bud-strategy-details-grid,
+  .bud-bot-workbench__layout,
+  .bud-bot-mini-metrics,
+  .bud-bot-selection-grid {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -22398,11 +22651,16 @@ button {
   .bud-strategy-param-grid,
   .bud-strategy-mini-metrics,
   .bud-strategy-mini-metrics--wide,
-  .bud-strategy-details-grid {
+  .bud-strategy-details-grid,
+  .bud-bot-workbench__layout,
+  .bud-bot-mini-metrics,
+  .bud-bot-selection-grid,
+  .bud-orchestrator-input {
     grid-template-columns: 1fr;
   }
 
-  .bud-strategy-editor__head {
+  .bud-strategy-editor__head,
+  .bud-bot-detail__head {
     align-items: stretch;
     flex-direction: column;
   }

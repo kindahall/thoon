@@ -254,6 +254,11 @@ test('Source wiring points rebuilt pages to Bud and avoids client-side exchange 
   assertIncludes(budWorkspace, 'Review note', 'Strategies page lets the user attach a manual evaluation note');
   assertIncludes(budWorkspace, '/api/bud/paper', 'Orders page uses Bud paper route');
   assertIncludes(budWorkspace, '/api/bud/paper-bot-test', 'Bots page can start a 2h paper bot test');
+  assertIncludes(budWorkspace, 'mergeBotRecords', 'Bots page builds selectable bot records from Bud paper bot sessions');
+  assertIncludes(budWorkspace, '/api/bud/orchestrator-chat', 'Bots page can discuss selections with the Bud orchestrator agent');
+  assertIncludes(budWorkspace, 'BotWorkbench', 'Bots page exposes clickable bot detail records');
+  assertIncludes(budWorkspace, 'Selection Rationale', 'Bots page explains why a strategy or bot was selected');
+  assertIncludes(budWorkspace, 'Orchestrator Chat', 'Bots page renders an orchestrator chat surface');
   assertIncludes(budWorkspace, '/api/bud/live-readiness', 'Bots and alerts use Bud readiness route');
   assertIncludes(budWorkspace, '/api/bud/hedge-fund-readiness', 'Strategies and bots use hedge fund readiness route');
   assertIncludes(budWorkspace, '/api/strategy-agents/deterministic', 'Strategies page uses deterministic non-LLM agents');
