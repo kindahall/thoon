@@ -628,7 +628,7 @@ export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMar
         />
       ) : null}
 
-      {page === 'backtest' ? <BacktestView onRun={() => void runBacktest()} pendingAction={pendingAction} result={activeResult} /> : null}
+      {page === 'backtest' ? <BacktestView interval={interval} limit={limit} onRun={() => void runBacktest()} pendingAction={pendingAction} pendingStartedAt={pendingStartedAt} result={activeResult} symbol={symbol} /> : null}
 
       {page === 'strategies' ? (
         <StrategiesView
@@ -831,10 +831,30 @@ function AgentsView({
   );
 }
 
-function BacktestView({ onRun, pendingAction, result }: { onRun: () => void; pendingAction: string; result: JsonRecord | null }) {
+function BacktestView({
+  interval,
+  limit,
+  onRun,
+  pendingAction,
+  pendingStartedAt,
+  result,
+  symbol,
+}: {
+  interval: string;
+  limit: number;
+  onRun: () => void;
+  pendingAction: string;
+  pendingStartedAt?: string;
+  result: JsonRecord | null;
+  symbol: string;
+}) {
   const metrics = asRecord(readPath(result, ['metrics']));
   const quality = asRecord(readPath(result, ['data_quality']));
   const walkForward = asRecord(readPath(result, ['walk_forward']));
+  const isRunning = pendingAction === 'backtest';
+  const hasResult = Boolean(result);
+  const emptyMetric = isRunning ? 'Running' : hasResult ? 'No data' : 'Ready';
+  const metricValue = (value: unknown, formatter: (value: unknown) => string) => (hasResult && value !== undefined && value !== null && value !== '' ? formatter(value) : emptyMetric);
 
   return (
     <div className="bud-grid bud-grid--main-side">
@@ -842,7 +862,7 @@ function BacktestView({ onRun, pendingAction, result }: { onRun: () => void; pen
         <Card className="bud-action-panel bud-accent-green">
           <div className="bud-panel-head">
             <h2>Walk-forward Backtest</h2>
-            <Badge tone="positive">Binance historical candles</Badge>
+            <Badge tone={isRunning ? 'warning' : hasResult ? 'positive' : 'neutral'}>{isRunning ? 'Running on Bud' : hasResult ? 'Result loaded' : 'Ready'}</Badge>
           </div>
           <Button icon={<Play size={15} />} isLoading={pendingAction === 'backtest'} onClick={onRun} variant="primary">
             Run backtest
@@ -850,20 +870,39 @@ function BacktestView({ onRun, pendingAction, result }: { onRun: () => void; pen
         </Card>
 
         <div className="bud-metric-grid">
-          <BudMetric label="Sharpe" tone="cyan" value={formatNumber(readPath(metrics, ['sharpe_ratio']))} />
-          <BudMetric label="Return" tone={Number(readPath(metrics, ['total_return']) ?? 0) >= 0 ? 'green' : 'red'} value={formatMaybePercent(readPath(metrics, ['total_return']), true)} />
-          <BudMetric label="Drawdown" tone="red" value={formatMaybePercent(readPath(metrics, ['max_drawdown']), true)} />
-          <BudMetric label="Win rate" tone="green" value={formatMaybePercent(readPath(metrics, ['win_rate']), true)} />
-          <BudMetric label="Trades" tone="primary" value={formatValue(readPath(metrics, ['total_trades']))} />
-          <BudMetric label="Quality" tone="cyan" value={formatMaybePercent(readPath(quality, ['quality_score']), true)} />
+          <BudMetric label="Sharpe" tone="cyan" value={metricValue(readPath(metrics, ['sharpe_ratio']), formatNumber)} />
+          <BudMetric label="Return" tone={Number(readPath(metrics, ['total_return']) ?? 0) >= 0 ? 'green' : 'red'} value={metricValue(readPath(metrics, ['total_return']), (value) => formatMaybePercent(value, true))} />
+          <BudMetric label="Drawdown" tone="red" value={metricValue(readPath(metrics, ['max_drawdown']), (value) => formatMaybePercent(value, true))} />
+          <BudMetric label="Win rate" tone="green" value={metricValue(readPath(metrics, ['win_rate']), (value) => formatMaybePercent(value, true))} />
+          <BudMetric label="Trades" tone="primary" value={metricValue(readPath(metrics, ['total_trades']), formatValue)} />
+          <BudMetric label="Quality" tone="cyan" value={metricValue(readPath(quality, ['quality_score']), (value) => formatMaybePercent(value, true))} />
         </div>
 
         <Card className="bud-card">
           <div className="bud-panel-head">
             <h2>Validation</h2>
-            <Badge tone={readPath(walkForward, ['accepted']) ? 'positive' : result ? 'warning' : 'neutral'}>{result ? (readPath(walkForward, ['accepted']) ? 'Accepted' : 'Rejected') : 'Not run'}</Badge>
+            <Badge tone={isRunning ? 'warning' : readPath(walkForward, ['accepted']) ? 'positive' : result ? 'warning' : 'neutral'}>{isRunning ? 'Running' : result ? (readPath(walkForward, ['accepted']) ? 'Accepted' : 'Rejected') : 'Not run'}</Badge>
           </div>
-          <BudKeyValues record={flattenBacktest(result)} />
+          <BudKeyValues
+            record={
+              isRunning
+                ? {
+                    Symbol: symbol,
+                    Interval: interval,
+                    Rows: Math.max(limit, 240),
+                    Started: pendingStartedAt,
+                    Status: 'Bud is running the walk-forward backtest',
+                  }
+                : hasResult
+                  ? flattenBacktest(result)
+                  : {
+                      Symbol: symbol,
+                      Interval: interval,
+                      Rows: Math.max(limit, 240),
+                      Status: 'Ready to run',
+                    }
+            }
+          />
         </Card>
       </div>
 

@@ -239,6 +239,8 @@ test('Source wiring points rebuilt pages to Bud and avoids client-side exchange 
   assertIncludes(budWorkspace, 'subscribeBudRuntimeState', 'Bud action runtime state persists across page navigation');
   assertIncludes(budWorkspace, 'PreviousResult', 'Agents page shows a defined running state instead of empty metrics while Bud works');
   assertIncludes(budWorkspace, '/api/bud/backtest', 'Backtest page uses Bud backtest route');
+  assertIncludes(budWorkspace, 'Ready to run', 'Backtest page shows a defined idle state instead of undefined metrics');
+  assertIncludes(budWorkspace, 'Bud is running the walk-forward backtest', 'Backtest page shows a defined running state while Bud works');
   assertIncludes(budWorkspace, '/api/bud/research', 'Strategies page uses Bud research route');
   assertIncludes(budWorkspace, '/api/bud/research/strategy', 'Strategies page can save edited Bud strategy versions');
   assertIncludes(budWorkspace, 'StrategyWorkbench', 'Strategies page exposes a selectable editable strategy workbench');
@@ -300,6 +302,8 @@ test('Source wiring points rebuilt pages to Bud and avoids client-side exchange 
   const stateStrip = await readSource('src/components/bud/BudStateStrip.tsx');
   assertIncludes(stateStrip, '/api/bud/status', 'Global Bud strip reads Bud status');
   assertIncludes(stateStrip, '/api/bud/kill-switch', 'Global Bud strip reads kill-switch status');
+  assertIncludes(stateStrip, 'budStateRefreshMs = 5 * 60 * 1000', 'Bud state strip avoids continuous high-frequency polling');
+  assertIncludes(stateStrip, 'document.hidden', 'Bud state strip pauses automatic refresh when the page is hidden');
   assert(!stateStrip.includes('API_SECRET'), 'Bud state strip does not expose exchange secrets');
   assert(!stateStrip.includes('PRIVATE_KEY'), 'Bud state strip does not expose wallet private keys');
 });
