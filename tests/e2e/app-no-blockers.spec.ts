@@ -86,10 +86,20 @@ test('Bud workspace safe actions finish and render structured results', async ({
 
   await gotoAuthenticated(page, '/strategies');
   await clickAndExpect(page, 'Load registry', 'Strategies', 45_000);
+  await expect(page.getByRole('tab', { name: /Workbench/ })).toBeVisible();
+  await expect(page.getByRole('tab', { name: /Readiness/ })).toBeVisible();
+  await expect(page.getByRole('tab', { name: /Activity/ })).toBeVisible();
   await expect(page.locator('body')).toContainText('Strategy Workbench');
+  const strategyPager = page.getByLabel('Strategy pages');
+  if ((await strategyPager.count()) > 0) {
+    await expect(strategyPager).toContainText('1-10 /');
+  }
   await expect(page.getByRole('button', { name: 'Backtest edited' })).toBeVisible();
   await expect(page.getByLabel('Strategy name')).toBeVisible();
   await expect(page.getByLabel('Review note')).toBeVisible();
+  await page.getByRole('tab', { name: /Activity/ }).click();
+  await expect(page.locator('body')).toContainText('Deterministic Queue');
+  await page.getByRole('tab', { name: /Workbench/ }).click();
   await clickAndExpect(page, 'Backtest current', 'walk_forward', 120_000);
 
   await gotoAuthenticated(page, '/bots');

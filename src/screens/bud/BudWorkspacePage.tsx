@@ -7,6 +7,8 @@ import {
   Bot,
   BrainCircuit,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   CircleStop,
   FlaskConical,
   History,
@@ -69,6 +71,8 @@ type StrategyParamField = {
   step?: number;
 };
 
+type StrategyWorkspaceTab = 'activity' | 'payload' | 'readiness' | 'workbench';
+
 const defaultMarketStatus: MarketDataStatus = {
   baseUrl: 'binance',
   live: false,
@@ -92,6 +96,7 @@ const pageMeta: Record<BudWorkspaceKind, { badge: string; icon: typeof BrainCirc
 const symbols = ['BTCUSDT', 'ETHUSDT', 'ONDOUSDT', 'SOLUSDT', 'BNBUSDT'];
 const intervals = ['15m', '30m', '1h', '4h', '1d', '1w'];
 const readinessExchanges = ['binance', 'bybit', 'bitget', 'hyperliquid', 'dydx'];
+const listPageSize = 10;
 const strategyTypes = ['sma_cross', 'ema_trend', 'donchian_breakout', 'rsi_mean_reversion', 'bollinger_reversion', 'momentum_volatility', 'volume_breakout'];
 const strategyStatuses = ['candidate', 'active', 'retired'];
 const regimeOptions = ['bull_market', 'bear_market', 'high_volatility', 'low_liquidity'];
@@ -779,9 +784,18 @@ function StrategiesView({
   const deterministicRuns = asArray(readPath(deterministicAgentData, ['runs']));
   const deterministicQueue = asArray(readPath(deterministicAgentData, ['queue']));
   const firstStrategyKey = strategyRecordKey(strategies[0]);
+  const [activeTab, setActiveTab] = useState<StrategyWorkspaceTab>('workbench');
   const [selectedStrategyKey, setSelectedStrategyKey] = useState(firstStrategyKey);
   const selectedStrategy = asRecord(strategies.find((strategy) => strategyRecordKey(strategy) === selectedStrategyKey) ?? strategies[0]);
   const [draft, setDraft] = useState<StrategyDraft>(() => strategyDraftFromRecord(selectedStrategy, symbol, interval));
+  const activityCount = evaluations.length + deterministicQueue.length + runs.length;
+  const liveReady = readPath(hedgeFundData, ['liveReady']) === true || readPath(hedgeFundData, ['status']) === 'ready';
+  const tabs: Array<{ badge: string; id: StrategyWorkspaceTab; label: string }> = [
+    { badge: String(strategies.length), id: 'workbench', label: 'Workbench' },
+    { badge: liveReady ? 'Ready' : 'Gated', id: 'readiness', label: 'Readiness' },
+    { badge: String(activityCount), id: 'activity', label: 'Activity' },
+    { badge: result || deterministicAgentData || researchData ? 'JSON' : 'Empty', id: 'payload', label: 'Payload' },
+  ];
   const selectedEvaluations = evaluations.filter((evaluation) => {
     const record = asRecord(evaluation);
 
@@ -800,60 +814,120 @@ function StrategiesView({
   }, [firstStrategyKey, selectedStrategyKey]);
 
   useEffect(() => {
+    if (selectedStrategyKey && strategies.length && !strategies.some((strategy) => strategyRecordKey(strategy) === selectedStrategyKey)) {
+      setSelectedStrategyKey(firstStrategyKey);
+    }
+  }, [firstStrategyKey, selectedStrategyKey, strategies]);
+
+  useEffect(() => {
     setDraft(strategyDraftFromRecord(selectedStrategy, symbol, interval));
   }, [selectedStrategy, symbol, interval]);
 
   return (
-    <div className="bud-grid bud-grid--main-side">
-      <div className="bud-stack">
-        <Card className="bud-action-panel bud-accent-violet">
-          <div className="bud-panel-head">
-            <h2>Research Registry</h2>
-            <Badge tone={strategies.length ? 'positive' : 'warning'}>{strategies.length ? `${strategies.length} strategies` : 'Registry check'}</Badge>
-          </div>
-          <div className="bud-action-row">
-            <Button icon={<RefreshCcw size={15} />} isLoading={pendingAction === 'load-research'} onClick={onLoad}>
-              Load registry
-            </Button>
-            <Button icon={<Sparkles size={15} />} isLoading={pendingAction === 'research'} onClick={onResearch} variant="primary">
-              Run research
-            </Button>
-            <Button icon={<BrainCircuit size={15} />} isLoading={pendingAction === 'deterministic-agents'} onClick={onRunDeterministicAgents}>
-              Run deterministic agents
-            </Button>
-            <Button isLoading={pendingAction === 'backtest'} onClick={onTest}>Backtest current</Button>
-          </div>
-        </Card>
-
-        <div className="bud-metric-grid">
-          <BudMetric label="Strategies" tone="primary" value={strategies.length || '0'} />
-          <BudMetric label="Evaluations" tone="cyan" value={evaluations.length || '0'} />
-          <BudMetric label="Runs" tone="green" value={runs.length || '0'} />
-          <BudMetric label="Deterministic" tone="primary" value={deterministicRuns.length || deterministicAgents.length || '0'} />
+    <div className="bud-strategy-shell">
+      <Card className="bud-action-panel bud-accent-violet bud-strategy-command">
+        <div className="bud-panel-head">
+          <h2>Research Registry</h2>
+          <Badge tone={strategies.length ? 'positive' : 'warning'}>{strategies.length ? `${strategies.length} strategies` : 'Registry check'}</Badge>
         </div>
+        <div className="bud-action-row">
+          <Button
+            icon={<RefreshCcw size={15} />}
+            isLoading={pendingAction === 'load-research'}
+            onClick={() => {
+              setActiveTab('workbench');
+              onLoad();
+            }}
+          >
+            Load registry
+          </Button>
+          <Button
+            icon={<Sparkles size={15} />}
+            isLoading={pendingAction === 'research'}
+            onClick={() => {
+              setActiveTab('workbench');
+              onResearch();
+            }}
+            variant="primary"
+          >
+            Run research
+          </Button>
+          <Button
+            icon={<BrainCircuit size={15} />}
+            isLoading={pendingAction === 'deterministic-agents'}
+            onClick={() => {
+              setActiveTab('activity');
+              onRunDeterministicAgents();
+            }}
+          >
+            Run deterministic agents
+          </Button>
+          <Button
+            isLoading={pendingAction === 'backtest'}
+            onClick={() => {
+              setActiveTab('payload');
+              onTest();
+            }}
+          >
+            Backtest current
+          </Button>
+        </div>
+      </Card>
 
-        <StrategyWorkbench
-          draft={draft}
-          evaluations={selectedEvaluations}
-          latestEvaluation={latestEvaluation}
-          onBacktest={() => onStrategyBacktest(draft)}
-          onDraftChange={setDraft}
-          onSave={() => onSaveStrategy(draft)}
-          onSelect={setSelectedStrategyKey}
-          pendingAction={pendingAction}
-          selectedKey={strategyRecordKey(selectedStrategy)}
-          strategies={strategies}
-        />
-
-        <HedgeFundReadinessPanel data={hedgeFundData} withGates />
-
-        <RecordTable empty="No Bud evaluation rows available." records={selectedEvaluations.length ? selectedEvaluations : evaluations} title="Evaluations" />
+      <div className="bud-strategy-tabs" role="tablist" aria-label="Strategy workspace sections">
+        {tabs.map((tab) => (
+          <button aria-selected={activeTab === tab.id} className={activeTab === tab.id ? 'is-active' : undefined} key={tab.id} onClick={() => setActiveTab(tab.id)} role="tab" type="button">
+            <span>{tab.label}</span>
+            <strong>{tab.badge}</strong>
+          </button>
+        ))}
       </div>
 
-      <div className="bud-stack">
-        <RecordTable compact empty="No deterministic agent queue rows." records={deterministicQueue} title="Deterministic Queue" />
-        <RecordTable compact empty="No research runs available." records={runs} title="Runs" />
-        <JsonPanel data={result ?? deterministicAgentData ?? researchData} title="Research Payload" />
+      <div className="bud-strategy-tab-panel" role="tabpanel">
+        {activeTab === 'workbench' ? (
+          <StrategyWorkbench
+            draft={draft}
+            evaluations={selectedEvaluations}
+            latestEvaluation={latestEvaluation}
+            onBacktest={() => {
+              setActiveTab('payload');
+              onStrategyBacktest(draft);
+            }}
+            onDraftChange={setDraft}
+            onSave={() => onSaveStrategy(draft)}
+            onSelect={setSelectedStrategyKey}
+            pendingAction={pendingAction}
+            selectedKey={strategyRecordKey(selectedStrategy)}
+            strategies={strategies}
+          />
+        ) : null}
+
+        {activeTab === 'readiness' ? (
+          <div className="bud-stack">
+            <div className="bud-metric-grid">
+              <BudMetric label="Strategies" tone="primary" value={strategies.length || '0'} />
+              <BudMetric label="Evaluations" tone="cyan" value={evaluations.length || '0'} />
+              <BudMetric label="Runs" tone="green" value={runs.length || '0'} />
+              <BudMetric label="Deterministic" tone="primary" value={deterministicRuns.length || deterministicAgents.length || '0'} />
+            </div>
+            <HedgeFundReadinessPanel data={hedgeFundData} withGates />
+          </div>
+        ) : null}
+
+        {activeTab === 'activity' ? (
+          <div className="bud-grid bud-grid--main-side">
+            <div className="bud-stack">
+              <RecordTable empty="No Bud evaluation rows available." records={selectedEvaluations.length ? selectedEvaluations : evaluations} title="Evaluations" />
+              <RecordTable compact empty="No deterministic agent queue rows." records={deterministicQueue} title="Deterministic Queue" />
+            </div>
+            <div className="bud-stack">
+              <RecordTable compact empty="No deterministic agent rows." records={deterministicAgents} title="Deterministic Agents" />
+              <RecordTable compact empty="No research runs available." records={runs} title="Runs" />
+            </div>
+          </div>
+        ) : null}
+
+        {activeTab === 'payload' ? <JsonPanel data={result ?? deterministicAgentData ?? researchData} title="Research Payload" /> : null}
       </div>
     </div>
   );
@@ -882,6 +956,15 @@ function StrategyWorkbench({
   selectedKey: string;
   strategies: unknown[];
 }) {
+  const [strategyPage, setStrategyPage] = useState(1);
+  const strategyPageCount = Math.max(1, Math.ceil(strategies.length / listPageSize));
+  const pageStart = (strategyPage - 1) * listPageSize;
+  const visibleStrategies = strategies.slice(pageStart, pageStart + listPageSize);
+
+  useEffect(() => {
+    setStrategyPage((current) => Math.min(current, strategyPageCount));
+  }, [strategyPageCount]);
+
   if (!strategies.length) {
     return (
       <Card className="bud-card">
@@ -905,9 +988,9 @@ function StrategyWorkbench({
 
       <div className="bud-strategy-workbench__layout">
         <div className="bud-strategy-list" aria-label="Bud strategies">
-          {strategies.map((strategy, index) => {
+          {visibleStrategies.map((strategy, index) => {
             const record = asRecord(strategy);
-            const key = strategyRecordKey(record) || String(index);
+            const key = strategyRecordKey(record) || String(pageStart + index);
             const isActive = key === selectedKey;
             const evaluation = asRecord(evaluations.find((item) => readPath(item, ['strategy_id']) === readPath(record, ['strategy_id'])) ?? {});
 
@@ -921,6 +1004,14 @@ function StrategyWorkbench({
               </button>
             );
           })}
+          <BudPagination
+            label="Strategy pages"
+            onPageChange={setStrategyPage}
+            page={strategyPage}
+            pageCount={strategyPageCount}
+            pageSize={listPageSize}
+            total={strategies.length}
+          />
         </div>
 
         <div className="bud-strategy-editor">
@@ -1391,7 +1482,7 @@ function HedgeFundReadinessPanel({ data, withGates = false }: { data: JsonRecord
         />
       ) : null}
 
-      {blockers.length ? <BlockerList blockers={blockers.slice(0, withGates ? 8 : 6)} /> : null}
+      {blockers.length ? <BlockerList blockers={blockers} /> : null}
     </>
   );
 }
@@ -1435,6 +1526,15 @@ function OpportunityTable({ opportunities }: { opportunities: unknown[] }) {
 }
 
 function BlockerList({ blockers }: { blockers: unknown[] }) {
+  const [page, setPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(blockers.length / listPageSize));
+  const pageStart = (page - 1) * listPageSize;
+  const visibleBlockers = blockers.slice(pageStart, pageStart + listPageSize);
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, pageCount));
+  }, [pageCount]);
+
   return (
     <Card className="bud-card">
       <div className="bud-panel-head">
@@ -1443,12 +1543,13 @@ function BlockerList({ blockers }: { blockers: unknown[] }) {
       </div>
       {blockers.length ? (
         <div className="bud-blocker-list">
-          {blockers.slice(0, 18).map((blocker, index) => (
-            <span key={`${String(blocker)}-${index}`}>
+          {visibleBlockers.map((blocker, index) => (
+            <span key={`${String(blocker)}-${pageStart + index}`}>
               <AlertTriangle size={14} />
               {String(blocker)}
             </span>
           ))}
+          <BudPagination label="Blocker pages" onPageChange={setPage} page={page} pageCount={pageCount} pageSize={listPageSize} total={blockers.length} />
         </div>
       ) : (
         <BudEmpty label="No blockers returned by Bud." />
@@ -1499,6 +1600,14 @@ function RecordTable({
   title: string;
 }) {
   const resolvedColumns = columns ?? inferColumns(records);
+  const [page, setPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(records.length / listPageSize));
+  const pageStart = (page - 1) * listPageSize;
+  const visibleRecords = records.slice(pageStart, pageStart + listPageSize);
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, pageCount));
+  }, [pageCount]);
 
   return (
     <Card className="bud-card">
@@ -1513,22 +1622,62 @@ function RecordTable({
               <span key={label}>{label}</span>
             ))}
           </div>
-          {records.slice(0, compact ? 8 : 12).map((record, index) => {
+          {visibleRecords.map((record, index) => {
             const row = asRecord(record);
 
             return (
-              <div className="bud-record-table__row" key={String(readPath(row, ['id']) ?? readPath(row, ['strategy_id']) ?? index)}>
+              <div className="bud-record-table__row" key={String(readPath(row, ['id']) ?? readPath(row, ['strategy_id']) ?? pageStart + index)}>
                 {resolvedColumns.map(([label, path]) => (
                   <span key={label}>{formatValue(readPath(row, path))}</span>
                 ))}
               </div>
             );
           })}
+          <BudPagination label={`${title} pages`} onPageChange={setPage} page={page} pageCount={pageCount} pageSize={listPageSize} total={records.length} />
         </div>
       ) : (
         <BudEmpty label={empty} />
       )}
     </Card>
+  );
+}
+
+function BudPagination({
+  label,
+  onPageChange,
+  page,
+  pageCount,
+  pageSize,
+  total,
+}: {
+  label: string;
+  onPageChange: (page: number) => void;
+  page: number;
+  pageCount: number;
+  pageSize: number;
+  total: number;
+}) {
+  if (pageCount <= 1) {
+    return null;
+  }
+
+  const start = (page - 1) * pageSize + 1;
+  const end = Math.min(page * pageSize, total);
+
+  return (
+    <div className="bud-pagination" aria-label={label}>
+      <span>
+        {start}-{end} / {total}
+      </span>
+      <div>
+        <Button aria-label="Previous page" disabled={page <= 1} icon={<ChevronLeft size={14} />} onClick={() => onPageChange(Math.max(1, page - 1))} size="sm">
+          Prev
+        </Button>
+        <Button aria-label="Next page" disabled={page >= pageCount} icon={<ChevronRight size={14} />} onClick={() => onPageChange(Math.min(pageCount, page + 1))} size="sm">
+          Next
+        </Button>
+      </div>
+    </div>
   );
 }
 
