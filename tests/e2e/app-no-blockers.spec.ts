@@ -86,6 +86,10 @@ test('Bud workspace safe actions finish and render structured results', async ({
 
   await gotoAuthenticated(page, '/strategies');
   await clickAndExpect(page, 'Load registry', 'Strategies', 45_000);
+  await expect(page.locator('body')).toContainText('Strategy Workbench');
+  await expect(page.getByRole('button', { name: 'Backtest edited' })).toBeVisible();
+  await expect(page.getByLabel('Strategy name')).toBeVisible();
+  await expect(page.getByLabel('Review note')).toBeVisible();
   await clickAndExpect(page, 'Backtest current', 'walk_forward', 120_000);
 
   await gotoAuthenticated(page, '/bots');

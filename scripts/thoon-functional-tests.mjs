@@ -238,6 +238,10 @@ test('Source wiring points rebuilt pages to Bud and avoids client-side exchange 
   assertIncludes(budWorkspace, '/api/bud/orchestrate', 'Agents use Bud orchestration route');
   assertIncludes(budWorkspace, '/api/bud/backtest', 'Backtest page uses Bud backtest route');
   assertIncludes(budWorkspace, '/api/bud/research', 'Strategies page uses Bud research route');
+  assertIncludes(budWorkspace, '/api/bud/research/strategy', 'Strategies page can save edited Bud strategy versions');
+  assertIncludes(budWorkspace, 'StrategyWorkbench', 'Strategies page exposes a selectable editable strategy workbench');
+  assertIncludes(budWorkspace, 'Backtest edited', 'Strategies page can relaunch a backtest for edited parameters');
+  assertIncludes(budWorkspace, 'Review note', 'Strategies page lets the user attach a manual evaluation note');
   assertIncludes(budWorkspace, '/api/bud/paper', 'Orders page uses Bud paper route');
   assertIncludes(budWorkspace, '/api/bud/paper-bot-test', 'Bots page can start a 2h paper bot test');
   assertIncludes(budWorkspace, '/api/bud/live-readiness', 'Bots and alerts use Bud readiness route');
@@ -273,6 +277,10 @@ test('Source wiring points rebuilt pages to Bud and avoids client-side exchange 
   assertIncludes(tradeRoute, 'getHedgeFundReadiness', 'Bud trade route gates automated live trading with hedge fund readiness');
   assertIncludes(tradeRoute, 'isAutomatedExecution', 'Bud trade route separates manual user live orders from orchestrated live orders');
   assertIncludes(tradeRoute, 'Manual live trading requires explicit user confirmation', 'Bud trade route keeps explicit confirmation on manual live orders');
+
+  const strategyRoute = await readSource('src/app/api/bud/research/strategy/route.ts');
+  assertIncludes(strategyRoute, 'registerBudResearchStrategy', 'Bud edited strategy route registers strategy versions server-side');
+  assertIncludes(strategyRoute, 'thoon_edit_source', 'Bud edited strategy route marks Thoon user edits in metadata');
 
   const legacyTradingRoute = await readSource('src/app/api/[...path]/route.ts');
   assertIncludes(legacyTradingRoute, 'placeBudTrade', 'Legacy chart live execution routes through Bud when configured');

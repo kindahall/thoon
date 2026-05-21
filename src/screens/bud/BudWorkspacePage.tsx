@@ -6,12 +6,17 @@ import {
   BarChart3,
   Bot,
   BrainCircuit,
+  CheckCircle2,
   CircleStop,
+  FlaskConical,
   History,
   LineChart,
+  Pencil,
   Play,
   RefreshCcw,
+  Save,
   ShieldAlert,
+  SlidersHorizontal,
   Sparkles,
   WalletCards,
 } from 'lucide-react';
@@ -43,6 +48,27 @@ type BudEnvelope<T> = {
   status?: number;
 };
 
+type StrategyDraft = {
+  conditions: JsonRecord;
+  metadata: JsonRecord;
+  name: string;
+  parentStrategyId?: string;
+  params: Record<string, number | string | boolean>;
+  regimeTags: string[];
+  status: string;
+  strategyId?: string;
+  strategyType: string;
+  versionId?: string;
+};
+
+type StrategyParamField = {
+  key: string;
+  label: string;
+  max?: number;
+  min: number;
+  step?: number;
+};
+
 const defaultMarketStatus: MarketDataStatus = {
   baseUrl: 'binance',
   live: false,
@@ -66,6 +92,44 @@ const pageMeta: Record<BudWorkspaceKind, { badge: string; icon: typeof BrainCirc
 const symbols = ['BTCUSDT', 'ETHUSDT', 'ONDOUSDT', 'SOLUSDT', 'BNBUSDT'];
 const intervals = ['15m', '30m', '1h', '4h', '1d', '1w'];
 const readinessExchanges = ['binance', 'bybit', 'bitget', 'hyperliquid', 'dydx'];
+const strategyTypes = ['sma_cross', 'ema_trend', 'donchian_breakout', 'rsi_mean_reversion', 'bollinger_reversion', 'momentum_volatility', 'volume_breakout'];
+const strategyStatuses = ['candidate', 'active', 'retired'];
+const regimeOptions = ['bull_market', 'bear_market', 'high_volatility', 'low_liquidity'];
+const strategyParamFields: Record<string, StrategyParamField[]> = {
+  bollinger_reversion: [
+    { key: 'bollinger_window', label: 'Window', min: 3, max: 500 },
+    { key: 'bollinger_std', label: 'Std', min: 0.5, max: 5, step: 0.1 },
+  ],
+  donchian_breakout: [
+    { key: 'donchian_window', label: 'Breakout', min: 3, max: 500 },
+    { key: 'donchian_exit_window', label: 'Exit', min: 2, max: 500 },
+  ],
+  ema_trend: [
+    { key: 'fast_window', label: 'Fast', min: 2, max: 500 },
+    { key: 'slow_window', label: 'Slow', min: 3, max: 1000 },
+  ],
+  momentum_volatility: [
+    { key: 'momentum_window', label: 'Momentum', min: 2, max: 500 },
+    { key: 'volatility_window', label: 'Volatility', min: 3, max: 500 },
+    { key: 'min_momentum', label: 'Min Mom', min: -1, max: 1, step: 0.001 },
+    { key: 'max_volatility', label: 'Max Vol', min: 0.001, max: 1, step: 0.001 },
+  ],
+  rsi_mean_reversion: [
+    { key: 'rsi_window', label: 'RSI', min: 2, max: 200 },
+    { key: 'rsi_lower', label: 'Lower', min: 1, max: 60, step: 0.5 },
+    { key: 'rsi_upper', label: 'Upper', min: 40, max: 99, step: 0.5 },
+  ],
+  sma_cross: [
+    { key: 'fast_window', label: 'Fast', min: 2, max: 500 },
+    { key: 'slow_window', label: 'Slow', min: 3, max: 1000 },
+  ],
+  volume_breakout: [
+    { key: 'fast_window', label: 'Fast', min: 2, max: 500 },
+    { key: 'slow_window', label: 'Slow', min: 3, max: 1000 },
+    { key: 'volume_window', label: 'Volume', min: 2, max: 500 },
+    { key: 'volume_multiplier', label: 'Volume x', min: 0.1, max: 10, step: 0.05 },
+  ],
+};
 
 export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMarketStatus, page }: BudWorkspacePageProps) {
   const meta = pageMeta[page];
@@ -310,6 +374,30 @@ export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMar
     }
   }
 
+  async function saveResearchStrategy(strategy: StrategyDraft) {
+    const payload = await runAction('save-strategy', () => postJson<JsonRecord>('/api/bud/research/strategy', strategyInputFromDraft(strategy)));
+
+    if (payload) {
+      void loadResearch();
+      void refreshHedgeFundReadiness();
+    }
+  }
+
+  async function backtestResearchStrategy(strategy: StrategyDraft) {
+    await runAction('strategy-backtest', () =>
+      postJson<JsonRecord>('/api/bud/backtest', {
+        estimate_transaction_costs: true,
+        interval,
+        limit: Math.max(limit, 240),
+        reject_if_walk_forward_fails: false,
+        strategy: backtestStrategyFromDraft(strategy),
+        symbol,
+        validate_data_quality: true,
+        walk_forward_validate: true,
+      }),
+    );
+  }
+
   async function checkReadiness() {
     const payload = await runAction('readiness', () =>
       postJson<JsonRecord>('/api/bud/live-readiness', {
@@ -433,11 +521,15 @@ export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMar
           onLoad={() => void loadResearch()}
           onRunDeterministicAgents={() => void runDeterministicAgents()}
           onResearch={() => void runResearch()}
+          onSaveStrategy={(strategy) => void saveResearchStrategy(strategy)}
+          onStrategyBacktest={(strategy) => void backtestResearchStrategy(strategy)}
           onTest={() => void runBacktest()}
           hedgeFundData={hedgeFundData}
+          interval={interval}
           pendingAction={pendingAction}
           researchData={researchData}
           result={activeResult}
+          symbol={symbol}
         />
       ) : null}
 
@@ -654,23 +746,31 @@ function BacktestView({ onRun, pendingAction, result }: { onRun: () => void; pen
 function StrategiesView({
   deterministicAgentData,
   hedgeFundData,
+  interval,
   onLoad,
   onRunDeterministicAgents,
   onResearch,
+  onSaveStrategy,
+  onStrategyBacktest,
   onTest,
   pendingAction,
   researchData,
   result,
+  symbol,
 }: {
   deterministicAgentData: JsonRecord | null;
   hedgeFundData: JsonRecord | null;
+  interval: string;
   onLoad: () => void;
   onRunDeterministicAgents: () => void;
   onResearch: () => void;
+  onSaveStrategy: (strategy: StrategyDraft) => void;
+  onStrategyBacktest: (strategy: StrategyDraft) => void;
   onTest: () => void;
   pendingAction: string;
   researchData: JsonRecord | null;
   result: JsonRecord | null;
+  symbol: string;
 }) {
   const strategies = asArray(readPath(researchData, ['strategies']));
   const evaluations = asArray(readPath(researchData, ['evaluations']));
@@ -678,6 +778,30 @@ function StrategiesView({
   const deterministicAgents = asArray(readPath(deterministicAgentData, ['agents']));
   const deterministicRuns = asArray(readPath(deterministicAgentData, ['runs']));
   const deterministicQueue = asArray(readPath(deterministicAgentData, ['queue']));
+  const firstStrategyKey = strategyRecordKey(strategies[0]);
+  const [selectedStrategyKey, setSelectedStrategyKey] = useState(firstStrategyKey);
+  const selectedStrategy = asRecord(strategies.find((strategy) => strategyRecordKey(strategy) === selectedStrategyKey) ?? strategies[0]);
+  const [draft, setDraft] = useState<StrategyDraft>(() => strategyDraftFromRecord(selectedStrategy, symbol, interval));
+  const selectedEvaluations = evaluations.filter((evaluation) => {
+    const record = asRecord(evaluation);
+
+    return (
+      readPath(record, ['strategy_id']) === draft.strategyId ||
+      readPath(record, ['version_id']) === draft.versionId ||
+      readPath(record, ['strategy_id']) === readPath(selectedStrategy, ['strategy_id'])
+    );
+  });
+  const latestEvaluation = asRecord(selectedEvaluations[0] ?? evaluations[0]);
+
+  useEffect(() => {
+    if (!selectedStrategyKey && firstStrategyKey) {
+      setSelectedStrategyKey(firstStrategyKey);
+    }
+  }, [firstStrategyKey, selectedStrategyKey]);
+
+  useEffect(() => {
+    setDraft(strategyDraftFromRecord(selectedStrategy, symbol, interval));
+  }, [selectedStrategy, symbol, interval]);
 
   return (
     <div className="bud-grid bud-grid--main-side">
@@ -708,10 +832,22 @@ function StrategiesView({
           <BudMetric label="Deterministic" tone="primary" value={deterministicRuns.length || deterministicAgents.length || '0'} />
         </div>
 
+        <StrategyWorkbench
+          draft={draft}
+          evaluations={selectedEvaluations}
+          latestEvaluation={latestEvaluation}
+          onBacktest={() => onStrategyBacktest(draft)}
+          onDraftChange={setDraft}
+          onSave={() => onSaveStrategy(draft)}
+          onSelect={setSelectedStrategyKey}
+          pendingAction={pendingAction}
+          selectedKey={strategyRecordKey(selectedStrategy)}
+          strategies={strategies}
+        />
+
         <HedgeFundReadinessPanel data={hedgeFundData} withGates />
 
-        <RecordTable empty="No Bud strategy registry rows available." records={strategies} title="Strategies" />
-        <RecordTable empty="No Bud evaluation rows available." records={evaluations} title="Evaluations" />
+        <RecordTable empty="No Bud evaluation rows available." records={selectedEvaluations.length ? selectedEvaluations : evaluations} title="Evaluations" />
       </div>
 
       <div className="bud-stack">
@@ -719,6 +855,225 @@ function StrategiesView({
         <RecordTable compact empty="No research runs available." records={runs} title="Runs" />
         <JsonPanel data={result ?? deterministicAgentData ?? researchData} title="Research Payload" />
       </div>
+    </div>
+  );
+}
+
+function StrategyWorkbench({
+  draft,
+  evaluations,
+  latestEvaluation,
+  onBacktest,
+  onDraftChange,
+  onSave,
+  onSelect,
+  pendingAction,
+  selectedKey,
+  strategies,
+}: {
+  draft: StrategyDraft;
+  evaluations: unknown[];
+  latestEvaluation: JsonRecord;
+  onBacktest: () => void;
+  onDraftChange: (draft: StrategyDraft) => void;
+  onSave: () => void;
+  onSelect: (key: string) => void;
+  pendingAction: string;
+  selectedKey: string;
+  strategies: unknown[];
+}) {
+  if (!strategies.length) {
+    return (
+      <Card className="bud-card">
+        <div className="bud-panel-head">
+          <h2>Strategy Workbench</h2>
+          <Badge tone="warning">Empty</Badge>
+        </div>
+        <BudEmpty label="Load or run research to populate editable Bud strategies." />
+      </Card>
+    );
+  }
+
+  const fields = strategyParamFields[draft.strategyType] ?? strategyParamFields.sma_cross;
+
+  return (
+    <Card className="bud-card bud-strategy-workbench">
+      <div className="bud-panel-head">
+        <h2>Strategy Workbench</h2>
+        <Badge tone={readPath(latestEvaluation, ['selection_status']) === 'selected' ? 'positive' : 'warning'}>{formatValue(readPath(latestEvaluation, ['selection_status']) ?? draft.status)}</Badge>
+      </div>
+
+      <div className="bud-strategy-workbench__layout">
+        <div className="bud-strategy-list" aria-label="Bud strategies">
+          {strategies.map((strategy, index) => {
+            const record = asRecord(strategy);
+            const key = strategyRecordKey(record) || String(index);
+            const isActive = key === selectedKey;
+            const evaluation = asRecord(evaluations.find((item) => readPath(item, ['strategy_id']) === readPath(record, ['strategy_id'])) ?? {});
+
+            return (
+              <button aria-pressed={isActive} className={isActive ? 'is-active' : undefined} key={key} onClick={() => onSelect(key)} type="button">
+                <span>
+                  <strong>{strategyName(record)}</strong>
+                  <em>{formatValue(readPath(record, ['strategy_type']))} · v{formatValue(readPath(record, ['version']))}</em>
+                </span>
+                <small>{formatScore(readPath(evaluation, ['ranking_score']) ?? readPath(record, ['selection_score']))}</small>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="bud-strategy-editor">
+          <div className="bud-strategy-editor__head">
+            <div>
+              <span>{draft.strategyId ?? 'new-version'}</span>
+              <strong>{draft.name}</strong>
+            </div>
+            <div className="bud-action-row">
+              <Button icon={<Save size={15} />} isLoading={pendingAction === 'save-strategy'} onClick={onSave} size="sm" variant="primary">
+                Save version
+              </Button>
+              <Button icon={<FlaskConical size={15} />} isLoading={pendingAction === 'strategy-backtest'} onClick={onBacktest} size="sm">
+                Backtest edited
+              </Button>
+            </div>
+          </div>
+
+          <div className="bud-strategy-form">
+            <label>
+              <span>Name</span>
+              <input aria-label="Strategy name" onChange={(event) => onDraftChange({ ...draft, name: event.target.value })} value={draft.name} />
+            </label>
+            <label>
+              <span>Type</span>
+              <select
+                aria-label="Strategy type"
+                onChange={(event) => {
+                  const nextType = event.target.value;
+                  onDraftChange({ ...draft, params: { ...defaultParamsForStrategy(nextType), ...draft.params }, strategyType: nextType });
+                }}
+                value={draft.strategyType}
+              >
+                {strategyTypes.map((type) => (
+                  <option key={type} value={type}>
+                    {humanize(type)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Status</span>
+              <select aria-label="Strategy status" onChange={(event) => onDraftChange({ ...draft, status: event.target.value })} value={draft.status}>
+                {strategyStatuses.map((status) => (
+                  <option key={status} value={status}>
+                    {humanize(status)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="bud-strategy-param-grid">
+            {fields.map((field) => (
+              <label key={field.key}>
+                <span>{field.label}</span>
+                <input
+                  aria-label={field.label}
+                  max={field.max}
+                  min={field.min}
+                  onChange={(event) => onDraftChange({ ...draft, params: { ...draft.params, [field.key]: numberOrExisting(event.target.value, draft.params[field.key]) } })}
+                  step={field.step ?? 1}
+                  type="number"
+                  value={String(draft.params[field.key] ?? defaultParamsForStrategy(draft.strategyType)[field.key] ?? field.min)}
+                />
+              </label>
+            ))}
+          </div>
+
+          <div className="bud-strategy-form bud-strategy-form--conditions">
+            <label>
+              <span>Entry</span>
+              <input aria-label="Entry condition" onChange={(event) => onDraftChange({ ...draft, conditions: { ...draft.conditions, entry: event.target.value } })} value={String(draft.conditions.entry ?? '')} />
+            </label>
+            <label>
+              <span>Exit</span>
+              <input aria-label="Exit condition" onChange={(event) => onDraftChange({ ...draft, conditions: { ...draft.conditions, exit: event.target.value } })} value={String(draft.conditions.exit ?? '')} />
+            </label>
+          </div>
+
+          <label className="bud-strategy-review-note">
+            <span>Review note</span>
+            <textarea aria-label="Review note" onChange={(event) => onDraftChange({ ...draft, metadata: { ...draft.metadata, user_review_note: event.target.value } })} rows={3} value={String(draft.metadata.user_review_note ?? '')} />
+          </label>
+
+          <div className="bud-strategy-regimes" aria-label="Regime tags">
+            {regimeOptions.map((regime) => {
+              const isActive = draft.regimeTags.includes(regime);
+              return (
+                <button
+                  className={isActive ? 'is-active' : undefined}
+                  key={regime}
+                  onClick={() =>
+                    onDraftChange({
+                      ...draft,
+                      regimeTags: isActive ? draft.regimeTags.filter((item) => item !== regime) : [...draft.regimeTags, regime],
+                    })
+                  }
+                  type="button"
+                >
+                  {isActive ? <CheckCircle2 size={14} /> : <SlidersHorizontal size={14} />}
+                  {humanize(regime)}
+                </button>
+              );
+            })}
+          </div>
+
+          <StrategyEvaluationPanel evaluation={latestEvaluation} evaluations={evaluations} />
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function StrategyEvaluationPanel({ evaluation, evaluations }: { evaluation: JsonRecord; evaluations: unknown[] }) {
+  const rejectionReasons = asArray(readPath(evaluation, ['rejection_reasons']));
+
+  return (
+    <div className="bud-strategy-evaluation">
+      <div className="bud-strategy-evaluation__head">
+        <span>
+          <Pencil size={14} />
+          Personal review
+        </span>
+        <strong>{evaluations.length} evals</strong>
+      </div>
+      <div className="bud-strategy-mini-metrics">
+        <StrategyMiniMetric label="Rank" value={formatScore(readPath(evaluation, ['ranking_score']))} />
+        <StrategyMiniMetric label="Test return" tone={Number(readPath(evaluation, ['test', 'metrics', 'total_return']) ?? 0) >= 0 ? 'positive' : 'negative'} value={formatMaybePercent(readPath(evaluation, ['test', 'metrics', 'total_return']), true)} />
+        <StrategyMiniMetric label="Sharpe" value={formatNumber(readPath(evaluation, ['test', 'metrics', 'sharpe_ratio']))} />
+        <StrategyMiniMetric label="Drawdown" tone="negative" value={formatMaybePercent(readPath(evaluation, ['test', 'metrics', 'max_drawdown']), true)} />
+      </div>
+      {rejectionReasons.length ? (
+        <div className="bud-blocker-list">
+          {rejectionReasons.slice(0, 6).map((reason, index) => (
+            <span key={`${String(reason)}-${index}`}>
+              <AlertTriangle size={14} />
+              {String(reason)}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <BudEmpty label="No rejection reason attached to this strategy." />
+      )}
+    </div>
+  );
+}
+
+function StrategyMiniMetric({ label, tone = 'neutral', value }: { label: string; tone?: 'negative' | 'neutral' | 'positive'; value: string }) {
+  return (
+    <div className={`bud-strategy-mini-metric bud-strategy-mini-metric--${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
@@ -1241,6 +1596,107 @@ function inferColumns(records: unknown[]): Array<[string, string[]]> {
   const fallback = Object.keys(first).filter((key) => typeof first[key] !== 'object').slice(0, 6);
 
   return (keys.length ? keys : fallback).slice(0, 6).map((key) => [humanize(key), [key]]);
+}
+
+function strategyRecordKey(record: unknown) {
+  return String(readPath(record, ['version_id']) ?? readPath(record, ['strategy_id']) ?? readPath(record, ['id']) ?? '');
+}
+
+function strategyName(record: JsonRecord) {
+  return formatValue(readPath(record, ['name']) ?? readPath(record, ['proposal', 'name']) ?? readPath(record, ['strategy_id']));
+}
+
+function strategyDraftFromRecord(record: JsonRecord, symbol: string, interval: string): StrategyDraft {
+  const strategyType = String(readPath(record, ['strategy_type']) ?? readPath(record, ['proposal', 'name']) ?? 'sma_cross');
+  const normalizedType = strategyTypes.includes(strategyType) ? strategyType : 'sma_cross';
+  const status = String(readPath(record, ['status']) ?? 'candidate');
+  const conditions = asRecord(readPath(record, ['conditions']));
+  const metadata = asRecord(readPath(record, ['metadata']));
+  const params = {
+    ...defaultParamsForStrategy(normalizedType),
+    ...asRecord(readPath(record, ['params'])),
+  };
+
+  return {
+    conditions,
+    metadata: {
+      ...metadata,
+      source_symbol: metadata.source_symbol ?? symbol,
+      source_timeframe: metadata.source_timeframe ?? interval,
+    },
+    name: String(readPath(record, ['name']) ?? humanize(normalizedType)),
+    parentStrategyId: optionalDraftString(readPath(record, ['parent_strategy_id'])) ?? optionalDraftString(readPath(record, ['strategy_id'])),
+    params: normalizeStrategyParams(params),
+    regimeTags: asArray(readPath(record, ['regime_tags'])).filter((item): item is string => typeof item === 'string'),
+    status: strategyStatuses.includes(status) ? status : 'candidate',
+    strategyId: optionalDraftString(readPath(record, ['strategy_id'])),
+    strategyType: normalizedType,
+    versionId: optionalDraftString(readPath(record, ['version_id'])),
+  };
+}
+
+function strategyInputFromDraft(draft: StrategyDraft): JsonRecord {
+  return {
+    conditions: draft.conditions,
+    metadata: draft.metadata,
+    name: draft.name,
+    params: normalizeStrategyParams(draft.params),
+    parent_strategy_id: draft.parentStrategyId,
+    regime_tags: draft.regimeTags,
+    status: draft.status,
+    strategy_type: draft.strategyType,
+  };
+}
+
+function backtestStrategyFromDraft(draft: StrategyDraft): JsonRecord {
+  return {
+    ...normalizeStrategyParams(draft.params),
+    name: draft.strategyType,
+  };
+}
+
+function defaultParamsForStrategy(strategyType: string): Record<string, number> {
+  switch (strategyType) {
+    case 'bollinger_reversion':
+      return { bollinger_std: 2, bollinger_window: 20 };
+    case 'donchian_breakout':
+      return { donchian_exit_window: 20, donchian_window: 55 };
+    case 'ema_trend':
+      return { fast_window: 12, slow_window: 48 };
+    case 'momentum_volatility':
+      return { max_volatility: 0.025, min_momentum: 0.01, momentum_window: 24, volatility_window: 48 };
+    case 'rsi_mean_reversion':
+      return { rsi_lower: 30, rsi_upper: 55, rsi_window: 14 };
+    case 'volume_breakout':
+      return { fast_window: 20, slow_window: 50, volume_multiplier: 1.35, volume_window: 20 };
+    case 'sma_cross':
+    default:
+      return { fast_window: 20, slow_window: 50 };
+  }
+}
+
+function normalizeStrategyParams(params: Record<string, unknown>): Record<string, number | string | boolean> {
+  return Object.fromEntries(
+    Object.entries(params)
+      .filter(([, value]) => typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean')
+      .map(([key, value]) => [key, typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value)) ? Number(value) : value as number | string | boolean]),
+  );
+}
+
+function numberOrExisting(value: string, fallback: unknown) {
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed) ? parsed : typeof fallback === 'number' || typeof fallback === 'string' || typeof fallback === 'boolean' ? fallback : 0;
+}
+
+function optionalDraftString(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function formatScore(value: unknown) {
+  const numberValue = Number(value);
+
+  return Number.isFinite(numberValue) ? numberValue.toFixed(3).replace(/\.?0+$/, '') : 'NON DEFINI';
 }
 
 function unwrapBudPayload<T>(value: T | BudEnvelope<T>): T {

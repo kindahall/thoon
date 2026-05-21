@@ -21843,6 +21843,258 @@ button {
   min-height: 38px;
 }
 
+.bud-strategy-workbench {
+  --bud-accent: #b89cff;
+}
+
+.bud-strategy-workbench__layout {
+  display: grid;
+  grid-template-columns: minmax(230px, 0.35fr) minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+}
+
+.bud-strategy-list {
+  display: grid;
+  align-content: start;
+  max-height: 520px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-raised) 45%, transparent);
+}
+
+.bud-strategy-list button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 58px;
+  padding: 10px 12px;
+  color: var(--text-soft);
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+}
+
+.bud-strategy-list button:last-child {
+  border-bottom: 0;
+}
+
+.bud-strategy-list button:hover,
+.bud-strategy-list button.is-active {
+  color: var(--text);
+  background: color-mix(in srgb, #26c8ff 10%, transparent);
+}
+
+.bud-strategy-list button.is-active {
+  box-shadow: inset 3px 0 0 #26c8ff;
+}
+
+.bud-strategy-list button span,
+.bud-strategy-editor__head > div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.bud-strategy-list strong,
+.bud-strategy-editor__head strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bud-strategy-list em,
+.bud-strategy-editor__head span {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.bud-strategy-list small {
+  color: #62e6a8;
+  font-weight: 900;
+}
+
+.bud-strategy-editor {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.bud-strategy-editor__head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.bud-strategy-form,
+.bud-strategy-param-grid {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.bud-strategy-form {
+  grid-template-columns: minmax(180px, 1fr) minmax(160px, 0.7fr) minmax(130px, 0.48fr);
+}
+
+.bud-strategy-form--conditions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.bud-strategy-param-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.bud-strategy-form label,
+.bud-strategy-param-grid label,
+.bud-strategy-review-note {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.bud-strategy-form label span,
+.bud-strategy-param-grid label span,
+.bud-strategy-review-note span {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.bud-strategy-form input,
+.bud-strategy-form select,
+.bud-strategy-param-grid input,
+.bud-strategy-review-note textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 10px;
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, #b89cff 20%, var(--border));
+  border-radius: var(--radius-sm);
+  outline: 0;
+  background: color-mix(in srgb, var(--surface-raised) 62%, transparent);
+  font-weight: 850;
+}
+
+.bud-strategy-review-note textarea {
+  min-height: 74px;
+  padding: 10px;
+  resize: vertical;
+}
+
+.bud-strategy-regimes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bud-strategy-regimes button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  color: var(--text-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-raised) 56%, transparent);
+  cursor: pointer;
+  font-weight: 850;
+}
+
+.bud-strategy-regimes button.is-active {
+  color: #62e6a8;
+  border-color: color-mix(in srgb, #62e6a8 38%, var(--border));
+  background: color-mix(in srgb, #62e6a8 10%, transparent);
+}
+
+.bud-strategy-evaluation {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, #26c8ff 18%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-raised) 50%, transparent);
+}
+
+.bud-strategy-evaluation__head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.bud-strategy-evaluation__head span {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.bud-strategy-evaluation__head strong {
+  color: var(--text);
+  font-weight: 900;
+}
+
+.bud-strategy-mini-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.bud-strategy-mini-metric {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--background) 42%, transparent);
+}
+
+.bud-strategy-mini-metric span {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.bud-strategy-mini-metric strong {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bud-strategy-mini-metric--positive strong {
+  color: var(--profit);
+}
+
+.bud-strategy-mini-metric--negative strong {
+  color: var(--risk);
+}
+
 .bud-json-card pre {
   max-height: 460px;
   margin: 0;
@@ -21933,7 +22185,12 @@ button {
 @media (max-width: 1180px) {
   .bud-grid--main-side,
   .bud-metric-grid,
-  .bud-kv {
+  .bud-kv,
+  .bud-strategy-workbench__layout,
+  .bud-strategy-form,
+  .bud-strategy-form--conditions,
+  .bud-strategy-param-grid,
+  .bud-strategy-mini-metrics {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -21953,8 +22210,18 @@ button {
   .bud-grid--main-side,
   .bud-metric-grid,
   .bud-kv,
-  .bud-order-ticket {
+  .bud-order-ticket,
+  .bud-strategy-workbench__layout,
+  .bud-strategy-form,
+  .bud-strategy-form--conditions,
+  .bud-strategy-param-grid,
+  .bud-strategy-mini-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .bud-strategy-editor__head {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .bud-record-table,

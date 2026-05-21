@@ -204,6 +204,10 @@ export function getBudResearchEvaluations(limit = 50, signal?: AbortSignal) {
   return budBackendJson<Record<string, unknown>[]>(`/research-platform/evaluations?limit=${encodeURIComponent(String(limit))}`, { signal });
 }
 
+export function registerBudResearchStrategy(body: Record<string, unknown>, signal?: AbortSignal) {
+  return budBackendJson<Record<string, unknown>>('/research-platform/strategies', { body, method: 'POST', signal, timeoutMs: 120_000 });
+}
+
 export function getBudPaperRiskLimits(signal?: AbortSignal) {
   return budBackendJson<Record<string, unknown>>('/paper/risk-limits', { signal });
 }
