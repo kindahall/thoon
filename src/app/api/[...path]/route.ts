@@ -21,9 +21,12 @@ import {
   verifyPassword,
 } from '../../../server/auth';
 import type { AuthSession } from '../../../server/auth';
+import { normalizeBudSymbol, placeBudTrade } from '../../../server/bud-backend-client';
 import { encryptSecret, maskSecret } from '../../../server/crypto';
 import { getThoonServerEnv, hasProductionEncryptionKey } from '../../../server/env';
 import { executeLiveOrder, fetchLiveAccountSnapshot, verifyLiveApiKey } from '../../../server/exchanges/live-executor';
+import { getHedgeFundReadiness } from '../../../server/hedge-fund-readiness';
+import { getLiveConnectorReadiness } from '../../../server/live-connector-readiness';
 import { getMetricsSnapshot, incrementMetric, observeApiResponse, logServerEvent } from '../../../server/observability';
 import { checkRateLimit, rateLimitHeaders } from '../../../server/rate-limit';
 import { getProductionReadiness } from '../../../server/readiness';
@@ -80,6 +83,7 @@ type RouteContext = {
 };
 
 const loginAttempts = new Map<string, { blockedUntil?: number; count: number; firstAttemptAt: number }>();
+const budLiveConfirmationText = 'I_UNDERSTAND_LIVE_CRYPTO_TRADING';
 const agentCronBacktestBatchSize = 24;
 const agentCronBacktestPeriod = '30D';
 const agentCronBacktestTargetCooldownMs = 45 * 60 * 1000;
@@ -1092,7 +1096,9 @@ async function postHandler(request: NextRequest, path: string[]) {
       db.exchangeRecords.find((item) => item.name === requestedExchangeName) ??
       db.exchangeRecords.find((item) => item.name === db.userPreferencesRecord.defaultExchange) ??
       db.exchangeRecords[0];
-    const liveApiKey = mode === 'live' ? getActiveTradeApiKey(db, exchange) : undefined;
+    const env = getThoonServerEnv();
+    const liveViaBud = mode === 'live' && env.liveExchangeProvider === 'bud';
+    const liveApiKey = mode === 'live' && !liveViaBud ? getActiveTradeApiKey(db, exchange) : undefined;
     const liveSecret = liveApiKey ? db.apiKeySecrets[liveApiKey.id] : undefined;
     let liveAccountSnapshot:
       | {
@@ -1113,7 +1119,63 @@ async function postHandler(request: NextRequest, path: string[]) {
       }
     }
 
-    if (mode === 'live') {
+    if (mode === 'live' && liveViaBud) {
+      const liveBlocker = getLiveTradingBlocker(db, exchange?.id || requestedExchangeId || requestedExchangeName || 'Live');
+
+      if (liveBlocker) {
+        incrementMetric('liveOrdersBlocked');
+
+        return json(
+          updateThoonDb((nextDb) => {
+            appendAuditEvent(nextDb, {
+              action: 'Live order blocked',
+              actor: 'system',
+              details: liveBlocker,
+              eventType: 'risk',
+              exchange: exchange?.name ?? 'Live',
+              status: 'blocked',
+              symbol,
+            });
+
+            return { allowed: false, error: liveBlocker };
+          }),
+          403,
+        );
+      }
+
+      const hedgeFundReadiness = await getHedgeFundReadiness(request.signal);
+
+      if (!hedgeFundReadiness.liveReady) {
+        incrementMetric('liveOrdersBlocked');
+
+        return json(
+          updateThoonDb((nextDb) => {
+            appendAuditEvent(nextDb, {
+              action: 'Live order blocked',
+              actor: 'system',
+              details: 'Live order blocked by Thoon hedge fund readiness gates.',
+              eventType: 'risk',
+              exchange: exchange?.name ?? 'Bud',
+              status: 'blocked',
+              symbol,
+            });
+
+            return {
+              allowed: false,
+              blockers: hedgeFundReadiness.blockers,
+              error: 'Live trading blocked by Thoon hedge fund readiness gates.',
+              readiness: {
+                generatedAt: hedgeFundReadiness.generatedAt,
+                score: hedgeFundReadiness.score,
+                status: hedgeFundReadiness.status,
+                summary: hedgeFundReadiness.summary,
+              },
+            };
+          }),
+          403,
+        );
+      }
+    } else if (mode === 'live') {
       if (!exchange || !liveApiKey || !liveSecret) {
         incrementMetric('liveOrdersBlocked');
 
@@ -1159,11 +1221,12 @@ async function postHandler(request: NextRequest, path: string[]) {
       }
     }
 
+    const riskExchange = liveViaBud && exchange && isBudServerConnectorReady(exchange.id) ? exchangeWithBudServerTrade(exchange) : exchange;
     const accountBalance = liveAccountSnapshot?.accountBalance ?? 25000;
     const availableBalance = liveAccountSnapshot?.availableBalance ?? accountBalance;
     const riskResult = evaluateRiskEngine({
       action: 'execute-trade',
-      exchange,
+      exchange: riskExchange,
       mode,
       order: buildRiskOrderInputFromDraft({
         accountBalance,
@@ -1248,7 +1311,77 @@ async function postHandler(request: NextRequest, path: string[]) {
         : undefined;
     let liveResult: Awaited<ReturnType<typeof executeLiveOrder>> | undefined;
 
-    if (mode === 'live') {
+    if (mode === 'live' && liveViaBud) {
+      if (!exchange || !isBudServerConnectorReady(exchange.id)) {
+        incrementMetric('liveOrdersBlocked');
+
+        return json(
+          updateThoonDb((nextDb) => {
+            appendAuditEvent(nextDb, {
+              action: 'Live order blocked',
+              actor: 'system',
+              details: 'Bud server connector is not ready for the selected exchange.',
+              eventType: 'api',
+              exchange: exchange?.name ?? 'Bud',
+              status: 'blocked',
+              symbol,
+            });
+
+            return { allowed: false, error: 'Bud server connector is not ready for the selected exchange.', riskResult };
+          }),
+          403,
+        );
+      }
+
+      try {
+        const budOrder = await placeBudTrade(
+          {
+            category: budExecutionCategory(exchange, asString(body.category)),
+            client_order_id: order.id.slice(0, 64),
+            exchange: exchange.id,
+            expected_price: order.price > 0 ? order.price : undefined,
+            leverage,
+            live_confirmation: budLiveConfirmationText,
+            live_trading: true,
+            max_slippage_bps: asNumber(body.maxSlippageBps, Math.max(1, db.userPreferencesRecord.defaultSlippage * 100)),
+            order_type: order.price > 0 ? 'LIMIT' : 'MARKET',
+            paper_trading: false,
+            price: order.price > 0 ? order.price : undefined,
+            quantity: order.size,
+            reduce_only: order.reduceOnly,
+            side: order.side,
+            strategy_id: executionStrategy?.id,
+            symbol: normalizeBudSymbol(symbol),
+          },
+          request.signal,
+        );
+        liveResult = {
+          endpoint: 'live',
+          exchangeOrderId: budOrderId(budOrder),
+          rawStatus: budOrderStatus(budOrder),
+        };
+        incrementMetric('liveOrdersSent');
+      } catch (error) {
+        incrementMetric('apiErrors');
+
+        return json(
+          updateThoonDb((nextDb) => {
+            appendAuditEvent(nextDb, {
+              action: 'Live order failed',
+              actor: 'system',
+              details: error instanceof Error ? error.message : 'Bud live exchange request failed.',
+              eventType: 'api',
+              exchange: exchange.name,
+              status: 'failed',
+              symbol,
+            });
+
+            return { allowed: false, error: error instanceof Error ? error.message : 'Bud live exchange request failed.', riskResult };
+          }),
+          502,
+        );
+      }
+    } else if (mode === 'live') {
       const apiKey = liveApiKey;
       const secret = liveSecret;
 
@@ -5993,8 +6126,9 @@ function getLiveTradingBlocker(db: ThoonDb, exchangeNameOrId: string) {
   }
 
   const exchange = findExchange(db, exchangeNameOrId);
+  const serverConnectorReady = exchange ? isBudServerConnectorReady(exchange.id) : false;
 
-  if (!exchange || exchange.status !== 'connected') {
+  if (!exchange || (exchange.status !== 'connected' && !serverConnectorReady)) {
     return 'Live trading requires a connected exchange.';
   }
 
@@ -6008,11 +6142,57 @@ function getLiveTradingBlocker(db: ThoonDb, exchangeNameOrId: string) {
     return 'Live DEX routing is not enabled yet. Keep this bot in paper mode until the signed wallet executor is configured.';
   }
 
-  if (!getActiveTradeApiKey(db, exchange)) {
+  if (!getActiveTradeApiKey(db, exchange) && !serverConnectorReady) {
     return 'Live trading requires an active trade-enabled API key. Save the key, run the connection test, then retry.';
   }
 
   return undefined;
+}
+
+function isBudServerConnectorReady(exchangeId: string) {
+  if (getThoonServerEnv().liveExchangeProvider !== 'bud') {
+    return false;
+  }
+
+  const connector = getLiveConnectorReadiness().venues.find((venue) => venue.id === exchangeId);
+
+  return connector?.kind === 'cex' && connector.ready;
+}
+
+function exchangeWithBudServerTrade(exchange: ThoonDb['exchangeRecords'][number]) {
+  return {
+    ...exchange,
+    permissions: Array.from(new Set([...exchange.permissions, 'read', 'trade'] as const)),
+    status: 'connected' as const,
+  };
+}
+
+function budExecutionCategory(exchange: ThoonDb['exchangeRecords'][number], requestedCategory: string) {
+  if (requestedCategory === 'spot' || requestedCategory === 'linear' || requestedCategory === 'inverse' || requestedCategory === 'option') {
+    return requestedCategory;
+  }
+
+  return exchange.marketType === 'perpetual' ? 'linear' : 'spot';
+}
+
+function budOrderId(response: Record<string, unknown>) {
+  return (
+    asString(response.order_id) ||
+    asString(response.orderId) ||
+    asString(response.client_order_id) ||
+    asString(response.clientOrderId) ||
+    asString(isRecord(response.raw_exchange_response) ? response.raw_exchange_response.orderId : undefined) ||
+    undefined
+  );
+}
+
+function budOrderStatus(response: Record<string, unknown>) {
+  return (
+    asString(response.status) ||
+    asString(response.rawStatus) ||
+    asString(isRecord(response.raw_exchange_response) ? response.raw_exchange_response.status : undefined) ||
+    'ACCEPTED'
+  );
 }
 
 function resolveBotSourceReport(db: ThoonDb, strategyId: string, symbol: string, sourceReportId: string) {

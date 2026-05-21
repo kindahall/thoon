@@ -247,8 +247,11 @@ export function ExchangeHubPage({ apiKeys, exchanges, wallets }: ExchangeHubPage
 
   async function refreshWalletReadiness() {
     try {
-      const response = await apiJson<Record<string, unknown>>('/api/wallets/readiness');
-      setWalletReadiness(asRecord(readPath(response, ['payload'])));
+      const [walletResponse, liveResponse] = await Promise.all([apiJson<Record<string, unknown>>('/api/wallets/readiness'), apiJson<Record<string, unknown>>('/api/live-connectors/readiness')]);
+      setWalletReadiness({
+        ...asRecord(readPath(walletResponse, ['payload'])),
+        liveConnectors: asRecord(readPath(liveResponse, ['payload'])),
+      });
     } catch (error) {
       setWalletStatus(error instanceof Error ? error.message : 'Wallet readiness unavailable');
     }
@@ -521,6 +524,8 @@ function ExchangeMetric({ icon, label, tone, value }: { icon: ReactNode; label: 
 function WalletReadinessCard({ data, onRefresh }: { data: Record<string, unknown> | null; onRefresh: () => void }) {
   const liveReady = readPath(data, ['liveReady']) === true;
   const venues = asArray(readPath(data, ['venues']));
+  const liveConnectors = asRecord(readPath(data, ['liveConnectors']));
+  const connectorVenues = asArray(readPath(liveConnectors, ['venues']));
   const summary = asRecord(readPath(data, ['summary']));
   const walletConnect = asRecord(readPath(data, ['walletConnect']));
 
@@ -542,15 +547,20 @@ function WalletReadinessCard({ data, onRefresh }: { data: Record<string, unknown
         <span>WalletConnect</span>
         <Badge tone={readPath(walletConnect, ['status']) === 'configured' ? 'positive' : 'warning'}>{formatReadinessValue(readPath(walletConnect, ['status']))}</Badge>
       </div>
+      <div className="readiness-item">
+        <KeyRound size={16} />
+        <span>Server CEX</span>
+        <Badge tone={Number(readPath(liveConnectors, ['summary', 'cexReady']) ?? 0) >= 3 ? 'positive' : 'warning'}>{formatReadinessValue(readPath(liveConnectors, ['summary', 'cexReady']))} / 3</Badge>
+      </div>
       <div className="wallet-list">
-        {venues.slice(0, 5).map((venue) => (
+        {[...connectorVenues.slice(0, 3), ...venues.slice(3, 5)].map((venue) => (
           <div className="wallet-row" key={String(readPath(venue, ['id']))}>
             <span>
-              {readPath(venue, ['venueType']) === 'dex' ? <WalletCards size={16} /> : <KeyRound size={16} />}
+              {readPath(venue, ['kind']) === 'dex-perp' || readPath(venue, ['venueType']) === 'dex' ? <WalletCards size={16} /> : <KeyRound size={16} />}
             </span>
             <div>
               <strong>{formatReadinessValue(readPath(venue, ['name']))}</strong>
-              <small>{formatReadinessValue(readPath(venue, ['liveExecutionPath']))}</small>
+              <small>{formatReadinessValue(readPath(venue, ['nextAction']) ?? readPath(venue, ['liveExecutionPath']))}</small>
             </div>
             <Badge tone={readPath(venue, ['ready']) === true ? 'positive' : 'warning'}>{formatReadinessValue(readPath(venue, ['status']))}</Badge>
           </div>

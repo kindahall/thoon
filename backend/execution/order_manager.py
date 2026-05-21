@@ -513,6 +513,8 @@ class OrderManager:
             self.kill_switch.record_latency(latency_ms, f"{exchange}.{operation}")
             self.kill_switch.ensure_not_active()
             return result
+        except KillSwitchActiveError:
+            raise
         except Exception as error:
             self.kill_switch.record_api_error(f"{exchange}.{operation}: {error}")
             raise

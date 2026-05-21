@@ -79,6 +79,15 @@ test('Bud backend status, capabilities and safety gates are live', async ({ apiR
   assert(Array.isArray(walletReadiness.venues) && walletReadiness.venues.length >= 5, 'Wallet readiness checks CEX and DEX target venues');
   assert(walletReadiness.blockers.includes('walletconnect_sdk_not_installed') || walletReadiness.walletConnect?.status, 'WalletConnect status is explicit');
 
+  const liveConnectors = unwrapPayload(await readJsonResponse(await apiRequest('/api/live-connectors/readiness'), 'Live connector readiness returns JSON'));
+  assertEqual(liveConnectors.liveReady, false, 'Live connector readiness remains blocked by default');
+  assertEqual(liveConnectors.global?.liveOperatorMode, 'single-user', 'Live connector readiness defaults to single-user mode');
+  assert(Array.isArray(liveConnectors.venues) && liveConnectors.venues.length === 5, 'Live connector readiness checks three CEX and two DEX venues');
+  assert(liveConnectors.venues.some((venue) => venue.id === 'binance' && venue.kind === 'cex'), 'Binance server connector readiness is exposed');
+  assert(liveConnectors.venues.some((venue) => venue.id === 'hyperliquid' && venue.signer?.officialAdapterRequired === true), 'Hyperliquid official signer blocker is explicit');
+  assert(liveConnectors.venues.some((venue) => venue.id === 'dydx' && venue.signer?.officialAdapterRequired === true), 'dYdX official signer blocker is explicit');
+  assert(liveConnectors.blockers.includes('bud_execution_live_trading_not_enabled') || liveConnectors.blockers.includes('thoon_app_mode_not_live_enabled'), 'Live connector readiness explains global live blockers');
+
   const deterministicAgents = unwrapPayload(await readJsonResponse(await apiRequest('/api/strategy-agents/deterministic'), 'Deterministic agents status returns JSON'));
   assert(Array.isArray(deterministicAgents.agents) && deterministicAgents.agents.length === 2, 'Two deterministic non-LLM TradingView agents are registered');
 });
@@ -119,6 +128,11 @@ test('Bud research registry is persisted in PostgreSQL and returns real evaluati
   assert(registry.runs.length >= 1, 'At least one research run is stored');
   assert(registry.strategies.length >= 1, 'At least one evaluated strategy is stored');
   assert(registry.evaluations.length >= 1, 'At least one evaluation is stored');
+  const strategyTypes = new Set(registry.strategies.map((strategy) => strategy.strategy_type).filter(Boolean));
+  assert(strategyTypes.size >= 4, 'Research registry stores a multi-family strategy set');
+  assert(strategyTypes.has('sma_cross'), 'Research registry keeps SMA cross baseline candidates');
+  assert(strategyTypes.has('rsi_mean_reversion') || strategyTypes.has('bollinger_reversion'), 'Research registry includes mean-reversion candidates');
+  assert(strategyTypes.has('momentum_volatility') || strategyTypes.has('volume_breakout') || strategyTypes.has('donchian_breakout'), 'Research registry includes breakout or momentum candidates');
 });
 
 test('Bud paper execution is based on live market price and live order paths are blocked', async ({ apiRequest }) => {
@@ -210,9 +224,22 @@ test('Source wiring points rebuilt pages to Bud and avoids client-side exchange 
 
   const exchangeHub = await readSource('src/screens/ExchangeHubPage.tsx');
   assertIncludes(exchangeHub, '/api/wallets/readiness', 'Exchange hub checks wallet and DEX execution readiness');
+  assertIncludes(exchangeHub, '/api/live-connectors/readiness', 'Exchange hub checks server-side Bud connector readiness');
+
+  const liveConnectors = await readSource('src/server/live-connector-readiness.ts');
+  assertIncludes(liveConnectors, 'BINANCE_API_KEY', 'Live readiness checks Binance server credentials');
+  assertIncludes(liveConnectors, 'BYBIT_API_KEY', 'Live readiness checks Bybit server credentials');
+  assertIncludes(liveConnectors, 'BITGET_API_PASSPHRASE', 'Live readiness checks Bitget passphrase');
+  assertIncludes(liveConnectors, 'HYPERLIQUID_OFFICIAL_SIGNER_ENABLED', 'Live readiness keeps Hyperliquid signer explicit');
+  assertIncludes(liveConnectors, 'DYDX_OFFICIAL_SIGNER_ENABLED', 'Live readiness keeps dYdX signer explicit');
+  assertIncludes(liveConnectors, 'official_signer_code_not_implemented', 'DEX live signing cannot be faked by env flags');
 
   const tradeRoute = await readSource('src/app/api/bud/trade/route.ts');
   assertIncludes(tradeRoute, 'getHedgeFundReadiness', 'Bud trade route gates live trading with hedge fund readiness');
+
+  const legacyTradingRoute = await readSource('src/app/api/[...path]/route.ts');
+  assertIncludes(legacyTradingRoute, 'placeBudTrade', 'Legacy chart live execution routes through Bud when configured');
+  assertIncludes(legacyTradingRoute, "liveExchangeProvider === 'bud'", 'Legacy chart live execution detects Bud as the live provider');
 
   const stateStrip = await readSource('src/components/bud/BudStateStrip.tsx');
   assertIncludes(stateStrip, '/api/bud/status', 'Global Bud strip reads Bud status');

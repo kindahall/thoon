@@ -33,8 +33,9 @@ export type ThoonServerEnv = {
   encryptionKey: string;
   krakenMarketBaseUrl: string;
   kucoinMarketBaseUrl: string;
-  liveExchangeProvider: 'disabled' | 'binance';
+  liveExchangeProvider: 'disabled' | 'binance' | 'bitget' | 'bud' | 'bybit';
   liveOrderEndpoint: 'test' | 'live';
+  liveOperatorMode: 'saas' | 'single-user';
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   loginRateLimitMax: number;
   loginRateLimitWindowSeconds: number;
@@ -100,8 +101,9 @@ export function getThoonServerEnv(): ThoonServerEnv {
     encryptionKey: process.env.THOON_ENCRYPTION_KEY ?? defaultThoonEncryptionKey,
     krakenMarketBaseUrl: process.env.KRAKEN_MARKET_BASE_URL ?? 'https://api.kraken.com',
     kucoinMarketBaseUrl: process.env.KUCOIN_MARKET_BASE_URL ?? 'https://api.kucoin.com',
-    liveExchangeProvider: process.env.THOON_LIVE_EXCHANGE_PROVIDER === 'binance' ? 'binance' : 'disabled',
+    liveExchangeProvider: normalizeLiveExchangeProvider(process.env.THOON_LIVE_EXCHANGE_PROVIDER),
     liveOrderEndpoint: process.env.THOON_LIVE_ORDER_ENDPOINT === 'live' ? 'live' : 'test',
+    liveOperatorMode: process.env.THOON_LIVE_OPERATOR_MODE === 'saas' ? 'saas' : 'single-user',
     logLevel: normalizeLogLevel(process.env.THOON_LOG_LEVEL),
     loginRateLimitMax: positiveInteger(process.env.THOON_LOGIN_RATE_LIMIT_MAX, 5),
     loginRateLimitWindowSeconds: positiveInteger(process.env.THOON_LOGIN_RATE_LIMIT_WINDOW_SECONDS, 300),
@@ -192,6 +194,14 @@ function normalizeMarketDataProvider(value: string | undefined): ThoonServerEnv[
   }
 
   return 'binance';
+}
+
+function normalizeLiveExchangeProvider(value: string | undefined): ThoonServerEnv['liveExchangeProvider'] {
+  if (value === 'binance' || value === 'bybit' || value === 'bitget' || value === 'bud') {
+    return value;
+  }
+
+  return 'disabled';
 }
 
 function positiveNumber(value: string | undefined, fallback: number) {

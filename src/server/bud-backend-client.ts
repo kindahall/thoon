@@ -274,11 +274,11 @@ function parseJson(text: string): unknown {
 
 function errorMessage(payload: unknown, status: number) {
   if (typeof payload === 'object' && payload !== null && 'detail' in payload) {
-    return String((payload as { detail: unknown }).detail);
+    return stringifyErrorValue((payload as { detail: unknown }).detail);
   }
 
   if (typeof payload === 'object' && payload !== null && 'error' in payload) {
-    return String((payload as { error: unknown }).error);
+    return stringifyErrorValue((payload as { error: unknown }).error);
   }
 
   return `Bud backend request failed: ${status}`;
@@ -286,8 +286,20 @@ function errorMessage(payload: unknown, status: number) {
 
 function errorDetails(payload: unknown) {
   if (typeof payload === 'object' && payload !== null && 'details' in payload) {
-    return String((payload as { details: unknown }).details);
+    return stringifyErrorValue((payload as { details: unknown }).details);
   }
 
   return undefined;
+}
+
+function stringifyErrorValue(value: unknown) {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }

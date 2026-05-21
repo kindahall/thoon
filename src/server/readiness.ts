@@ -74,6 +74,7 @@ export async function getProductionReadiness() {
     auth,
     checks,
     database: postgres,
+    liveOperatorMode: env.liveOperatorMode,
     ok: checks.every((check) => check.ok),
     release: env.release,
     timestamp: new Date().toISOString(),

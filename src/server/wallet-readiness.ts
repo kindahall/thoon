@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { getThoonServerEnv, hasProductionEncryptionKey } from './env';
+import { getLiveConnectorReadiness } from './live-connector-readiness';
 import { readThoonDb } from './thoon-db';
 import type { ExchangeConnection, WalletConnection } from '../types/trading';
 
@@ -37,6 +38,7 @@ export type WalletExecutionReadiness = {
     connectedCex: number;
     connectedDexWallets: number;
     connectedWallets: number;
+    serverCexReady: number;
     readyVenues: number;
     targetVenues: number;
   };
@@ -56,8 +58,9 @@ export function getWalletExecutionReadiness(): WalletExecutionReadiness {
   const env = getThoonServerEnv();
   const walletConnectProjectId = Boolean(process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID?.trim() || process.env.WALLETCONNECT_PROJECT_ID?.trim());
   const walletConnectSdkInstalled = packageHasWalletConnect();
+  const serverConnectors = getLiveConnectorReadiness();
   const targetIds = [...cexTargets, ...dexTargets];
-  const venues = targetIds.map((id) => buildVenueReadiness(db.exchangeRecords.find((exchange) => exchange.id === id), db, env));
+  const venues = targetIds.map((id) => buildVenueReadiness(db.exchangeRecords.find((exchange) => exchange.id === id), db, env, serverConnectors));
   const blockers = Array.from(new Set(venues.flatMap((venue) => venue.blockers))).slice(0, 50);
   const readyVenues = venues.filter((venue) => venue.ready).length;
 
@@ -84,6 +87,7 @@ export function getWalletExecutionReadiness(): WalletExecutionReadiness {
       connectedCex: db.exchangeRecords.filter((exchange) => exchange.venueType !== 'dex' && exchange.status === 'connected').length,
       connectedDexWallets: db.walletRecords.filter((wallet) => wallet.status === 'connected' && ['evm', 'cosmos', 'solana', 'multi'].includes(wallet.chain)).length,
       connectedWallets: db.walletRecords.filter((wallet) => wallet.status === 'connected').length,
+      serverCexReady: serverConnectors.summary.cexReady,
       readyVenues,
       targetVenues: venues.length,
     },
@@ -96,11 +100,13 @@ export function getWalletExecutionReadiness(): WalletExecutionReadiness {
   };
 }
 
-function buildVenueReadiness(exchange: ExchangeConnection | undefined, db: ReturnType<typeof readThoonDb>, env: ReturnType<typeof getThoonServerEnv>): WalletExecutionVenueReadiness {
+function buildVenueReadiness(exchange: ExchangeConnection | undefined, db: ReturnType<typeof readThoonDb>, env: ReturnType<typeof getThoonServerEnv>, serverConnectors: ReturnType<typeof getLiveConnectorReadiness>): WalletExecutionVenueReadiness {
   const id = exchange?.id ?? 'unknown';
   const venueType = exchange?.venueType === 'dex' ? 'dex' : 'cex';
   const connectedExchange = exchange?.status === 'connected';
-  const activeTradeKey = Boolean(exchange && db.apiKeyRecords.some((key) => key.exchangeId === exchange.id && key.status === 'active' && key.permissions.includes('trade')));
+  const serverConnector = serverConnectors.venues.find((venue) => venue.id === id);
+  const storedTradeKey = Boolean(exchange && db.apiKeyRecords.some((key) => key.exchangeId === exchange.id && key.status === 'active' && key.permissions.includes('trade')));
+  const serverTradeKey = Boolean(serverConnector?.credentials.every((credential) => !credential.required || credential.configured));
   const requiredChain = venueType === 'dex' ? requiredWalletChain(id) : undefined;
   const connectedWallets =
     requiredChain === undefined
@@ -122,7 +128,7 @@ function buildVenueReadiness(exchange: ExchangeConnection | undefined, db: Retur
     blockers.push(`${id}_exchange_missing`);
   }
 
-  if (!connectedExchange) {
+  if (!connectedExchange && !serverTradeKey) {
     blockers.push(`${id}_exchange_not_connected`);
   }
 
@@ -143,12 +149,12 @@ function buildVenueReadiness(exchange: ExchangeConnection | undefined, db: Retur
   }
 
   if (venueType === 'cex') {
-    if (!activeTradeKey) {
+    if (!storedTradeKey && !serverTradeKey) {
       blockers.push(`${id}_trade_api_key_missing`);
     }
 
-    if (id !== 'binance') {
-      warnings.push('Bud backend supports this live CEX connector; legacy Thoon local executor remains Binance-only.');
+    if (serverTradeKey) {
+      warnings.push('Server-side Bud credentials are configured; UI key storage is optional for this single-user app.');
     }
   } else {
     if (!connectedWallets.length) {
@@ -160,7 +166,7 @@ function buildVenueReadiness(exchange: ExchangeConnection | undefined, db: Retur
   }
 
   return {
-    activeTradeKey,
+    activeTradeKey: storedTradeKey || serverTradeKey,
     blockers,
     connectedExchange,
     connectedWallets,

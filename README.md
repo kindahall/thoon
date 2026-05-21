@@ -175,7 +175,9 @@ L’endpoint `/api/production/readiness` doit répondre `ok: true` avant `THOON_
 
 ### Trading réel contrôlé
 
-Thoon expose maintenant `/api/bud/trade` comme route serveur unique vers Bud `/trade`. Les ordres paper passent, mais tout payload live est bloqué tant que `/api/bud/hedge-fund-readiness` ne répond pas `liveReady: true`. Les routes Binance, Bybit et Bitget existent côté Bud pour l’exécution signée; Hyperliquid et dYdX restent en lecture/readiness tant que les signers wallet officiels isolés ne sont pas activés.
+Thoon expose maintenant `/api/bud/trade` comme route serveur unique vers Bud `/trade`. Les ordres paper passent, mais tout payload live est bloqué tant que `/api/bud/hedge-fund-readiness` ne répond pas `liveReady: true`. Le chemin historique `/api/trading/execute` route aussi vers Bud quand `THOON_LIVE_EXCHANGE_PROVIDER=bud`, ce qui évite l’ancien exécuteur local Binance-only. Les routes Binance, Bybit et Bitget existent côté Bud pour l’exécution signée; Hyperliquid et dYdX restent en lecture/readiness tant que les signers wallet officiels isolés ne sont pas activés.
+
+Pour ton mode mono-utilisateur, garde `THOON_SAAS_MODE=disabled` et `THOON_LIVE_OPERATOR_MODE=single-user`. Le passage live CEX demande au minimum `THOON_APP_MODE=live-enabled`, `THOON_DATABASE_PROVIDER=postgres`, `THOON_AUTH_MODE=local-required`, une vraie `THOON_ENCRYPTION_KEY`, `THOON_LIVE_EXCHANGE_PROVIDER=bud`, `EXECUTION_LIVE_TRADING_ENABLED=true`, puis les secrets serveur Binance/Bybit/Bitget nécessaires. L’endpoint `/api/live-connectors/readiness` affiche séparément la readiness serveur des CEX et les blocages DEX officiels.
 
 Les agents non-LLM sont exposés via `/api/strategy-agents/deterministic`. Ils récupèrent des métadonnées publiques TradingView, les soumettent au registre de recherche Thoon et créent des tâches de backtest/paper uniquement. Le test demandé de bot paper 2h passe par `/api/bud/paper-bot-test`: il ouvre une micro-position paper, trace une `PaperTestSession`, puis clôture et mesure le résultat à l’échéance.
 
