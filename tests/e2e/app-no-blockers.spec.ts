@@ -79,10 +79,23 @@ test('sidebar navigation links all open live pages', async ({ page }) => {
 });
 
 test('Bud workspace safe actions finish and render structured results', async ({ page }) => {
+  test.setTimeout(240_000);
+
   await gotoAuthenticated(page, '/agents');
   await clickAndExpect(page, 'Macro', 'macro_regime', 120_000);
   await clickAndExpect(page, 'Portfolio', 'weights', 120_000);
   await clickAndExpect(page, 'Arbitrage', 'arbitrage_opportunities', 120_000);
+
+  await gotoAuthenticated(page, '/backtest');
+  await expect(page.getByRole('tab', { name: /Lab/ })).toBeVisible();
+  await expect(page.getByRole('tab', { name: /Results/ })).toBeVisible();
+  await expect(page.getByRole('tab', { name: /Orchestrator/ })).toBeVisible();
+  await expect(page.locator('body')).toContainText('Selectable Backtests');
+  await expect(page.getByLabel('Backtest strategy name')).toBeVisible();
+  await expect(page.getByLabel('Backtest orchestrator note')).toBeVisible();
+  await clickAndExpect(page, 'Run backtest', 'walk_forward', 120_000);
+  await page.getByRole('tab', { name: /Orchestrator/ }).click();
+  await clickAndExpect(page, 'Submit to orchestrator', 'Orchestrator Payload', 45_000);
 
   await gotoAuthenticated(page, '/strategies');
   await clickAndExpect(page, 'Load registry', 'Strategies', 45_000);
@@ -135,6 +148,18 @@ test('Bud API surface returns controlled JSON for every backend module', async (
   await expectBudGet(request, '/api/bud/hedge-fund-readiness', ['status', 'score', 'gates', 'summary', 'blockers']);
 
   await expectBudPost(request, '/api/bud/backtest', { interval: '1h', limit: 240, symbol: 'BTCUSDT' }, ['symbol', 'metrics', 'walk_forward']);
+  await expectBudPost(
+    request,
+    '/api/bud/backtest-orchestrator',
+    {
+      draft: { name: 'E2E editable strategy', strategy_type: 'sma_cross' },
+      execution: { direction_mode: 'both', fee_bps: 10, risk_per_trade_pct: 1, slippage_bps: 3 },
+      result: { metrics: { max_drawdown: 0.03, total_return: 0.04, total_trades: 24, win_rate: 0.5 }, walk_forward: { accepted: true } },
+      symbol: 'BTCUSDT',
+      timeframe: '1h',
+    },
+    ['reply', 'questions', 'source'],
+  );
   await expectBudPost(request, '/api/bud/macro', { crypto_lookback: 240, interval: '1h', macro_lookback_days: 120, symbols: ['BTCUSDT', 'ETHUSDT'] }, ['macro_regime', 'correlations', 'allocation']);
   await expectBudPost(request, '/api/bud/portfolio', { interval: '1h', lookback: 240, symbols: ['BTCUSDT', 'ETHUSDT', 'ONDOUSDT'] }, ['weights', 'expected_return', 'expected_risk']);
   await expectBudPost(request, '/api/bud/arbitrage', { max_opportunities: 4, symbols: ['BTCUSDT', 'ETHUSDT'], target_notional: 250 }, ['arbitrage_opportunities', 'expected_profit', 'execution_feasibility']);

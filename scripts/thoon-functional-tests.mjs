@@ -239,6 +239,11 @@ test('Source wiring points rebuilt pages to Bud and avoids client-side exchange 
   assertIncludes(budWorkspace, 'subscribeBudRuntimeState', 'Bud action runtime state persists across page navigation');
   assertIncludes(budWorkspace, 'PreviousResult', 'Agents page shows a defined running state instead of empty metrics while Bud works');
   assertIncludes(budWorkspace, '/api/bud/backtest', 'Backtest page uses Bud backtest route');
+  assertIncludes(budWorkspace, '/api/bud/backtest-orchestrator', 'Backtest page submits edited scenarios to a Bud orchestrator route');
+  assertIncludes(budWorkspace, 'BacktestLab', 'Backtest page exposes selectable editable backtest scenarios');
+  assertIncludes(budWorkspace, 'Selectable Backtests', 'Backtest page lets the user select more than one backtest scenario');
+  assertIncludes(budWorkspace, 'Save variant', 'Backtest page can save edited backtest variants');
+  assertIncludes(budWorkspace, 'Submit to orchestrator', 'Backtest page can submit edited backtests to the orchestrator');
   assertIncludes(budWorkspace, 'Ready to run', 'Backtest page shows a defined idle state instead of undefined metrics');
   assertIncludes(budWorkspace, 'Bud is running the walk-forward backtest', 'Backtest page shows a defined running state while Bud works');
   assertIncludes(budWorkspace, '/api/bud/research', 'Strategies page uses Bud research route');

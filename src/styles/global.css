@@ -22270,6 +22270,83 @@ button {
   color: var(--risk);
 }
 
+.bud-backtest-lab {
+  --bud-accent: #62e6a8;
+}
+
+.bud-backtest-lab__layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.35fr) minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+}
+
+.bud-backtest-editor,
+.bud-backtest-orchestrator {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.bud-backtest-risk-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.bud-backtest-risk-grid label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.bud-backtest-risk-grid span {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.bud-backtest-risk-grid input {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 10px;
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, #62e6a8 20%, var(--border));
+  border-radius: var(--radius-sm);
+  outline: 0;
+  background: color-mix(in srgb, var(--surface-raised) 62%, transparent);
+  font-weight: 850;
+}
+
+.bud-backtest-addons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bud-backtest-addons button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  color: var(--text-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-raised) 56%, transparent);
+  cursor: pointer;
+  font-weight: 850;
+}
+
+.bud-backtest-addons button.is-active {
+  color: #62e6a8;
+  border-color: color-mix(in srgb, #62e6a8 38%, var(--border));
+  background: color-mix(in srgb, #62e6a8 10%, transparent);
+}
+
 .bud-bot-workbench {
   --bud-accent: #ffb86b;
 }
@@ -22620,6 +22697,8 @@ button {
   .bud-strategy-mini-metrics,
   .bud-strategy-mini-metrics--wide,
   .bud-strategy-details-grid,
+  .bud-backtest-lab__layout,
+  .bud-backtest-risk-grid,
   .bud-bot-workbench__layout,
   .bud-bot-mini-metrics,
   .bud-bot-selection-grid {
@@ -22652,6 +22731,8 @@ button {
   .bud-strategy-mini-metrics,
   .bud-strategy-mini-metrics--wide,
   .bud-strategy-details-grid,
+  .bud-backtest-lab__layout,
+  .bud-backtest-risk-grid,
   .bud-bot-workbench__layout,
   .bud-bot-mini-metrics,
   .bud-bot-selection-grid,

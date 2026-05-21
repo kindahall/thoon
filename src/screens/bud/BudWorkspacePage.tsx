@@ -59,6 +59,24 @@ type BudRuntimeState = {
   updatedAt?: string;
 };
 
+type BacktestExecutionDraft = {
+  addons: string[];
+  directionMode: string;
+  feeBps: number;
+  initialCash: number;
+  positionCapPct: number;
+  riskPerTradePct: number;
+  slippageBps: number;
+  stopLossAtr: number;
+  takeProfitR: number;
+  trailingStopAtr: number;
+};
+
+type BacktestRunOptions = {
+  draft?: StrategyDraft;
+  execution?: BacktestExecutionDraft;
+};
+
 type StrategyDraft = {
   conditions: JsonRecord;
   metadata: JsonRecord;
@@ -81,6 +99,8 @@ type StrategyParamField = {
 };
 
 type BotWorkspaceTab = 'decisions' | 'orchestrator' | 'payload' | 'workbench';
+
+type BacktestWorkspaceTab = 'lab' | 'orchestrator' | 'payload' | 'results';
 
 type StrategyWorkspaceTab = 'activity' | 'payload' | 'readiness' | 'workbench';
 
@@ -110,6 +130,8 @@ const readinessExchanges = ['binance', 'bybit', 'bitget', 'hyperliquid', 'dydx']
 const listPageSize = 10;
 const strategyTypes = ['sma_cross', 'ema_trend', 'donchian_breakout', 'rsi_mean_reversion', 'bollinger_reversion', 'momentum_volatility', 'volume_breakout'];
 const strategyStatuses = ['candidate', 'active', 'retired'];
+const backtestAddonOptions = ['rsi_filter', 'volume_confirmation', 'atr_stop', 'trailing_stop', 'fee_stress', 'strict_oos'];
+const backtestDirectionOptions = ['both', 'long-only', 'short-only'];
 const regimeOptions = ['bull_market', 'bear_market', 'high_volatility', 'low_liquidity'];
 const strategyParamFields: Record<string, StrategyParamField[]> = {
   bollinger_reversion: [
@@ -252,6 +274,7 @@ export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMar
   const [botBacktestData, setBotBacktestData] = useState<JsonRecord | null>(null);
   const [botStrategyData, setBotStrategyData] = useState<JsonRecord | null>(null);
   const [orchestratorChatData, setOrchestratorChatData] = useState<JsonRecord | null>(null);
+  const [backtestOrchestratorData, setBacktestOrchestratorData] = useState<JsonRecord | null>(null);
   const [runtimeState, setRuntimeState] = useState<BudRuntimeState>(() => readBudRuntimeState(runtimeKey));
   const { error, pendingAction, pendingStartedAt, resultData } = runtimeState;
 
@@ -283,7 +306,7 @@ export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMar
       void refreshKillSwitch();
     }
 
-    if (page === 'strategies' || page === 'history') {
+    if (page === 'backtest' || page === 'strategies' || page === 'history') {
       void loadResearch();
     }
 
@@ -508,16 +531,36 @@ export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMar
     );
   }
 
-  async function runBacktest() {
+  async function runBacktest(options: BacktestRunOptions = {}) {
     await runAction('backtest', () =>
       postJson<JsonRecord>('/api/bud/backtest', {
+        execution_settings: options.execution ? backtestExecutionPayload(options.execution) : undefined,
         interval,
         limit: Math.max(limit, 240),
+        review_note: options.draft ? String(options.draft.metadata.user_review_note ?? '') : undefined,
+        strategy: options.draft ? backtestStrategyFromDraft(options.draft, options.execution) : undefined,
         symbol,
+        variant_addons: options.execution?.addons,
         validate_data_quality: true,
         walk_forward_validate: true,
       }),
     );
+  }
+
+  async function submitBacktestToOrchestrator(payload: JsonRecord) {
+    setPendingAction('backtest-orchestrator');
+    setError('');
+
+    try {
+      const response = asRecord(unwrapBudPayload(await postJson<JsonRecord>('/api/bud/backtest-orchestrator', payload)));
+      setBacktestOrchestratorData(response);
+      return response;
+    } catch (orchestratorError) {
+      setError(orchestratorError instanceof Error ? orchestratorError.message : 'Backtest orchestrator unavailable');
+      return null;
+    } finally {
+      setPendingAction('');
+    }
   }
 
   async function runResearch() {
@@ -640,6 +683,9 @@ export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMar
             if (page === 'orders' || page === 'history') {
               void refreshTradingState();
             }
+            if (page === 'backtest') {
+              void loadResearch();
+            }
             if (page === 'strategies') {
               void loadResearch();
               void loadDeterministicAgents();
@@ -681,7 +727,21 @@ export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMar
         />
       ) : null}
 
-      {page === 'backtest' ? <BacktestView interval={interval} limit={limit} onRun={() => void runBacktest()} pendingAction={pendingAction} pendingStartedAt={pendingStartedAt} result={activeResult} symbol={symbol} /> : null}
+      {page === 'backtest' ? (
+        <BacktestView
+          interval={interval}
+          limit={limit}
+          onRun={(options) => void runBacktest(options)}
+          onSaveStrategy={(strategy) => void saveResearchStrategy(strategy)}
+          onSubmitOrchestrator={(payload) => void submitBacktestToOrchestrator(payload)}
+          orchestratorData={backtestOrchestratorData}
+          pendingAction={pendingAction}
+          pendingStartedAt={pendingStartedAt}
+          researchData={researchData}
+          result={activeResult}
+          symbol={symbol}
+        />
+      ) : null}
 
       {page === 'strategies' ? (
         <StrategiesView
@@ -893,80 +953,456 @@ function BacktestView({
   interval,
   limit,
   onRun,
+  onSaveStrategy,
+  onSubmitOrchestrator,
+  orchestratorData,
   pendingAction,
   pendingStartedAt,
+  researchData,
   result,
   symbol,
 }: {
   interval: string;
   limit: number;
-  onRun: () => void;
+  onRun: (options?: BacktestRunOptions) => void;
+  onSaveStrategy: (strategy: StrategyDraft) => void;
+  onSubmitOrchestrator: (payload: JsonRecord) => void;
+  orchestratorData: JsonRecord | null;
   pendingAction: string;
   pendingStartedAt?: string;
+  researchData: JsonRecord | null;
   result: JsonRecord | null;
   symbol: string;
 }) {
+  const researchStrategies = asArray(readPath(researchData, ['strategies']));
+  const fallbackStrategies = useMemo(() => defaultBacktestScenarios(symbol, interval), [interval, symbol]);
+  const strategies = researchStrategies.length ? researchStrategies : fallbackStrategies;
+  const evaluations = asArray(readPath(researchData, ['evaluations']));
+  const firstStrategyKey = strategyRecordKey(strategies[0]);
+  const [activeTab, setActiveTab] = useState<BacktestWorkspaceTab>('lab');
+  const [selectedStrategyKey, setSelectedStrategyKey] = useState(firstStrategyKey);
+  const selectedStrategy = asRecord(strategies.find((strategy) => strategyRecordKey(strategy) === selectedStrategyKey) ?? strategies[0]);
+  const selectedEvaluation = asRecord(findStrategyEvaluation(selectedStrategy, evaluations));
+  const [draft, setDraft] = useState<StrategyDraft>(() => strategyDraftFromRecord(selectedStrategy, symbol, interval));
+  const [execution, setExecution] = useState<BacktestExecutionDraft>(() => defaultBacktestExecutionDraft());
   const metrics = asRecord(readPath(result, ['metrics']));
   const quality = asRecord(readPath(result, ['data_quality']));
   const walkForward = asRecord(readPath(result, ['walk_forward']));
   const isRunning = pendingAction === 'backtest';
+  const isSubmitting = pendingAction === 'backtest-orchestrator';
   const hasResult = Boolean(result);
   const emptyMetric = isRunning ? 'Running' : hasResult ? 'No data' : 'Ready';
   const metricValue = (value: unknown, formatter: (value: unknown) => string) => (hasResult && value !== undefined && value !== null && value !== '' ? formatter(value) : emptyMetric);
+  const tabs: Array<{ badge: string; id: BacktestWorkspaceTab; label: string }> = [
+    { badge: strategies.length ? String(strategies.length) : 'Manual', id: 'lab', label: 'Lab' },
+    { badge: hasResult ? 'Loaded' : 'Ready', id: 'results', label: 'Results' },
+    { badge: orchestratorData ? 'Reply' : 'Submit', id: 'orchestrator', label: 'Orchestrator' },
+    { badge: result || researchData ? 'JSON' : 'Empty', id: 'payload', label: 'Payload' },
+  ];
+
+  useEffect(() => {
+    if (!selectedStrategyKey && firstStrategyKey) {
+      setSelectedStrategyKey(firstStrategyKey);
+    }
+  }, [firstStrategyKey, selectedStrategyKey]);
+
+  useEffect(() => {
+    if (selectedStrategyKey && strategies.length && !strategies.some((strategy) => strategyRecordKey(strategy) === selectedStrategyKey)) {
+      setSelectedStrategyKey(firstStrategyKey);
+    }
+  }, [firstStrategyKey, selectedStrategyKey, strategies]);
+
+  useEffect(() => {
+    setDraft(strategyDraftFromRecord(selectedStrategy, symbol, interval));
+  }, [selectedStrategy, symbol, interval]);
+
+  function runEditedBacktest() {
+    setActiveTab('results');
+    onRun({ draft, execution });
+  }
+
+  function submitToOrchestrator() {
+    setActiveTab('orchestrator');
+    onSubmitOrchestrator({
+      draft: strategyInputFromDraft(draft),
+      execution: backtestExecutionPayload(execution),
+      result,
+      selectedEvaluation,
+      symbol,
+      timeframe: interval,
+    });
+  }
+
+  return (
+    <div className="bud-strategy-shell">
+      <Card className="bud-action-panel bud-accent-green bud-strategy-command">
+        <div className="bud-panel-head">
+          <h2>Backtest Lab</h2>
+          <Badge tone={isRunning ? 'warning' : hasResult ? 'positive' : 'neutral'}>{isRunning ? 'Running on Bud' : hasResult ? 'Result loaded' : 'Editable'}</Badge>
+        </div>
+        <div className="bud-action-row">
+          <Button icon={<Play size={15} />} isLoading={isRunning} onClick={runEditedBacktest} variant="primary">
+            Run backtest
+          </Button>
+          <Button icon={<Save size={15} />} isLoading={pendingAction === 'save-strategy'} onClick={() => onSaveStrategy(draft)}>
+            Save variant
+          </Button>
+          <Button icon={<Send size={15} />} isLoading={isSubmitting} onClick={submitToOrchestrator}>
+            Submit to orchestrator
+          </Button>
+        </div>
+      </Card>
+
+      <div className="bud-metric-grid">
+        <BudMetric label="Sharpe" tone="cyan" value={metricValue(readPath(metrics, ['sharpe_ratio']), formatNumber)} />
+        <BudMetric label="Return" tone={Number(readPath(metrics, ['total_return']) ?? 0) >= 0 ? 'green' : 'red'} value={metricValue(readPath(metrics, ['total_return']), (value) => formatMaybePercent(value, true))} />
+        <BudMetric label="Drawdown" tone="red" value={metricValue(readPath(metrics, ['max_drawdown']), (value) => formatMaybePercent(value, true))} />
+        <BudMetric label="Win rate" tone="green" value={metricValue(readPath(metrics, ['win_rate']), (value) => formatMaybePercent(value, true))} />
+        <BudMetric label="Trades" tone="primary" value={metricValue(readPath(metrics, ['total_trades']), formatValue)} />
+        <BudMetric label="Quality" tone="cyan" value={metricValue(readPath(quality, ['quality_score']), (value) => formatMaybePercent(value, true))} />
+      </div>
+
+      <div className="bud-strategy-tabs" role="tablist" aria-label="Backtest workspace sections">
+        {tabs.map((tab) => (
+          <button aria-selected={activeTab === tab.id} className={activeTab === tab.id ? 'is-active' : undefined} key={tab.id} onClick={() => setActiveTab(tab.id)} role="tab" type="button">
+            <span>{tab.label}</span>
+            <strong>{tab.badge}</strong>
+          </button>
+        ))}
+      </div>
+
+      <div className="bud-strategy-tab-panel" role="tabpanel">
+        {activeTab === 'lab' ? (
+          <BacktestLab
+            draft={draft}
+            evaluation={selectedEvaluation}
+            evaluations={evaluations}
+            execution={execution}
+            onDraftChange={setDraft}
+            onExecutionChange={setExecution}
+            onSelect={setSelectedStrategyKey}
+            selectedKey={strategyRecordKey(selectedStrategy)}
+            strategies={strategies}
+            symbol={symbol}
+          />
+        ) : null}
+
+        {activeTab === 'results' ? (
+          <div className="bud-grid bud-grid--main-side">
+            <Card className="bud-card">
+              <div className="bud-panel-head">
+                <h2>Validation</h2>
+                <Badge tone={isRunning ? 'warning' : readPath(walkForward, ['accepted']) ? 'positive' : result ? 'warning' : 'neutral'}>{isRunning ? 'Running' : result ? (readPath(walkForward, ['accepted']) ? 'Accepted' : 'Rejected') : 'Not run'}</Badge>
+              </div>
+              <BudKeyValues
+                record={
+                  isRunning
+                    ? {
+                        Symbol: symbol,
+                        Interval: interval,
+                        Rows: Math.max(limit, 240),
+                        Started: pendingStartedAt,
+                        Status: 'Bud is running the walk-forward backtest',
+                      }
+                    : hasResult
+                      ? flattenBacktest(result)
+                      : {
+                          Symbol: symbol,
+                          Interval: interval,
+                          Rows: Math.max(limit, 240),
+                          Status: 'Ready to run',
+                        }
+                }
+              />
+            </Card>
+            <JsonPanel data={readPath(result, ['walk_forward'])} title="Walk-forward" />
+          </div>
+        ) : null}
+
+        {activeTab === 'orchestrator' ? (
+          <BacktestOrchestratorPanel data={orchestratorData} draft={draft} execution={execution} isSubmitting={isSubmitting} onSubmit={submitToOrchestrator} result={result} />
+        ) : null}
+
+        {activeTab === 'payload' ? (
+          <div className="bud-grid bud-grid--main-side">
+            <JsonPanel data={result} title="Raw Backtest" />
+            <JsonPanel data={researchData} title="Research Registry" />
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function BacktestLab({
+  draft,
+  evaluation,
+  evaluations,
+  execution,
+  onDraftChange,
+  onExecutionChange,
+  onSelect,
+  selectedKey,
+  strategies,
+  symbol,
+}: {
+  draft: StrategyDraft;
+  evaluation: JsonRecord;
+  evaluations: unknown[];
+  execution: BacktestExecutionDraft;
+  onDraftChange: (draft: StrategyDraft) => void;
+  onExecutionChange: (execution: BacktestExecutionDraft) => void;
+  onSelect: (key: string) => void;
+  selectedKey: string;
+  strategies: unknown[];
+  symbol: string;
+}) {
+  const [strategyPage, setStrategyPage] = useState(1);
+  const strategyPageCount = Math.max(1, Math.ceil(strategies.length / listPageSize));
+  const pageStart = (strategyPage - 1) * listPageSize;
+  const visibleStrategies = strategies.slice(pageStart, pageStart + listPageSize);
+  const fields = strategyParamFields[draft.strategyType] ?? strategyParamFields.sma_cross;
+
+  useEffect(() => {
+    setStrategyPage((current) => Math.min(current, strategyPageCount));
+  }, [strategyPageCount]);
+
+  function toggleAddon(addon: string) {
+    onExecutionChange({
+      ...execution,
+      addons: execution.addons.includes(addon) ? execution.addons.filter((item) => item !== addon) : [...execution.addons, addon],
+    });
+  }
+
+  return (
+    <Card className="bud-card bud-backtest-lab">
+      <div className="bud-panel-head">
+        <h2>Selectable Backtests</h2>
+        <Badge tone={strategies.length ? 'positive' : 'warning'}>{strategies.length ? `${strategies.length} scenarios` : 'Manual scenario'}</Badge>
+      </div>
+
+      <div className="bud-backtest-lab__layout">
+        <div className="bud-strategy-list" aria-label="Selectable backtest strategies">
+          {visibleStrategies.length ? (
+            visibleStrategies.map((strategy, index) => {
+              const record = asRecord(strategy);
+              const key = strategyRecordKey(record) || String(pageStart + index);
+              const isActive = key === selectedKey;
+              const rowEvaluation = asRecord(findStrategyEvaluation(record, evaluations) ?? evaluation);
+              const returnValue = strategyBestMetric(rowEvaluation, 'total_return');
+              const winRateValue = strategyBestMetric(rowEvaluation, 'win_rate');
+
+              return (
+                <button aria-pressed={isActive} className={isActive ? 'is-active' : undefined} key={key} onClick={() => onSelect(key)} type="button">
+                  <span>
+                    <strong>{strategyName(record)}</strong>
+                    <em>
+                      {formatStrategyText(readPath(record, ['strategy_type']), 'Strategy')} · {formatStrategyText(readPath(record, ['metadata', 'source_symbol']) ?? symbol, 'Market')} ·{' '}
+                      {formatStrategyText(readPath(record, ['metadata', 'source_timeframe']), 'TF')}
+                    </em>
+                  </span>
+                  <span className="bud-strategy-list__metrics">
+                    <b>{formatScore(readPath(rowEvaluation, ['ranking_score']) ?? readPath(record, ['selection_score']), 'Pick')}</b>
+                    <small className={metricTone(returnValue)}>Ret {formatStrategyPercent(returnValue)}</small>
+                    <small>WR {formatStrategyPercent(winRateValue)}</small>
+                  </span>
+                </button>
+              );
+            })
+          ) : (
+            <button aria-pressed="true" className="is-active" type="button">
+              <span>
+                <strong>Manual SMA Cross</strong>
+                <em>{symbol} · editable starter</em>
+              </span>
+              <span className="bud-strategy-list__metrics">
+                <b>Manual</b>
+                <small>Ready</small>
+              </span>
+            </button>
+          )}
+          <BudPagination label="Backtest scenario pages" onPageChange={setStrategyPage} page={strategyPage} pageCount={strategyPageCount} pageSize={listPageSize} total={strategies.length} />
+        </div>
+
+        <div className="bud-backtest-editor">
+          <div className="bud-strategy-form">
+            <label>
+              <span>Name</span>
+              <input aria-label="Backtest strategy name" onChange={(event) => onDraftChange({ ...draft, name: event.target.value })} value={draft.name} />
+            </label>
+            <label>
+              <span>Type</span>
+              <select
+                aria-label="Backtest strategy type"
+                onChange={(event) => {
+                  const nextType = event.target.value;
+                  onDraftChange({ ...draft, params: { ...defaultParamsForStrategy(nextType), ...draft.params }, strategyType: nextType });
+                }}
+                value={draft.strategyType}
+              >
+                {strategyTypes.map((type) => (
+                  <option key={type} value={type}>
+                    {humanize(type)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Direction</span>
+              <select aria-label="Backtest direction" onChange={(event) => onExecutionChange({ ...execution, directionMode: event.target.value })} value={execution.directionMode}>
+                {backtestDirectionOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {humanize(option)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="bud-strategy-param-grid">
+            {fields.map((field) => (
+              <label key={field.key}>
+                <span>{field.label}</span>
+                <input
+                  aria-label={`Backtest ${field.label}`}
+                  max={field.max}
+                  min={field.min}
+                  onChange={(event) => onDraftChange({ ...draft, params: { ...draft.params, [field.key]: numberOrExisting(event.target.value, draft.params[field.key]) } })}
+                  step={field.step ?? 1}
+                  type="number"
+                  value={String(draft.params[field.key] ?? defaultParamsForStrategy(draft.strategyType)[field.key] ?? field.min)}
+                />
+              </label>
+            ))}
+          </div>
+
+          <div className="bud-strategy-form bud-strategy-form--conditions">
+            <label>
+              <span>Entry</span>
+              <input aria-label="Backtest entry condition" onChange={(event) => onDraftChange({ ...draft, conditions: { ...draft.conditions, entry: event.target.value } })} value={String(draft.conditions.entry ?? '')} />
+            </label>
+            <label>
+              <span>Exit</span>
+              <input aria-label="Backtest exit condition" onChange={(event) => onDraftChange({ ...draft, conditions: { ...draft.conditions, exit: event.target.value } })} value={String(draft.conditions.exit ?? '')} />
+            </label>
+          </div>
+
+          <div className="bud-backtest-risk-grid">
+            <NumberField label="Capital" onChange={(value) => onExecutionChange({ ...execution, initialCash: value })} step={100} value={execution.initialCash} />
+            <NumberField label="Risk %" onChange={(value) => onExecutionChange({ ...execution, riskPerTradePct: value })} step={0.1} value={execution.riskPerTradePct} />
+            <NumberField label="Fee bps" onChange={(value) => onExecutionChange({ ...execution, feeBps: value })} step={1} value={execution.feeBps} />
+            <NumberField label="Slip bps" onChange={(value) => onExecutionChange({ ...execution, slippageBps: value })} step={1} value={execution.slippageBps} />
+            <NumberField label="Stop ATR" onChange={(value) => onExecutionChange({ ...execution, stopLossAtr: value })} step={0.1} value={execution.stopLossAtr} />
+            <NumberField label="Take R" onChange={(value) => onExecutionChange({ ...execution, takeProfitR: value })} step={0.1} value={execution.takeProfitR} />
+            <NumberField label="Trail ATR" onChange={(value) => onExecutionChange({ ...execution, trailingStopAtr: value })} step={0.1} value={execution.trailingStopAtr} />
+            <NumberField label="Cap %" onChange={(value) => onExecutionChange({ ...execution, positionCapPct: value })} step={1} value={execution.positionCapPct} />
+          </div>
+
+          <div className="bud-backtest-addons" aria-label="Backtest add-ons">
+            {backtestAddonOptions.map((addon) => {
+              const isActive = execution.addons.includes(addon);
+
+              return (
+                <button className={isActive ? 'is-active' : undefined} key={addon} onClick={() => toggleAddon(addon)} type="button">
+                  {isActive ? <CheckCircle2 size={14} /> : <SlidersHorizontal size={14} />}
+                  {humanize(addon)}
+                </button>
+              );
+            })}
+          </div>
+
+          <label className="bud-strategy-review-note">
+            <span>Orchestrator note</span>
+            <textarea aria-label="Backtest orchestrator note" onChange={(event) => onDraftChange({ ...draft, metadata: { ...draft.metadata, user_review_note: event.target.value } })} rows={3} value={String(draft.metadata.user_review_note ?? '')} />
+          </label>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function NumberField({ label, onChange, step, value }: { label: string; onChange: (value: number) => void; step: number; value: number }) {
+  return (
+    <label>
+      <span>{label}</span>
+      <input aria-label={`Backtest ${label}`} onChange={(event) => onChange(Number(event.target.value))} step={step} type="number" value={value} />
+    </label>
+  );
+}
+
+function BacktestOrchestratorPanel({
+  data,
+  draft,
+  execution,
+  isSubmitting,
+  onSubmit,
+  result,
+}: {
+  data: JsonRecord | null;
+  draft: StrategyDraft;
+  execution: BacktestExecutionDraft;
+  isSubmitting: boolean;
+  onSubmit: () => void;
+  result: JsonRecord | null;
+}) {
+  const reply = asRecord(readPath(data, ['reply']));
+  const questions = asArray(readPath(data, ['questions']));
+  const blockers = asArray(readPath(data, ['blockers']));
 
   return (
     <div className="bud-grid bud-grid--main-side">
-      <div className="bud-stack">
-        <Card className="bud-action-panel bud-accent-green">
-          <div className="bud-panel-head">
-            <h2>Walk-forward Backtest</h2>
-            <Badge tone={isRunning ? 'warning' : hasResult ? 'positive' : 'neutral'}>{isRunning ? 'Running on Bud' : hasResult ? 'Result loaded' : 'Ready'}</Badge>
-          </div>
-          <Button icon={<Play size={15} />} isLoading={pendingAction === 'backtest'} onClick={onRun} variant="primary">
-            Run backtest
-          </Button>
-        </Card>
-
-        <div className="bud-metric-grid">
-          <BudMetric label="Sharpe" tone="cyan" value={metricValue(readPath(metrics, ['sharpe_ratio']), formatNumber)} />
-          <BudMetric label="Return" tone={Number(readPath(metrics, ['total_return']) ?? 0) >= 0 ? 'green' : 'red'} value={metricValue(readPath(metrics, ['total_return']), (value) => formatMaybePercent(value, true))} />
-          <BudMetric label="Drawdown" tone="red" value={metricValue(readPath(metrics, ['max_drawdown']), (value) => formatMaybePercent(value, true))} />
-          <BudMetric label="Win rate" tone="green" value={metricValue(readPath(metrics, ['win_rate']), (value) => formatMaybePercent(value, true))} />
-          <BudMetric label="Trades" tone="primary" value={metricValue(readPath(metrics, ['total_trades']), formatValue)} />
-          <BudMetric label="Quality" tone="cyan" value={metricValue(readPath(quality, ['quality_score']), (value) => formatMaybePercent(value, true))} />
+      <Card className="bud-card bud-accent-violet bud-backtest-orchestrator">
+        <div className="bud-panel-head">
+          <h2>Backtest Orchestrator</h2>
+          <Badge tone={data ? 'positive' : 'neutral'}>{data ? 'Reply loaded' : 'Waiting'}</Badge>
         </div>
-
-        <Card className="bud-card">
-          <div className="bud-panel-head">
-            <h2>Validation</h2>
-            <Badge tone={isRunning ? 'warning' : readPath(walkForward, ['accepted']) ? 'positive' : result ? 'warning' : 'neutral'}>{isRunning ? 'Running' : result ? (readPath(walkForward, ['accepted']) ? 'Accepted' : 'Rejected') : 'Not run'}</Badge>
-          </div>
-          <BudKeyValues
-            record={
-              isRunning
-                ? {
-                    Symbol: symbol,
-                    Interval: interval,
-                    Rows: Math.max(limit, 240),
-                    Started: pendingStartedAt,
-                    Status: 'Bud is running the walk-forward backtest',
-                  }
-                : hasResult
-                  ? flattenBacktest(result)
-                  : {
-                      Symbol: symbol,
-                      Interval: interval,
-                      Rows: Math.max(limit, 240),
-                      Status: 'Ready to run',
-                    }
-            }
-          />
-        </Card>
-      </div>
+        {data ? (
+          <>
+            <BudKeyValues
+              record={{
+                Decision: readPath(reply, ['decision']),
+                Confidence: readPath(reply, ['confidence']),
+                SelectedStrategy: draft.name,
+                Addons: execution.addons.join(', '),
+              }}
+            />
+            <div className="bud-bot-note-list">
+              {asArray(readPath(reply, ['summary'])).slice(0, 8).map((item, index) => (
+                <span key={`${String(item)}-${index}`}>
+                  <CheckCircle2 size={14} />
+                  {String(item)}
+                </span>
+              ))}
+            </div>
+            {blockers.length ? <BlockerList blockers={blockers} /> : null}
+            {questions.length ? (
+              <Card className="bud-card">
+                <div className="bud-panel-head">
+                  <h2>Questions</h2>
+                  <Badge tone="primary">{questions.length}</Badge>
+                </div>
+                <div className="bud-bot-note-list">
+                  {questions.map((question, index) => (
+                    <span key={`${String(question)}-${index}`}>
+                      <AlertTriangle size={14} />
+                      {String(question)}
+                    </span>
+                  ))}
+                </div>
+              </Card>
+            ) : null}
+          </>
+        ) : (
+          <BudEmpty label="Submit the edited backtest to Bud orchestrator for a decision review." />
+        )}
+        <Button icon={<Send size={15} />} isLoading={isSubmitting} onClick={onSubmit} variant="primary">
+          Submit to orchestrator
+        </Button>
+      </Card>
 
       <div className="bud-stack">
-        <JsonPanel data={readPath(result, ['walk_forward'])} title="Walk-forward" />
-        <JsonPanel data={result} title="Raw Backtest" />
+        <JsonPanel data={result} title="Submitted Backtest Result" />
+        <JsonPanel data={data} title="Orchestrator Payload" />
       </div>
     </div>
   );
@@ -2515,10 +2951,40 @@ function strategyInputFromDraft(draft: StrategyDraft): JsonRecord {
   };
 }
 
-function backtestStrategyFromDraft(draft: StrategyDraft): JsonRecord {
+function backtestStrategyFromDraft(draft: StrategyDraft, _execution?: BacktestExecutionDraft): JsonRecord {
   return {
     ...normalizeStrategyParams(draft.params),
     name: draft.strategyType,
+  };
+}
+
+function defaultBacktestExecutionDraft(): BacktestExecutionDraft {
+  return {
+    addons: ['strict_oos'],
+    directionMode: 'both',
+    feeBps: 10,
+    initialCash: 10_000,
+    positionCapPct: 20,
+    riskPerTradePct: 1,
+    slippageBps: 3,
+    stopLossAtr: 1.8,
+    takeProfitR: 2,
+    trailingStopAtr: 0,
+  };
+}
+
+function backtestExecutionPayload(execution: BacktestExecutionDraft): JsonRecord {
+  return {
+    direction_mode: execution.directionMode,
+    fee_bps: execution.feeBps,
+    initial_cash: execution.initialCash,
+    position_cap_pct: execution.positionCapPct,
+    risk_per_trade_pct: execution.riskPerTradePct,
+    slippage_bps: execution.slippageBps,
+    stop_loss_atr: execution.stopLossAtr,
+    take_profit_r: execution.takeProfitR,
+    trailing_stop_atr: execution.trailingStopAtr,
+    variant_addons: execution.addons,
   };
 }
 
@@ -2540,6 +3006,79 @@ function defaultParamsForStrategy(strategyType: string): Record<string, number> 
     default:
       return { fast_window: 20, slow_window: 50 };
   }
+}
+
+function defaultBacktestScenarios(symbol: string, interval: string): JsonRecord[] {
+  const now = new Date().toISOString();
+
+  return [
+    {
+      conditions: { entry: 'fast_sma_crosses_above_slow_sma', exit: 'fast_sma_crosses_below_slow_sma' },
+      metadata: { source_symbol: symbol, source_timeframe: interval },
+      name: 'Manual SMA Cross',
+      params: { fast_window: 20, slow_window: 50 },
+      status: 'candidate',
+      strategy_id: 'manual-sma-cross',
+      strategy_type: 'sma_cross',
+      updated_at: now,
+      version: 'manual',
+    },
+    {
+      conditions: { entry: 'ema_fast_above_ema_slow_and_trend_up', exit: 'ema_fast_below_ema_slow' },
+      metadata: { source_symbol: symbol, source_timeframe: interval },
+      name: 'Manual EMA Trend',
+      params: { fast_window: 12, slow_window: 48 },
+      status: 'candidate',
+      strategy_id: 'manual-ema-trend',
+      strategy_type: 'ema_trend',
+      updated_at: now,
+      version: 'manual',
+    },
+    {
+      conditions: { entry: 'price_breaks_donchian_high', exit: 'price_breaks_donchian_exit_low' },
+      metadata: { source_symbol: symbol, source_timeframe: interval },
+      name: 'Manual Donchian Breakout',
+      params: { donchian_exit_window: 20, donchian_window: 55 },
+      status: 'candidate',
+      strategy_id: 'manual-donchian-breakout',
+      strategy_type: 'donchian_breakout',
+      updated_at: now,
+      version: 'manual',
+    },
+    {
+      conditions: { entry: 'rsi_below_lower_band', exit: 'rsi_reverts_to_upper_band' },
+      metadata: { source_symbol: symbol, source_timeframe: interval },
+      name: 'Manual RSI Mean Reversion',
+      params: { rsi_lower: 30, rsi_upper: 55, rsi_window: 14 },
+      status: 'candidate',
+      strategy_id: 'manual-rsi-mean-reversion',
+      strategy_type: 'rsi_mean_reversion',
+      updated_at: now,
+      version: 'manual',
+    },
+    {
+      conditions: { entry: 'close_below_lower_bollinger_band', exit: 'close_returns_to_middle_band' },
+      metadata: { source_symbol: symbol, source_timeframe: interval },
+      name: 'Manual Bollinger Reversion',
+      params: { bollinger_std: 2, bollinger_window: 20 },
+      status: 'candidate',
+      strategy_id: 'manual-bollinger-reversion',
+      strategy_type: 'bollinger_reversion',
+      updated_at: now,
+      version: 'manual',
+    },
+    {
+      conditions: { entry: 'momentum_positive_and_volume_expands', exit: 'momentum_fades_or_volume_contracts' },
+      metadata: { source_symbol: symbol, source_timeframe: interval },
+      name: 'Manual Volume Breakout',
+      params: { fast_window: 20, slow_window: 50, volume_multiplier: 1.35, volume_window: 20 },
+      status: 'candidate',
+      strategy_id: 'manual-volume-breakout',
+      strategy_type: 'volume_breakout',
+      updated_at: now,
+      version: 'manual',
+    },
+  ];
 }
 
 function normalizeStrategyParams(params: Record<string, unknown>): Record<string, number | string | boolean> {
