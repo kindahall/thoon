@@ -236,6 +236,8 @@ test('Legacy Thoon APIs are retired instead of pretending to work', async ({ api
 test('Source wiring points rebuilt pages to Bud and avoids client-side exchange secrets', async ({ readSource }) => {
   const budWorkspace = await readSource('src/screens/bud/BudWorkspacePage.tsx');
   assertIncludes(budWorkspace, '/api/bud/orchestrate', 'Agents use Bud orchestration route');
+  assertIncludes(budWorkspace, 'subscribeBudRuntimeState', 'Bud action runtime state persists across page navigation');
+  assertIncludes(budWorkspace, 'PreviousResult', 'Agents page shows a defined running state instead of empty metrics while Bud works');
   assertIncludes(budWorkspace, '/api/bud/backtest', 'Backtest page uses Bud backtest route');
   assertIncludes(budWorkspace, '/api/bud/research', 'Strategies page uses Bud research route');
   assertIncludes(budWorkspace, '/api/bud/research/strategy', 'Strategies page can save edited Bud strategy versions');

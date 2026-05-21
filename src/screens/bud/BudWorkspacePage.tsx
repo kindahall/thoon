@@ -50,6 +50,14 @@ type BudEnvelope<T> = {
   status?: number;
 };
 
+type BudRuntimeState = {
+  error: string;
+  pendingAction: string;
+  pendingStartedAt?: string;
+  resultData: JsonRecord | null;
+  updatedAt?: string;
+};
+
 type StrategyDraft = {
   conditions: JsonRecord;
   metadata: JsonRecord;
@@ -136,9 +144,94 @@ const strategyParamFields: Record<string, StrategyParamField[]> = {
   ],
 };
 
+const defaultBudRuntimeState: BudRuntimeState = {
+  error: '',
+  pendingAction: '',
+  resultData: null,
+};
+
+const budRuntimeStore = new Map<string, BudRuntimeState>();
+const budRuntimeListeners = new Map<string, Set<(state: BudRuntimeState) => void>>();
+
+function budRuntimeStorageKey(key: string) {
+  return `thoon:bud-workspace:${key}:runtime`;
+}
+
+function readBudRuntimeState(key: string): BudRuntimeState {
+  const cached = budRuntimeStore.get(key);
+
+  if (cached) {
+    return cached;
+  }
+
+  const stored = readStoredBudRuntimeState(key);
+  budRuntimeStore.set(key, stored);
+
+  return stored;
+}
+
+function readStoredBudRuntimeState(key: string): BudRuntimeState {
+  if (typeof window === 'undefined') {
+    return defaultBudRuntimeState;
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(budRuntimeStorageKey(key));
+    const parsed = raw ? (JSON.parse(raw) as Partial<BudRuntimeState>) : {};
+
+    return normalizeBudRuntimeState(parsed);
+  } catch {
+    return defaultBudRuntimeState;
+  }
+}
+
+function normalizeBudRuntimeState(value: Partial<BudRuntimeState>): BudRuntimeState {
+  return {
+    error: typeof value.error === 'string' ? value.error : '',
+    pendingAction: typeof value.pendingAction === 'string' ? value.pendingAction : '',
+    pendingStartedAt: typeof value.pendingStartedAt === 'string' ? value.pendingStartedAt : undefined,
+    resultData: isRecord(value.resultData) ? value.resultData : null,
+    updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : undefined,
+  };
+}
+
+function writeBudRuntimeState(key: string, patch: Partial<BudRuntimeState>) {
+  const current = readBudRuntimeState(key);
+  const next = normalizeBudRuntimeState({
+    ...current,
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  });
+
+  budRuntimeStore.set(key, next);
+
+  if (typeof window !== 'undefined') {
+    const persisted: BudRuntimeState = {
+      ...next,
+      pendingAction: '',
+      pendingStartedAt: undefined,
+    };
+    window.sessionStorage.setItem(budRuntimeStorageKey(key), JSON.stringify(persisted));
+  }
+
+  budRuntimeListeners.get(key)?.forEach((listener) => listener(next));
+}
+
+function subscribeBudRuntimeState(key: string, listener: (state: BudRuntimeState) => void) {
+  const listeners = budRuntimeListeners.get(key) ?? new Set<(state: BudRuntimeState) => void>();
+  listeners.add(listener);
+  budRuntimeListeners.set(key, listeners);
+  listener(readBudRuntimeState(key));
+
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
 export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMarketStatus, page }: BudWorkspacePageProps) {
   const meta = pageMeta[page];
   const Icon = meta.icon;
+  const runtimeKey = page;
   const [symbol, setSymbol] = useState('BTCUSDT');
   const [interval, setInterval] = useState('1h');
   const [limit, setLimit] = useState(page === 'backtest' || page === 'strategies' ? 240 : 120);
@@ -152,9 +245,25 @@ export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMar
   const [deterministicAgentData, setDeterministicAgentData] = useState<JsonRecord | null>(null);
   const [hedgeFundData, setHedgeFundData] = useState<JsonRecord | null>(null);
   const [paperBotTestData, setPaperBotTestData] = useState<JsonRecord | null>(null);
-  const [resultData, setResultData] = useState<JsonRecord | null>(null);
-  const [error, setError] = useState('');
-  const [pendingAction, setPendingAction] = useState('');
+  const [runtimeState, setRuntimeState] = useState<BudRuntimeState>(() => readBudRuntimeState(runtimeKey));
+  const { error, pendingAction, pendingStartedAt, resultData } = runtimeState;
+
+  function setResultData(value: JsonRecord | null) {
+    writeBudRuntimeState(runtimeKey, { resultData: value });
+  }
+
+  function setError(value: string) {
+    writeBudRuntimeState(runtimeKey, { error: value });
+  }
+
+  function setPendingAction(value: string) {
+    writeBudRuntimeState(runtimeKey, {
+      pendingAction: value,
+      pendingStartedAt: value ? new Date().toISOString() : undefined,
+    });
+  }
+
+  useEffect(() => subscribeBudRuntimeState(runtimeKey, setRuntimeState), [runtimeKey]);
 
   useEffect(() => {
     void refreshStatus();
@@ -513,6 +622,7 @@ export function BudWorkspacePage({ initialPairs = [], initialStatus = defaultMar
           onOrchestrate={() => void runOrchestration()}
           onPortfolio={() => void runPortfolio()}
           pendingAction={pendingAction}
+          pendingStartedAt={pendingStartedAt}
           result={activeResult}
           statusData={statusData}
         />
@@ -643,6 +753,7 @@ function AgentsView({
   onOrchestrate,
   onPortfolio,
   pendingAction,
+  pendingStartedAt,
   result,
   statusData,
 }: {
@@ -651,12 +762,15 @@ function AgentsView({
   onOrchestrate: () => void;
   onPortfolio: () => void;
   pendingAction: string;
+  pendingStartedAt?: string;
   result: JsonRecord | null;
   statusData: JsonRecord | null;
 }) {
   const risk = asRecord(readPath(result, ['risk_profile']));
   const strategy = asRecord(readPath(result, ['strategy']));
   const opportunities = asArray(readPath(result, ['arbitrage_opportunities']));
+  const isRunning = Boolean(pendingAction);
+  const actionName = pendingAction ? humanize(pendingAction) : '';
 
   return (
     <div className="bud-grid bud-grid--main-side">
@@ -679,18 +793,31 @@ function AgentsView({
         </Card>
 
         <div className="bud-metric-grid">
-          <BudMetric label="Strategy" tone="primary" value={formatValue(readPath(strategy, ['name']) ?? readPath(result, ['strategy', 'name']))} />
-          <BudMetric label="Regime" tone="cyan" value={formatValue(readPath(result, ['regime']) ?? readPath(result, ['macro_regime']))} />
-          <BudMetric label="Confidence" tone="green" value={formatMaybePercent(readPath(result, ['confidence']) ?? readPath(strategy, ['confidence']))} />
-          <BudMetric label="Risk" tone={readPath(risk, ['within_limits']) === false ? 'red' : 'green'} value={readPath(risk, ['within_limits']) === false ? 'Blocked' : result ? 'Within limits' : 'Not run'} />
+          <BudMetric label="Strategy" tone="primary" value={isRunning && !result ? actionName : formatValue(readPath(strategy, ['name']) ?? readPath(result, ['strategy', 'name']))} />
+          <BudMetric label="Regime" tone="cyan" value={isRunning && !result ? 'Waiting Bud' : formatValue(readPath(result, ['regime']) ?? readPath(result, ['macro_regime']))} />
+          <BudMetric label="Confidence" tone="green" value={isRunning && !result ? 'Running' : formatMaybePercent(readPath(result, ['confidence']) ?? readPath(strategy, ['confidence']))} />
+          <BudMetric label="Risk" tone={isRunning ? 'cyan' : readPath(risk, ['within_limits']) === false ? 'red' : 'green'} value={isRunning && !result ? 'Checking' : readPath(risk, ['within_limits']) === false ? 'Blocked' : result ? 'Within limits' : 'Not run'} />
         </div>
 
         <Card className="bud-card">
           <div className="bud-panel-head">
             <h2>Agent Output</h2>
-            <Badge tone={result ? 'positive' : 'neutral'}>{result ? 'Structured JSON' : 'Idle'}</Badge>
+            <Badge tone={isRunning ? 'warning' : result ? 'positive' : 'neutral'}>{isRunning ? 'Running' : result ? 'Structured JSON' : 'Idle'}</Badge>
           </div>
-          {result ? <BudKeyValues record={flattenDecision(result)} /> : <BudEmpty label="Run a Bud agent action to produce a real backend result." />}
+          {isRunning ? (
+            <BudKeyValues
+              record={{
+                Action: actionName,
+                Started: pendingStartedAt,
+                Status: 'running',
+                PreviousResult: result ? 'kept on screen' : 'waiting for Bud',
+              }}
+            />
+          ) : result ? (
+            <BudKeyValues record={flattenDecision(result)} />
+          ) : (
+            <BudEmpty label="Run a Bud agent action to produce a real backend result." />
+          )}
         </Card>
 
         {opportunities.length ? <OpportunityTable opportunities={opportunities} /> : null}
