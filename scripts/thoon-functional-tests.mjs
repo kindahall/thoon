@@ -232,7 +232,19 @@ test('Source wiring points rebuilt pages to Bud and avoids client-side exchange 
   assertIncludes(liveConnectors, 'BITGET_API_PASSPHRASE', 'Live readiness checks Bitget passphrase');
   assertIncludes(liveConnectors, 'HYPERLIQUID_OFFICIAL_SIGNER_ENABLED', 'Live readiness keeps Hyperliquid signer explicit');
   assertIncludes(liveConnectors, 'DYDX_OFFICIAL_SIGNER_ENABLED', 'Live readiness keeps dYdX signer explicit');
-  assertIncludes(liveConnectors, 'official_signer_code_not_implemented', 'DEX live signing cannot be faked by env flags');
+  assertIncludes(liveConnectors, 'official_signer_not_enabled', 'DEX live signing remains blocked until the explicit signer env is enabled');
+  assertIncludes(liveConnectors, 'Python SDK import', 'DEX signer readiness delegates SDK and permission verification to Bud');
+  assert(!liveConnectors.includes('official_signer_code_not_implemented'), 'DEX live signing adapters are implemented instead of hard-coded as missing');
+
+  const hyperliquidConnector = await readSource('backend/execution/hyperliquid_connector.py');
+  assertIncludes(hyperliquidConnector, 'from hyperliquid.exchange import Exchange', 'Hyperliquid live signer uses the official SDK Exchange client');
+  assertIncludes(hyperliquidConnector, 'Account.from_key', 'Hyperliquid live signer signs with the configured API wallet key');
+  assertIncludes(hyperliquidConnector, 'cancel_by_cloid', 'Hyperliquid cancel can use deterministic CLOIDs');
+
+  const dydxConnector = await readSource('backend/execution/dydx_connector.py');
+  assertIncludes(dydxConnector, 'from dydx_v4_client.node.client import NodeClient', 'dYdX live signer uses the official NodeClient');
+  assertIncludes(dydxConnector, 'sdk.TxOptions', 'dYdX live signer routes permissioned-key authenticators through TxOptions');
+  assertIncludes(dydxConnector, 'node.place_order', 'dYdX live signer places orders through signed node transactions');
 
   const tradeRoute = await readSource('src/app/api/bud/trade/route.ts');
   assertIncludes(tradeRoute, 'getHedgeFundReadiness', 'Bud trade route gates live trading with hedge fund readiness');

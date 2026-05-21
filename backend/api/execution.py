@@ -68,8 +68,8 @@ async def execution_capabilities() -> ExecutionCapabilities:
             "binance": True,
             "bybit": True,
             "bitget": True,
-            "hyperliquid": False,
-            "dydx": False,
+            "hyperliquid": order_manager.hyperliquid.live_execution_supported(),
+            "dydx": order_manager.dydx.live_execution_supported(),
         },
         safety_endpoints={
             "live_readiness": "/live-readiness/check",

@@ -147,8 +147,8 @@ function buildDexVenue(venue: (typeof dexVenues)[number], globalBlockers: string
   const credentials = [...credentialList(venue.requiredEnv), ...credentialList(venue.optionalEnv, false)];
   const missing = credentials.filter((credential) => credential.required && !credential.configured).map((credential) => `${venue.id}_${credential.name.toLowerCase()}_missing`);
   const signerEnabled = process.env[venue.signerEnv] === 'true';
-  const signerBlocker = signerEnabled ? 'official_signer_code_not_implemented' : `${venue.id}_official_signer_not_enabled`;
-  const blockers = [...globalBlockers, ...missing, signerBlocker];
+  const signerBlockers = signerEnabled ? [] : [`${venue.id}_official_signer_not_enabled`];
+  const blockers = [...globalBlockers, ...missing, ...signerBlockers];
 
   return {
     blockers,
@@ -156,17 +156,17 @@ function buildDexVenue(venue: (typeof dexVenues)[number], globalBlockers: string
     credentials,
     id: venue.id,
     kind: 'dex-perp',
-    liveExecutionSupported: false,
+    liveExecutionSupported: signerEnabled,
     name: venue.name,
     nextAction: signerEnabled
-      ? 'Wire the official isolated signer adapter before enabling live orders.'
-      : `Set ${venue.requiredEnv.join(', ')} and keep ${venue.signerEnv}=false until the official signer adapter is implemented.`,
-    ready: false,
+      ? 'Run Bud live-readiness so the Python SDK import, account permissions and position reconciliation can be verified before a real order.'
+      : `Set ${venue.requiredEnv.join(', ')} and ${venue.signerEnv}=true only after the official SDK package and wallet permissions are configured server-side.`,
+    ready: blockers.length === 0,
     signer: {
       enabled: signerEnabled,
       officialAdapterRequired: true,
     },
-    status: missing.length ? 'blocked' : 'configured',
+    status: blockers.length ? (missing.length || globalBlockers.length ? 'blocked' : 'configured') : 'ready',
   };
 }
 
