@@ -971,7 +971,7 @@ function StrategiesView({
       readPath(record, ['strategy_id']) === readPath(selectedStrategy, ['strategy_id'])
     );
   });
-  const latestEvaluation = asRecord(selectedEvaluations[0] ?? evaluations[0]);
+  const latestEvaluation = asRecord(selectedEvaluations[0] ?? findStrategyEvaluation(selectedStrategy, evaluations) ?? evaluations[0]);
 
   useEffect(() => {
     if (!selectedStrategyKey && firstStrategyKey) {
@@ -1052,6 +1052,7 @@ function StrategiesView({
       <div className="bud-strategy-tab-panel" role="tabpanel">
         {activeTab === 'workbench' ? (
           <StrategyWorkbench
+            allEvaluations={evaluations}
             draft={draft}
             evaluations={selectedEvaluations}
             latestEvaluation={latestEvaluation}
@@ -1100,6 +1101,7 @@ function StrategiesView({
 }
 
 function StrategyWorkbench({
+  allEvaluations,
   draft,
   evaluations,
   latestEvaluation,
@@ -1111,6 +1113,7 @@ function StrategyWorkbench({
   selectedKey,
   strategies,
 }: {
+  allEvaluations: unknown[];
   draft: StrategyDraft;
   evaluations: unknown[];
   latestEvaluation: JsonRecord;
@@ -1158,15 +1161,26 @@ function StrategyWorkbench({
             const record = asRecord(strategy);
             const key = strategyRecordKey(record) || String(pageStart + index);
             const isActive = key === selectedKey;
-            const evaluation = asRecord(evaluations.find((item) => readPath(item, ['strategy_id']) === readPath(record, ['strategy_id'])) ?? {});
+            const evaluation = asRecord(findStrategyEvaluation(record, allEvaluations));
+            const returnValue = strategyBestMetric(evaluation, 'total_return');
+            const winRateValue = strategyBestMetric(evaluation, 'win_rate');
+            const drawdownValue = strategyBestMetric(evaluation, 'max_drawdown');
 
             return (
               <button aria-pressed={isActive} className={isActive ? 'is-active' : undefined} key={key} onClick={() => onSelect(key)} type="button">
                 <span>
                   <strong>{strategyName(record)}</strong>
-                  <em>{formatValue(readPath(record, ['strategy_type']))} · v{formatValue(readPath(record, ['version']))}</em>
+                  <em>
+                    {formatStrategyText(readPath(record, ['strategy_type']), 'Strategy')} · v{formatStrategyText(readPath(record, ['version']), 'new')} · {formatStrategyText(readPath(evaluation, ['symbol']) ?? readPath(record, ['metadata', 'source_symbol']), 'Market')}{' '}
+                    {formatStrategyText(readPath(evaluation, ['interval']) ?? readPath(record, ['metadata', 'source_timeframe']), 'TF')}
+                  </em>
                 </span>
-                <small>{formatScore(readPath(evaluation, ['ranking_score']) ?? readPath(record, ['selection_score']))}</small>
+                <span className="bud-strategy-list__metrics">
+                  <b>{formatScore(readPath(evaluation, ['ranking_score']) ?? readPath(record, ['selection_score']), 'No eval')}</b>
+                  <small className={metricTone(returnValue)}>Ret {formatStrategyPercent(returnValue)}</small>
+                  <small>WR {formatStrategyPercent(winRateValue)}</small>
+                  <small className="negative">DD {formatStrategyPercent(drawdownValue)}</small>
+                </span>
               </button>
             );
           })}
@@ -1195,6 +1209,8 @@ function StrategyWorkbench({
               </Button>
             </div>
           </div>
+
+          <StrategyOverviewPanel draft={draft} evaluation={latestEvaluation} />
 
           <div className="bud-strategy-form">
             <label>
@@ -1294,6 +1310,11 @@ function StrategyWorkbench({
 
 function StrategyEvaluationPanel({ evaluation, evaluations }: { evaluation: JsonRecord; evaluations: unknown[] }) {
   const rejectionReasons = asArray(readPath(evaluation, ['rejection_reasons']));
+  const testReturn = readPath(evaluation, ['test', 'metrics', 'total_return']);
+  const winRate = readPath(evaluation, ['test', 'metrics', 'win_rate']);
+  const sharpe = readPath(evaluation, ['test', 'metrics', 'sharpe_ratio']);
+  const drawdown = readPath(evaluation, ['test', 'metrics', 'max_drawdown']);
+  const trades = readPath(evaluation, ['test', 'metrics', 'total_trades']);
 
   return (
     <div className="bud-strategy-evaluation">
@@ -1305,10 +1326,12 @@ function StrategyEvaluationPanel({ evaluation, evaluations }: { evaluation: Json
         <strong>{evaluations.length} evals</strong>
       </div>
       <div className="bud-strategy-mini-metrics">
-        <StrategyMiniMetric label="Rank" value={formatScore(readPath(evaluation, ['ranking_score']))} />
-        <StrategyMiniMetric label="Test return" tone={Number(readPath(evaluation, ['test', 'metrics', 'total_return']) ?? 0) >= 0 ? 'positive' : 'negative'} value={formatMaybePercent(readPath(evaluation, ['test', 'metrics', 'total_return']), true)} />
-        <StrategyMiniMetric label="Sharpe" value={formatNumber(readPath(evaluation, ['test', 'metrics', 'sharpe_ratio']))} />
-        <StrategyMiniMetric label="Drawdown" tone="negative" value={formatMaybePercent(readPath(evaluation, ['test', 'metrics', 'max_drawdown']), true)} />
+        <StrategyMiniMetric label="Rank" value={formatScore(readPath(evaluation, ['ranking_score']), 'No eval')} />
+        <StrategyMiniMetric label="Test return" tone={metricTone(testReturn)} value={formatStrategyPercent(testReturn)} />
+        <StrategyMiniMetric label="Win rate" value={formatStrategyPercent(winRate)} />
+        <StrategyMiniMetric label="Sharpe" tone={metricTone(sharpe)} value={formatStrategyNumber(sharpe)} />
+        <StrategyMiniMetric label="Drawdown" tone="negative" value={formatStrategyPercent(drawdown)} />
+        <StrategyMiniMetric label="Trades" value={formatStrategyInteger(trades)} />
       </div>
       {rejectionReasons.length ? (
         <div className="bud-blocker-list">
@@ -1322,6 +1345,53 @@ function StrategyEvaluationPanel({ evaluation, evaluations }: { evaluation: Json
       ) : (
         <BudEmpty label="No rejection reason attached to this strategy." />
       )}
+    </div>
+  );
+}
+
+function StrategyOverviewPanel({ draft, evaluation }: { draft: StrategyDraft; evaluation: JsonRecord }) {
+  const fullMetrics = asRecord(readPath(evaluation, ['full', 'metrics']));
+  const testMetrics = asRecord(readPath(evaluation, ['test', 'metrics']));
+  const validationMetrics = asRecord(readPath(evaluation, ['validation', 'metrics']));
+  const market = formatStrategyText(readPath(evaluation, ['symbol']) ?? draft.metadata.source_symbol, 'Market');
+  const timeframe = formatStrategyText(readPath(evaluation, ['interval']) ?? draft.metadata.source_timeframe, 'Timeframe');
+  const rows = formatStrategyInteger(readPath(evaluation, ['rows']), 'No sample');
+  const start = formatDateShort(readPath(evaluation, ['data_start']));
+  const end = formatDateShort(readPath(evaluation, ['data_end']));
+
+  return (
+    <div className="bud-strategy-overview">
+      <div className="bud-strategy-context">
+        <span>{market}</span>
+        <span>{timeframe}</span>
+        <span>{rows} rows</span>
+        <span>{start} - {end}</span>
+        <span>{formatValue(readPath(evaluation, ['selection_status']) ?? draft.status)}</span>
+      </div>
+
+      <div className="bud-strategy-mini-metrics bud-strategy-mini-metrics--wide">
+        <StrategyMiniMetric label="Full return" tone={metricTone(readPath(fullMetrics, ['total_return']))} value={formatStrategyPercent(readPath(fullMetrics, ['total_return']))} />
+        <StrategyMiniMetric label="Win rate" value={formatStrategyPercent(readPath(fullMetrics, ['win_rate']))} />
+        <StrategyMiniMetric label="Profit factor" tone={metricTone(readPath(fullMetrics, ['profit_factor']))} value={formatStrategyNumber(readPath(fullMetrics, ['profit_factor']))} />
+        <StrategyMiniMetric label="Trades" value={formatStrategyInteger(readPath(fullMetrics, ['total_trades']))} />
+        <StrategyMiniMetric label="Test return" tone={metricTone(readPath(testMetrics, ['total_return']))} value={formatStrategyPercent(readPath(testMetrics, ['total_return']))} />
+        <StrategyMiniMetric label="Validation" tone={metricTone(readPath(validationMetrics, ['total_return']))} value={formatStrategyPercent(readPath(validationMetrics, ['total_return']))} />
+      </div>
+
+      <div className="bud-strategy-details-grid">
+        <div>
+          <span>Parameters</span>
+          <strong>{strategyParamSummary(draft.params)}</strong>
+        </div>
+        <div>
+          <span>Entry</span>
+          <strong>{formatStrategyText(draft.conditions.entry, 'No entry rule')}</strong>
+        </div>
+        <div>
+          <span>Exit</span>
+          <strong>{formatStrategyText(draft.conditions.exit, 'No exit rule')}</strong>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1921,6 +1991,27 @@ function strategyName(record: JsonRecord) {
   return formatValue(readPath(record, ['name']) ?? readPath(record, ['proposal', 'name']) ?? readPath(record, ['strategy_id']));
 }
 
+function findStrategyEvaluation(strategy: JsonRecord, evaluations: unknown[]) {
+  const versionId = readPath(strategy, ['version_id']);
+  const strategyId = readPath(strategy, ['strategy_id']);
+  const id = readPath(strategy, ['id']);
+
+  return (
+    evaluations.find((evaluation) => versionId && readPath(evaluation, ['version_id']) === versionId) ??
+    evaluations.find((evaluation) => strategyId && readPath(evaluation, ['strategy_id']) === strategyId) ??
+    evaluations.find((evaluation) => id && readPath(evaluation, ['strategy_id']) === id)
+  );
+}
+
+function strategyBestMetric(evaluation: JsonRecord, key: string) {
+  return (
+    readPath(evaluation, ['test', 'metrics', key]) ??
+    readPath(evaluation, ['full', 'metrics', key]) ??
+    readPath(evaluation, ['validation', 'metrics', key]) ??
+    readPath(evaluation, ['train', 'metrics', key])
+  );
+}
+
 function strategyDraftFromRecord(record: JsonRecord, symbol: string, interval: string): StrategyDraft {
   const strategyType = String(readPath(record, ['strategy_type']) ?? readPath(record, ['proposal', 'name']) ?? 'sma_cross');
   const normalizedType = strategyTypes.includes(strategyType) ? strategyType : 'sma_cross';
@@ -2008,10 +2099,58 @@ function optionalDraftString(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function formatScore(value: unknown) {
+function strategyParamSummary(params: Record<string, number | string | boolean>) {
+  const entries = Object.entries(params);
+
+  return entries.length ? entries.map(([key, value]) => `${humanize(key)} ${formatStrategyText(value)}`).join(' · ') : 'No params';
+}
+
+function formatScore(value: unknown, fallback = 'NON DEFINI') {
   const numberValue = Number(value);
 
-  return Number.isFinite(numberValue) ? numberValue.toFixed(3).replace(/\.?0+$/, '') : 'NON DEFINI';
+  return Number.isFinite(numberValue) ? numberValue.toFixed(3).replace(/\.?0+$/, '') : fallback;
+}
+
+function hasStrategyMetric(value: unknown) {
+  return Number.isFinite(Number(value));
+}
+
+function formatStrategyNumber(value: unknown, fallback = 'No eval') {
+  return hasStrategyMetric(value) ? formatNumber(value) : fallback;
+}
+
+function formatStrategyInteger(value: unknown, fallback = 'No eval') {
+  const numberValue = Number(value);
+
+  return Number.isFinite(numberValue) ? Math.round(numberValue).toLocaleString('en-US') : fallback;
+}
+
+function formatStrategyPercent(value: unknown, fallback = 'No eval') {
+  return hasStrategyMetric(value) ? formatMaybePercent(value, true) : fallback;
+}
+
+function formatStrategyText(value: unknown, fallback = 'No data') {
+  return value === undefined || value === null || value === '' ? fallback : formatValue(value);
+}
+
+function formatDateShort(value: unknown) {
+  if (typeof value !== 'string' || !value) {
+    return 'No date';
+  }
+
+  const date = new Date(value);
+
+  return Number.isNaN(date.getTime()) ? 'No date' : date.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
+}
+
+function metricTone(value: unknown): 'negative' | 'neutral' | 'positive' {
+  const numberValue = Number(value);
+
+  if (!Number.isFinite(numberValue)) {
+    return 'neutral';
+  }
+
+  return numberValue < 0 ? 'negative' : 'positive';
 }
 
 function unwrapBudPayload<T>(value: T | BudEnvelope<T>): T {

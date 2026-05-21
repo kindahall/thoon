@@ -244,6 +244,9 @@ test('Source wiring points rebuilt pages to Bud and avoids client-side exchange 
   assertIncludes(budWorkspace, '/api/bud/research', 'Strategies page uses Bud research route');
   assertIncludes(budWorkspace, '/api/bud/research/strategy', 'Strategies page can save edited Bud strategy versions');
   assertIncludes(budWorkspace, 'StrategyWorkbench', 'Strategies page exposes a selectable editable strategy workbench');
+  assertIncludes(budWorkspace, 'findStrategyEvaluation', 'Strategies list resolves each row against its own Bud evaluation');
+  assertIncludes(budWorkspace, 'Full return', 'Strategies page shows TradingView-style performance context');
+  assertIncludes(budWorkspace, 'Win rate', 'Strategies page shows win rate for strategy evaluation');
   assertIncludes(budWorkspace, 'bud-strategy-tabs', 'Strategies page splits registry, readiness, activity and payload into tabs');
   assertIncludes(budWorkspace, 'listPageSize = 10', 'Bud list views cap visible rows at 10 before pagination');
   assertIncludes(budWorkspace, 'BudPagination', 'Bud list views expose pagination controls instead of long scrolling tables');

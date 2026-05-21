@@ -22009,9 +22009,97 @@ button {
   white-space: nowrap;
 }
 
-.bud-strategy-list > button small {
+.bud-strategy-list__metrics {
+  display: grid;
+  gap: 3px;
+  justify-items: end;
+  min-width: 92px;
+}
+
+.bud-strategy-list__metrics b {
   color: #62e6a8;
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.bud-strategy-list__metrics small {
+  color: var(--text-muted);
+  font-size: 10px;
   font-weight: 900;
+  white-space: nowrap;
+}
+
+.bud-strategy-list__metrics .positive {
+  color: var(--profit);
+}
+
+.bud-strategy-list__metrics .negative {
+  color: var(--risk);
+}
+
+.bud-strategy-overview {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, #62e6a8 18%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-raised) 42%, transparent);
+}
+
+.bud-strategy-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.bud-strategy-context span {
+  min-height: 26px;
+  padding: 5px 9px;
+  color: var(--text-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--background) 40%, transparent);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.bud-strategy-mini-metrics--wide {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.bud-strategy-details-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.bud-strategy-details-grid div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--background) 38%, transparent);
+}
+
+.bud-strategy-details-grid span {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.bud-strategy-details-grid strong {
+  overflow: hidden;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bud-strategy-editor {
@@ -22279,7 +22367,9 @@ button {
   .bud-strategy-form,
   .bud-strategy-form--conditions,
   .bud-strategy-param-grid,
-  .bud-strategy-mini-metrics {
+  .bud-strategy-mini-metrics,
+  .bud-strategy-mini-metrics--wide,
+  .bud-strategy-details-grid {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -22306,7 +22396,9 @@ button {
   .bud-strategy-form,
   .bud-strategy-form--conditions,
   .bud-strategy-param-grid,
-  .bud-strategy-mini-metrics {
+  .bud-strategy-mini-metrics,
+  .bud-strategy-mini-metrics--wide,
+  .bud-strategy-details-grid {
     grid-template-columns: 1fr;
   }
 

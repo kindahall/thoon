@@ -94,6 +94,9 @@ test('Bud workspace safe actions finish and render structured results', async ({
   if ((await strategyPager.count()) > 0) {
     await expect(strategyPager).toContainText('1-10 /');
   }
+  await expect(page.locator('body')).toContainText('Win rate');
+  await expect(page.locator('body')).toContainText('Full return');
+  await expect(page.locator('body')).not.toContainText('NON DEFINI');
   await expect(page.getByRole('button', { name: 'Backtest edited' })).toBeVisible();
   await expect(page.getByLabel('Strategy name')).toBeVisible();
   await expect(page.getByLabel('Review note')).toBeVisible();
