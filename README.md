@@ -226,3 +226,7 @@ THOON_AGENT_AI_ENDPOINT=responses
 
 En mode SaaS, chaque workspace peut aussi gérer ses providers depuis `/preferences/agent-connections`.
 Les clés OpenAI ou compatibles sont chiffrées côté serveur et masquées dans l’UI. Le mode Codex Bridge prépare un pairing outbound pour une future app Mac/Tauri ou un worker local, sans exposer de port public.
+
+## Support
+
+If this project is useful to you, you can support its development with a free and entirely optional tip through the repository's **Sponsor** button. Thank you for your support.
